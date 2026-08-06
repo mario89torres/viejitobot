@@ -43,6 +43,64 @@ async function verifyPreShotExpress(pick) {
   }
 }
 
+async function sendProfitLockAlert(token, chatId, p) {
+  const link = await generateBetLink(p);
+  const eventName = esc(p.event || p.event_name);
+  const sport = esc(p.sport || 'Fútbol');
+  const market = esc(p.market);
+  const selection = esc(p.selection);
+  const entryOdd = p.entry_odd != null ? p.entry_odd.toFixed(2) : (p.odd_decimal ? p.odd_decimal.toFixed(2) : '—');
+  const currentOdd = p.current_odd != null ? p.current_odd.toFixed(2) : '—';
+  const profitPct = p.locked_profit_pct || p.mfePeakRoi || '30.0';
+
+  const msg = `⚡ <b>ALERTA CASHOUT / PROFIT LOCK</b>\n` +
+    `<i>${new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City' })}</i>\n\n` +
+    `<b>Pick #${p.id}</b> — ${eventName} <i>(${sport})</i>\n` +
+    `Mercado: ${market} · <b>${selection}</b>\n\n` +
+    `💰 <b>Ganancia Neta Asegurable: +${profitPct}%</b>\n` +
+    `📉 Cuota Entrada: <b>@ ${entryOdd}</b> ➔ Cuota Actual: <b>@ ${currentOdd}</b>\n\n` +
+    `👉 <a href="${link}">Ejecutar Cashout en Playdoit</a>`;
+
+  await sendTelegram(token, chatId, msg);
+}
+
+async function sendStructuralDrawAlert(token, chatId, p) {
+  const link = await generateBetLink(p);
+  const eventName = esc(p.event || p.event_name);
+  const sport = esc(p.sport || 'Fútbol');
+  const score = esc(p.score || '0-0');
+
+  const msg = `🎯 <b>SEÑAL DE EMPATE ESTRUCTURAL</b>\n` +
+    `<i>${new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City' })}</i>\n\n` +
+    `<b>Pick #${p.id}</b> — ${eventName} <i>(${sport})</i>\n` +
+    `Marcador actual: <b>${score}</b>\n\n` +
+    `⚖️ <b>Línea en Meseta Plana Estabilizada (Flatline)</b>\n` +
+    `📊 Alta probabilidad implícita de Empate / Under táctico.\n\n` +
+    `👉 <a href="${link}">Ver Partido en Playdoit</a>`;
+
+  await sendTelegram(token, chatId, msg);
+}
+
+async function sendSniperAlert(token, chatId, p) {
+  const link = await generateBetLink(p);
+  const eventName = esc(p.event || p.event_name);
+  const sport = esc(p.sport || 'Fútbol');
+  const market = esc(p.market);
+  const selection = esc(p.selection);
+  const entryOdd = p.entry_odd != null ? p.entry_odd.toFixed(2) : '—';
+  const currentOdd = p.current_odd != null ? p.current_odd.toFixed(2) : '—';
+
+  const msg = `🎯 <b>ALERTA SNIPER VALUE (SOBRE-REACCIÓN)</b>\n` +
+    `<i>${new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City' })}</i>\n\n` +
+    `<b>Pick #${p.id}</b> — ${eventName} <i>(${sport})</i>\n` +
+    `Mercado: ${market} · <b>${selection}</b>\n\n` +
+    `🚀 Momio Inflado: <b>@ ${currentOdd}</b> (vs Entrada original @ ${entryOdd})\n` +
+    `🔥 Sobre-reacción del mercado por evento rival — Gran Oportunidad de Entrada\n\n` +
+    `👉 <a href="${link}">Apostar en Playdoit</a>`;
+
+  await sendTelegram(token, chatId, msg);
+}
+
 async function formatMessage(picks) {
   const now = new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City' });
 
@@ -64,7 +122,12 @@ async function formatMessage(picks) {
     const oddDec = p.oddDecimal != null ? p.oddDecimal.toFixed(2) : (p.odd_decimal ? p.odd_decimal.toFixed(2) : '—');
     const oddAmer = p.oddAmerican || '';
 
-    msg += `<b>${i + 1}.</b> ${esc(p.event)} <i>(${esc(p.sport)})</i>\n`;
+    let alertBadge = '';
+    if (p.alert === 'PROFIT_LOCK') alertBadge = ` ⚡ <b>[LOCK +${p.locked_profit_pct || 30}%]</b>`;
+    else if (p.alert === 'SNIPER_VALUE') alertBadge = ` 🎯 <b>[SNIPER VALUE]</b>`;
+    else if (p.alert === 'STRUCTURAL_DRAW') alertBadge = ` 🎯 <b>[EMPATE FLATLINE]</b>`;
+
+    msg += `<b>${i + 1}.</b> ${esc(p.event)} <i>(${esc(p.sport)})</i>${alertBadge}\n`;
     if (p.score) msg += `   Marcador: ${esc(p.score)}${p.liveTime ? ` — ${esc(p.liveTime)}` : ''}\n`;
     msg += `   ${esc(p.market)}: <b>${esc(p.selection)}</b>\n`;
     msg += `   Momio: <b>${oddDec}</b> ${oddAmer ? `(${oddAmer})` : ''}\n`;
@@ -74,4 +137,10 @@ async function formatMessage(picks) {
   return msg;
 }
 
-module.exports = { sendTelegram, formatMessage };
+module.exports = {
+  sendTelegram,
+  formatMessage,
+  sendProfitLockAlert,
+  sendStructuralDrawAlert,
+  sendSniperAlert,
+};

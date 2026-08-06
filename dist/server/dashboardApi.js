@@ -402,6 +402,45 @@ function createDashboardServer(port = 3001) {
     });
     server.listen(port, () => {
         console.log(`[Dashboard API] Servidor Web y API de métricas cuantitativas activo en http://localhost:${port}`);
+        // ── MONITOR EN VIVO Y DISPARADOR DE ALERTAS A TELEGRAM ──
+        const alertedPicks = new Set();
+        const token = process.env.TELEGRAM_BOT_TOKEN;
+        const chatId = process.env.TELEGRAM_CHAT_ID;
+        if (token && chatId) {
+            const { sendProfitLockAlert, sendStructuralDrawAlert, sendSniperAlert } = require(path.join(__dirname, '..', 'telegram'));
+            setInterval(async () => {
+                try {
+                    const liveRes = await fetch(`http://localhost:${port}/api/live`).then(r => r.json());
+                    if (!liveRes?.live)
+                        return;
+                    for (const p of liveRes.live) {
+                        if (!p.alert)
+                            continue;
+                        const alertKey = `${p.id}:${p.alert}`;
+                        if (alertedPicks.has(alertKey))
+                            continue;
+                        if (p.alert === 'PROFIT_LOCK') {
+                            await sendProfitLockAlert(token, chatId, p);
+                            alertedPicks.add(alertKey);
+                            console.log(`[telegram] ⚡ Alerta Profit Lock enviada para Pick #${p.id}`);
+                        }
+                        else if (p.alert === 'SNIPER_VALUE') {
+                            await sendSniperAlert(token, chatId, p);
+                            alertedPicks.add(alertKey);
+                            console.log(`[telegram] 🎯 Alerta Sniper Value enviada para Pick #${p.id}`);
+                        }
+                        else if (p.alert === 'STRUCTURAL_DRAW') {
+                            await sendStructuralDrawAlert(token, chatId, p);
+                            alertedPicks.add(alertKey);
+                            console.log(`[telegram] 🎯 Alerta Empate Estructural enviada para Pick #${p.id}`);
+                        }
+                    }
+                }
+                catch (e) {
+                    // Ignorar errores temporales de conexión
+                }
+            }, 30000);
+        }
     });
     return server;
 }
