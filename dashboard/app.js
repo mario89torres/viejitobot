@@ -371,8 +371,59 @@ function renderLive(liveData) {
   const tbody = document.getElementById('tbodyLive');
   const cnt   = document.getElementById('cntLive');
   const sync  = document.getElementById('liveLastSync');
+  const liveGrid = document.getElementById('liveMatrixGrid');
 
   if (sync) sync.textContent = new Date().toLocaleTimeString('es-MX', { hour12: false });
+
+  // Render live matrix cards
+  if (liveGrid) {
+    if (!liveData?.length) {
+      liveGrid.innerHTML = `<div class="c-dim" style="grid-column:1/-1;text-align:center;padding:20px">no hay picks pendientes de resolución en desarrollo</div>`;
+    } else {
+      liveGrid.innerHTML = liveData.map(p => {
+        let cardClass = 'card-pending';
+        let badgeText = '● LIVE';
+        let badgeStyle = 'background:rgba(229,192,123,0.15);color:var(--yellow)';
+
+        if (p.is_suspended || p.alert === 'SUSPENDED') {
+          cardClass = 'card-pending';
+          badgeText = '⏸ SUSPENDIDA';
+          badgeStyle = 'background:rgba(229,192,123,0.25);color:var(--yellow);border:1px solid rgba(229,192,123,0.5)';
+        } else if (p.live_clv != null && p.live_clv > 0) {
+          cardClass = 'card-win';
+          badgeText = `✓ CLV +${p.live_clv}%`;
+          badgeStyle = 'background:rgba(152,195,121,0.2);color:var(--green);border:1px solid rgba(152,195,121,0.4)';
+        } else if (p.live_clv != null && p.live_clv < 0) {
+          cardClass = 'card-loss';
+          badgeText = `⚠ CLV ${p.live_clv}%`;
+          badgeStyle = 'background:rgba(224,108,117,0.2);color:var(--red);border:1px solid rgba(224,108,117,0.4)';
+        }
+
+        const elapsed = p.elapsed_min < 60 ? `${p.elapsed_min}m` : `${Math.floor(p.elapsed_min / 60)}h ${p.elapsed_min % 60}m`;
+        const shortSport = (p.sport || 'Fútbol').slice(0, 8);
+        const shortEvent = (p.event || '—').slice(0, 24);
+        const shortMkt   = (p.selection || p.market || '—').slice(0, 18);
+        const entryStr   = p.entry_odd != null ? `@ ${p.entry_odd.toFixed(2)}` : '—';
+        const currStr    = p.current_odd != null ? `➜ ${p.current_odd.toFixed(2)}` : '';
+
+        return `<div class="matrix-card ${cardClass}" onclick="openPickModal(${p.id})">
+          <div>
+            <div class="mcard-top">
+              <span class="mcard-id">#${p.id}</span>
+              <span class="c-dim">${elapsed}</span>
+              <span class="mcard-sport">${shortSport}</span>
+            </div>
+            <div class="mcard-event">${shortEvent}</div>
+            <div class="mcard-mkt">${shortMkt}</div>
+          </div>
+          <div class="mcard-bottom">
+            <span class="mcard-odd" style="font-size:10px">${entryStr} <span style="color:var(--fg)">${currStr}</span></span>
+            <span class="mcard-badge" style="${badgeStyle}">${badgeText}</span>
+          </div>
+        </div>`;
+      }).join('');
+    }
+  }
 
   if (!tbody) return;
   if (!liveData?.length) {
