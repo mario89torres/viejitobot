@@ -3,363 +3,516 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>PLAYDOIT MONITOR 3.0 // QUANTITATIVE ENGINE</title>
+  <title>playdoit-monitor // dashboard</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg: #07090e;
-      --card-bg: rgba(14, 18, 27, 0.92);
-      --card-border: rgba(255, 255, 255, 0.07);
-      --card-border-glow: rgba(0, 242, 254, 0.25);
-      --text: #e2e8f0;
-      --text-muted: #4a5568;
-      --accent: #00f2fe;
-      --accent-glow: rgba(0, 242, 254, 0.3);
-      --green: #00e676;
-      --red: #ff1744;
-      --yellow: #ffb300;
-      --purple: #b983ff;
+      --bg:         #000000;
+      --bg1:        #0d0d0d;
+      --bg2:        #111111;
+      --border:     #1e1e1e;
+      --border2:    #2a2a2a;
+      --fg:         #d4d4d4;
+      --fg-dim:     #555555;
+      --fg-muted:   #3a3a3a;
+      /* syntax colors */
+      --purple:     #c678dd;
+      --blue:       #61afef;
+      --green:      #98c379;
+      --orange:     #d19a66;
+      --red:        #e06c75;
+      --cyan:       #56b6c2;
+      --yellow:     #e5c07b;
+      --gray:       #5c6370;
     }
+
     * { box-sizing: border-box; margin: 0; padding: 0; }
+
     body {
-      font-family: 'Inter', sans-serif;
+      font-family: 'JetBrains Mono', monospace;
       background: var(--bg);
-      background-image:
-        radial-gradient(at 0% 0%, rgba(0, 242, 254, 0.05) 0px, transparent 50%),
-        radial-gradient(at 100% 100%, rgba(79, 172, 254, 0.04) 0px, transparent 50%);
-      color: var(--text);
-      padding: 28px 20px;
+      color: var(--fg);
+      font-size: 12px;
+      line-height: 1.6;
       min-height: 100vh;
     }
 
-    header {
+    /* ── Top bar ─────────────────────────────────── */
+    .topbar {
       display: flex;
+      align-items: center;
       justify-content: space-between;
-      align-items: center;
-      margin-bottom: 28px;
-      padding-bottom: 18px;
-      border-bottom: 1px solid var(--card-border);
-    }
-    .brand-title {
-      font-size: 18px;
-      font-weight: 800;
-      letter-spacing: 1.5px;
-      color: #fff;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
-    .logo-pulse {
-      width: 9px; height: 9px;
-      background: var(--accent);
-      border-radius: 50%;
-      box-shadow: 0 0 12px var(--accent);
-      animation: pulse 2s infinite;
-    }
-    @keyframes pulse {
-      0% { box-shadow: 0 0 0 0 rgba(0,242,254,0.7); }
-      70% { box-shadow: 0 0 0 8px rgba(0,242,254,0); }
-      100% { box-shadow: 0 0 0 0 rgba(0,242,254,0); }
-    }
-    .subtitle { font-size: 11px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace; text-transform: uppercase; letter-spacing: 1.5px; margin-top: 4px; }
-
-    .badge-status {
-      font-family: 'JetBrains Mono', monospace;
+      padding: 0 20px;
+      height: 36px;
+      background: var(--bg1);
+      border-bottom: 1px solid var(--border);
       font-size: 11px;
-      font-weight: 600;
-      padding: 7px 14px;
-      border-radius: 30px;
-      background: rgba(255,255,255,0.03);
-      border: 1px solid var(--card-border);
-      letter-spacing: 0.5px;
     }
+    .topbar-left { display: flex; align-items: center; gap: 16px; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+    .dot-r { background: #ff5f57; } .dot-y { background: #ffbd2e; } .dot-g { background: #28c941; }
+    .topbar-title { color: var(--fg-dim); letter-spacing: 0.5px; }
+    .topbar-title span { color: var(--fg); }
+    .topbar-right { color: var(--fg-dim); font-size: 10px; }
+    #statusBadge { color: var(--green); }
 
-    .grid-kpi {
+    /* ── Main layout ─────────────────────────────── */
+    .layout {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-      gap: 14px;
-      margin-bottom: 28px;
+      grid-template-columns: 220px 1fr;
+      min-height: calc(100vh - 36px);
     }
-    .card-kpi {
-      background: var(--card-bg);
-      border: 1px solid var(--card-border);
-      border-radius: 12px;
-      padding: 18px 20px;
-      transition: all 0.25s;
-    }
-    .card-kpi:hover { border-color: var(--card-border-glow); transform: translateY(-2px); }
-    .kpi-label { font-size: 10px; font-family: 'JetBrains Mono', monospace; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
-    .kpi-val { font-size: 24px; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: #fff; }
-    .kpi-sub { font-size: 11px; color: var(--text-muted); margin-top: 5px; }
-    .val-cyan { color: var(--accent); text-shadow: 0 0 12px var(--accent-glow); }
-    .val-green { color: var(--green); }
 
-    .grid-charts {
-      display: grid;
-      grid-template-columns: 2fr 1fr;
-      gap: 14px;
-      margin-bottom: 28px;
+    /* ── Sidebar ─────────────────────────────────── */
+    .sidebar {
+      background: var(--bg1);
+      border-right: 1px solid var(--border);
+      padding: 16px 0;
     }
-    @media (max-width: 900px) { .grid-charts { grid-template-columns: 1fr; } }
+    .sidebar-section {
+      padding: 6px 16px 2px;
+      font-size: 10px;
+      color: var(--fg-dim);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-top: 8px;
+    }
+    .kpi-item {
+      padding: 8px 16px;
+      border-left: 2px solid transparent;
+      cursor: default;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .kpi-item:hover { background: var(--bg2); border-left-color: var(--border2); }
+    .kpi-key { color: var(--purple); font-size: 10px; }
+    .kpi-val { font-size: 15px; font-weight: 600; margin-top: 1px; }
+    .kpi-sub { font-size: 10px; color: var(--gray); margin-top: 1px; }
+    .c-green  { color: var(--green); }
+    .c-blue   { color: var(--blue); }
+    .c-orange { color: var(--orange); }
+    .c-red    { color: var(--red); }
+    .c-cyan   { color: var(--cyan); }
+    .c-yellow { color: var(--yellow); }
+    .c-purple { color: var(--purple); }
+    .c-dim    { color: var(--gray); }
 
-    .card-panel {
-      background: var(--card-bg);
-      border: 1px solid var(--card-border);
-      border-radius: 12px;
-      padding: 22px;
-    }
-    .panel-header {
+    .sidebar-divider { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
+
+    /* ── Main content ────────────────────────────── */
+    .main {
       display: flex;
-      justify-content: space-between;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── Tab bar ─────────────────────────────────── */
+    .tabbar {
+      display: flex;
       align-items: center;
-      margin-bottom: 18px;
-      flex-wrap: wrap;
-      gap: 10px;
+      background: var(--bg1);
+      border-bottom: 1px solid var(--border);
+      height: 34px;
+      padding: 0 4px;
+      gap: 2px;
     }
-    .panel-title { font-size: 12px; font-family: 'JetBrains Mono', monospace; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: #fff; }
-
-    .tab-group {
+    .tab {
+      height: 34px;
+      padding: 0 16px;
       display: flex;
+      align-items: center;
       gap: 6px;
-      background: rgba(0,0,0,0.4);
-      padding: 4px;
-      border-radius: 8px;
-      border: 1px solid var(--card-border);
-    }
-    .tab-btn {
+      font-size: 11px;
+      color: var(--fg-dim);
       background: transparent;
       border: none;
-      color: var(--text-muted);
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 11px;
-      font-weight: 600;
-      padding: 7px 14px;
-      border-radius: 5px;
+      border-bottom: 2px solid transparent;
       cursor: pointer;
-      transition: all 0.2s;
       white-space: nowrap;
+      transition: all 0.15s;
     }
-    .tab-btn.active {
-      background: var(--accent);
-      color: #07090e;
-      font-weight: 700;
-      box-shadow: 0 0 10px var(--accent-glow);
+    .tab:hover { color: var(--fg); }
+    .tab.active {
+      color: var(--fg);
+      background: var(--bg);
+      border-bottom-color: var(--blue);
     }
+    .tab .tab-icon { font-size: 10px; }
 
-    /* Scrollable table wrapper */
-    .table-scroll {
-      overflow-x: auto;
-      width: 100%;
+    /* ── Content panels ──────────────────────────── */
+    .panel { display: none; flex: 1; overflow: auto; padding: 20px; }
+    .panel.active { display: block; }
+
+    /* charts row */
+    .charts-row {
+      display: grid;
+      grid-template-columns: 1fr 280px;
+      gap: 16px;
+      margin-bottom: 20px;
     }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 12px;
-      white-space: nowrap;
+    @media (max-width: 1100px) { .charts-row { grid-template-columns: 1fr; } }
+
+    .chart-box {
+      background: var(--bg1);
+      border: 1px solid var(--border);
     }
-    th {
-      font-family: 'JetBrains Mono', monospace;
+    .chart-header {
+      padding: 8px 14px;
+      border-bottom: 1px solid var(--border);
       font-size: 10px;
-      text-transform: uppercase;
-      letter-spacing: 0.8px;
-      color: var(--text-muted);
-      padding: 10px 12px;
+      color: var(--gray);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .chart-header .ch-name { color: var(--blue); }
+    .chart-body { padding: 12px; }
+    canvas { display: block; width: 100% !important; }
+
+    /* ── Table panel ─────────────────────────────── */
+    .tbl-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .tbl-title { font-size: 11px; color: var(--gray); }
+    .tbl-title span { color: var(--yellow); }
+
+    .tbl-wrap {
+      background: var(--bg1);
+      border: 1px solid var(--border);
+      overflow-x: auto;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 11px; white-space: nowrap; }
+    thead tr { border-bottom: 1px solid var(--border); }
+    th {
+      padding: 7px 12px;
       text-align: left;
-      border-bottom: 1px solid rgba(255,255,255,0.06);
+      color: var(--gray);
+      font-size: 10px;
+      font-weight: 500;
+      background: var(--bg1);
       position: sticky;
       top: 0;
-      background: var(--card-bg);
+      z-index: 1;
     }
-    td {
-      padding: 11px 12px;
-      border-bottom: 1px solid rgba(255,255,255,0.03);
-      color: var(--text);
-      vertical-align: middle;
-    }
-    tr:hover td { background: rgba(255,255,255,0.025); }
-    .mono { font-family: 'JetBrains Mono', monospace; }
+    td { padding: 7px 12px; border-bottom: 1px solid var(--border); color: var(--fg); }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: var(--bg2); }
 
-    .tag-win { color: var(--green); font-weight: 700; }
-    .tag-loss { color: var(--red); font-weight: 700; }
-    .tag-push { color: var(--text-muted); }
-    .tag-reason { color: var(--yellow); font-size: 11px; }
+    /* column color semantics */
+    .col-id    { color: var(--gray); }
+    .col-ts    { color: var(--gray); }
+    .col-event { color: var(--fg); max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
+    .col-sport { color: var(--cyan); }
+    .col-mkt   { color: var(--yellow); max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+    .col-odd   { color: var(--orange); }
+    .col-conf  { color: var(--blue); }
+    .col-ml    { color: var(--purple); }
+    .col-edge  { color: var(--yellow); }
+    .col-stake { color: var(--fg); font-weight: 600; }
 
-    /* Feature badges */
-    .feat-bar {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      background: rgba(255,255,255,0.05);
-      border: 1px solid rgba(255,255,255,0.1);
-      border-radius: 4px;
-      padding: 2px 6px;
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 10px;
-    }
-    .feat-bar .bar {
-      height: 6px;
-      border-radius: 2px;
-      background: var(--accent);
-    }
+    /* result tags */
+    .tag-win  { color: var(--green); }
+    .tag-loss { color: var(--red); }
+    .tag-push { color: var(--gray); }
 
-    .badge-loss-min {
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 10px;
-      background: rgba(255,23,68,0.15);
-      color: var(--red);
-      border: 1px solid rgba(255,23,68,0.4);
-      padding: 2px 5px;
-      border-radius: 4px;
-      margin-left: 5px;
-      display: inline-block;
-    }
-    .badge-engine {
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 9px;
-      padding: 2px 5px;
-      border-radius: 4px;
-      font-weight: 700;
-    }
-    .engine-ml { background: rgba(185,131,255,0.15); color: var(--purple); border: 1px solid rgba(185,131,255,0.3); }
-    .engine-h { background: rgba(0,242,254,0.1); color: var(--accent); border: 1px solid rgba(0,242,254,0.25); }
+    /* engine badge */
+    .eng { font-size: 9px; padding: 1px 5px; border-radius: 2px; font-weight: 700; }
+    .eng-ml { background: rgba(198,120,221,0.15); color: var(--purple); border: 1px solid rgba(198,120,221,0.3); }
+    .eng-h  { background: rgba(97,175,239,0.1);  color: var(--blue);   border: 1px solid rgba(97,175,239,0.25); }
 
+    /* mini bar */
+    .mbar { display: inline-flex; align-items: center; gap: 5px; }
+    .mbar-track { width: 40px; height: 3px; background: var(--border2); border-radius: 2px; }
+    .mbar-fill  { height: 3px; border-radius: 2px; }
+    .mbar-num   { color: var(--gray); font-size: 10px; min-width: 26px; }
+
+    /* loss minute badge */
+    .min-badge { font-size: 9px; color: var(--red); border: 1px solid rgba(224,108,117,0.35); padding: 1px 4px; border-radius: 2px; margin-left: 4px; }
+
+    /* CLV */
     .clv-pos { color: var(--green); }
     .clv-neg { color: var(--red); }
 
-    canvas { width: 100% !important; display: block; }
+    /* reason */
+    .reason { color: var(--orange); }
+
+    /* empty state */
+    .empty-row td { color: var(--fg-dim); text-align: center; padding: 30px; font-style: italic; }
+
+    /* prompt line */
+    .prompt { color: var(--gray); }
+    .prompt::before { content: '$ '; color: var(--green); }
+
+    /* ── Live tracking ── */
+    .dir-up   { color: var(--red);    font-size: 11px; } /* cuota sube = valor baja para nosotros */
+    .dir-down { color: var(--green);  font-size: 11px; } /* cuota baja = valor sube */
+    .dir-stbl { color: var(--gray);   font-size: 11px; }
+
+    .live-clv-pos { color: var(--green); font-weight: 600; }
+    .live-clv-neg { color: var(--red);   font-weight: 600; }
+
+    .alert-badge {
+      font-size: 9px; padding: 2px 5px; border-radius: 2px; font-weight: 700;
+      letter-spacing: 0.3px;
+    }
+    .alert-suspended { background: rgba(229,192,123,0.15); color: var(--yellow); border: 1px solid rgba(229,192,123,0.4); }
+    .alert-against   { background: rgba(224,108,117,0.15); color: var(--red);    border: 1px solid rgba(224,108,117,0.4); }
+    .alert-for       { background: rgba(152,195,121,0.15); color: var(--green);  border: 1px solid rgba(152,195,121,0.4); }
+    .alert-ok        { color: var(--gray); font-size: 9px; }
+
+    .live-dot {
+      display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+      background: var(--red); margin-right: 4px;
+      animation: livepulse 1.4s ease-in-out infinite;
+    }
+    @keyframes livepulse {
+      0%,100% { opacity: 1; } 50% { opacity: 0.3; }
+    }
+
+    .snap-count { color: var(--gray); font-size: 10px; }
+    canvas.sparkline { display: inline-block !important; width: 70px !important; height: 22px !important; vertical-align: middle; }
   </style>
 </head>
 <body>
 
-  <header>
-    <div>
-      <div class="brand-title">
-        <div class="logo-pulse"></div>
-        PLAYDOIT MONITOR 3.0
+  <!-- Top bar -->
+  <div class="topbar">
+    <div class="topbar-left">
+      <div>
+        <span class="dot dot-r"></span>&nbsp;
+        <span class="dot dot-y"></span>&nbsp;
+        <span class="dot dot-g"></span>
       </div>
-      <div class="subtitle">Quantitative Engine // MLOps Analytics Dashboard</div>
-    </div>
-    <div id="healthBadge" class="badge-status">INITIALIZING...</div>
-  </header>
-
-  <!-- KPI Cards -->
-  <section class="grid-kpi">
-    <div class="card-kpi">
-      <div class="kpi-label">ROI Global Acumulado</div>
-      <div class="kpi-val val-green" id="kpiRoi">—</div>
-      <div class="kpi-sub" id="kpiProfit">—</div>
-    </div>
-    <div class="card-kpi">
-      <div class="kpi-label">Win Rate</div>
-      <div class="kpi-val" id="kpiWr">—</div>
-      <div class="kpi-sub" id="kpiWins">—</div>
-    </div>
-    <div class="card-kpi">
-      <div class="kpi-label">Brier Score (OOS)</div>
-      <div class="kpi-val val-cyan" id="kpiBrier">—</div>
-      <div class="kpi-sub">Precisión estocástica</div>
-    </div>
-    <div class="card-kpi">
-      <div class="kpi-label">ECE Calibración</div>
-      <div class="kpi-val" id="kpiEce">—</div>
-      <div class="kpi-sub">Límite saludable &lt; 5%</div>
-    </div>
-    <div class="card-kpi">
-      <div class="kpi-label">Unidades Salvadas</div>
-      <div class="kpi-val val-green" id="kpiSavedUnits">—</div>
-      <div class="kpi-sub" id="kpiLossesAvoided">—</div>
-    </div>
-  </section>
-
-  <!-- Charts -->
-  <section class="grid-charts">
-    <div class="card-panel">
-      <div class="panel-header">
-        <div class="panel-title">Curva de Banca Acumulada (Unidades)</div>
-      </div>
-      <canvas id="chartEquity" height="160"></canvas>
-    </div>
-    <div class="card-panel">
-      <div class="panel-header">
-        <div class="panel-title">Rendimiento por Deporte</div>
-      </div>
-      <canvas id="chartSports" height="160"></canvas>
-    </div>
-  </section>
-
-  <!-- Picks Table -->
-  <section class="card-panel">
-    <div class="panel-header">
-      <div class="panel-title" id="tableTitle">⚡ ÚLTIMOS 50 PICKS EMITIDOS — FEATURES COMPLETOS</div>
-      <div class="tab-group">
-        <button class="tab-btn active" id="btnTabAccepted" onclick="switchTab('accepted')">⚡ Emitidos (50)</button>
-        <button class="tab-btn" id="btnTabRejected" onclick="switchTab('rejected')">🛡️ Descartados</button>
+      <div class="topbar-title">
+        <span>playdoit-monitor</span> // dashboard v3.0
       </div>
     </div>
-
-    <!-- Accepted -->
-    <div id="viewAccepted" style="display:block;">
-      <div class="table-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>#ID</th>
-              <th>Fecha</th>
-              <th>Evento</th>
-              <th>Deporte</th>
-              <th>Mercado / Selección</th>
-              <th>Motor</th>
-              <th>Momio</th>
-              <th>Apertura</th>
-              <th>CLV</th>
-              <th>Conf Total</th>
-              <th>Conf Heur.</th>
-              <th>Conf ML</th>
-              <th>Edge</th>
-              <th>f_prob_justa</th>
-              <th>f_avance</th>
-              <th>f_situacion</th>
-              <th>f_linea</th>
-              <th>f_apertura</th>
-              <th>Stake</th>
-              <th>Modo</th>
-              <th>Resultado / Min Pérdida</th>
-            </tr>
-          </thead>
-          <tbody id="tbodyAccepted">
-            <tr><td colspan="21" style="text-align:center;color:var(--text-muted);padding:30px;">Cargando picks...</td></tr>
-          </tbody>
-        </table>
-      </div>
+    <div class="topbar-right">
+      <span id="statusBadge">● connecting...</span>
+      &nbsp;&nbsp;
+      <span id="lastUpdate" style="color:var(--gray)"></span>
     </div>
+  </div>
 
-    <!-- Rejected -->
-    <div id="viewRejected" style="display:none;">
-      <div class="table-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>#ID</th>
-              <th>Fecha</th>
-              <th>Evento</th>
-              <th>Deporte</th>
-              <th>Mercado / Selección</th>
-              <th>Momio</th>
-              <th>Stake</th>
-              <th>Motivo Exclusión</th>
-              <th>Resolución Real / Min Pérdida</th>
-            </tr>
-          </thead>
-          <tbody id="tbodyRejected">
-            <tr><td colspan="9" style="text-align:center;color:var(--text-muted);padding:30px;">Cargando...</td></tr>
-          </tbody>
-        </table>
+  <div class="layout">
+
+    <!-- Sidebar: KPIs as variables -->
+    <aside class="sidebar">
+      <div class="sidebar-section">// performance</div>
+
+      <div class="kpi-item">
+        <div class="kpi-key">roi</div>
+        <div class="kpi-val c-green" id="kpiRoi">—</div>
+        <div class="kpi-sub" id="kpiProfit">—</div>
       </div>
-    </div>
-  </section>
 
-  <script src="app.js?v=5.0"></script>
+      <div class="kpi-item">
+        <div class="kpi-key">win_rate</div>
+        <div class="kpi-val c-blue" id="kpiWr">—</div>
+        <div class="kpi-sub" id="kpiWins">—</div>
+      </div>
+
+      <div class="kpi-item">
+        <div class="kpi-key">total_picks</div>
+        <div class="kpi-val c-orange" id="kpiN">—</div>
+        <div class="kpi-sub">resueltos</div>
+      </div>
+
+      <hr class="sidebar-divider">
+      <div class="sidebar-section">// model health</div>
+
+      <div class="kpi-item">
+        <div class="kpi-key">brier_score</div>
+        <div class="kpi-val c-cyan" id="kpiBrier">—</div>
+        <div class="kpi-sub">↓ mejor calibración</div>
+      </div>
+
+      <div class="kpi-item">
+        <div class="kpi-key">ece</div>
+        <div class="kpi-val" id="kpiEce">—</div>
+        <div class="kpi-sub">target &lt; 5%</div>
+      </div>
+
+      <div class="kpi-item">
+        <div class="kpi-key">log_loss</div>
+        <div class="kpi-val c-purple" id="kpiLogLoss">—</div>
+        <div class="kpi-sub">—</div>
+      </div>
+
+      <hr class="sidebar-divider">
+      <div class="sidebar-section">// filter layer</div>
+
+      <div class="kpi-item">
+        <div class="kpi-key">units_saved</div>
+        <div class="kpi-val c-green" id="kpiSaved">—</div>
+        <div class="kpi-sub" id="kpiLossesAvoided">—</div>
+      </div>
+    </aside>
+
+    <!-- Main -->
+    <main class="main">
+
+      <!-- Tab bar -->
+      <div class="tabbar">
+        <button class="tab active" id="btnCharts"  onclick="openTab('charts')">
+          <span class="tab-icon">◈</span> charts
+        </button>
+        <button class="tab" id="btnPicks"   onclick="openTab('picks')">
+          <span class="tab-icon">⚡</span> emitidos <span style="color:var(--gray)" id="cntAccepted"></span>
+        </button>
+        <button class="tab" id="btnRejected" onclick="openTab('rejected')">
+          <span class="tab-icon">🛡</span> descartados <span style="color:var(--gray)" id="cntRejected"></span>
+        </button>
+        <button class="tab" id="btnLive" onclick="openTab('live')">
+          <span class="tab-icon" style="color:var(--red)">●</span> live tracking <span style="color:var(--gray)" id="cntLive"></span>
+        </button>
+      </div>
+
+      <!-- Panel: Charts -->
+      <div class="panel active" id="panelCharts">
+        <div class="charts-row">
+          <div class="chart-box">
+            <div class="chart-header">
+              <span class="ch-name">equity_curve</span>
+              <span>// unidades acumuladas por día</span>
+            </div>
+            <div class="chart-body">
+              <canvas id="chartEquity" height="160"></canvas>
+            </div>
+          </div>
+          <div class="chart-box">
+            <div class="chart-header">
+              <span class="ch-name">by_sport</span>
+              <span>// profit (u)</span>
+            </div>
+            <div class="chart-body">
+              <canvas id="chartSports" height="160"></canvas>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Panel: Accepted picks -->
+      <div class="panel" id="panelPicks">
+        <div class="tbl-header">
+          <div class="tbl-title">
+            <span>picks.accepted</span>
+            // últimos 50 · todos los features
+          </div>
+        </div>
+        <div class="tbl-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>id</th>
+                <th>fecha</th>
+                <th>evento</th>
+                <th>deporte</th>
+                <th>mercado · selección</th>
+                <th>eng</th>
+                <th>momio</th>
+                <th>apertura</th>
+                <th>clv</th>
+                <th>conf</th>
+                <th>heur</th>
+                <th>ml</th>
+                <th>edge</th>
+                <th>f_prob</th>
+                <th>f_av</th>
+                <th>f_sit</th>
+                <th>f_lin</th>
+                <th>f_ap</th>
+                <th>stake</th>
+                <th>modo</th>
+                <th>resultado</th>
+              </tr>
+            </thead>
+            <tbody id="tbodyPicks">
+              <tr class="empty-row"><td colspan="21">cargando...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Panel: Rejected picks -->
+      <div class="panel" id="panelRejected">
+        <div class="tbl-header">
+          <div class="tbl-title">
+            <span>picks.rejected</span>
+            // bloqueados por la doble capa
+          </div>
+        </div>
+        <div class="tbl-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>id</th>
+                <th>fecha</th>
+                <th>evento</th>
+                <th>deporte</th>
+                <th>mercado · selección</th>
+                <th>momio</th>
+                <th>stake</th>
+                <th>motivo</th>
+                <th>resolución</th>
+              </tr>
+            </thead>
+            <tbody id="tbodyRejected">
+              <tr class="empty-row"><td colspan="9">cargando...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Panel: Live Tracking -->
+      <div class="panel" id="panelLive">
+        <div class="tbl-header">
+          <div class="tbl-title">
+            <span style="color:var(--red)">picks.live</span>
+            // pendientes · odds en tiempo real · auto-refresh 30s
+          </div>
+          <div style="display:flex;align-items:center;gap:12px;font-size:10px;color:var(--gray)">
+            <span>última sync: <span id="liveLastSync">—</span></span>
+            <button onclick="refreshLive()" style="background:var(--bg2);border:1px solid var(--border2);color:var(--fg);padding:3px 10px;border-radius:2px;cursor:pointer;font-family:inherit;font-size:10px">↻ refresh</button>
+          </div>
+        </div>
+        <div class="tbl-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>id</th>
+                <th>emitido hace</th>
+                <th>evento</th>
+                <th>deporte</th>
+                <th>mercado · selección</th>
+                <th>entry odd</th>
+                <th>cuota actual</th>
+                <th>Δ mvmt</th>
+                <th>live clv</th>
+                <th>drift total</th>
+                <th>sparkline</th>
+                <th>snaps</th>
+                <th>conf</th>
+                <th>edge</th>
+                <th>stake</th>
+                <th>estado</th>
+              </tr>
+            </thead>
+            <tbody id="tbodyLive">
+              <tr class="empty-row"><td colspan="16">cargando picks pendientes...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <script src="app.js?v=7.0"></script>
 </body>
 </html>

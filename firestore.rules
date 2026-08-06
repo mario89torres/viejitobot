@@ -1,0 +1,10 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Dashboard data — solo lectura pública, escritura solo desde admin SDK
+    match /dashboard/{document} {
+      allow read: if true;
+      allow write: if false; // Solo el bot local con serviceAccountKey puede escribir
+    }
+  }
+}

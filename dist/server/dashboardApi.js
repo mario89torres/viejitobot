@@ -156,6 +156,84 @@ function createDashboardServer(port = 3001) {
                 }));
                 return;
             }
+            // 4. API Live — picks pendientes con tracking de cuota en tiempo real
+            if (url === '/api/live') {
+                res.setHeader('Content-Type', 'application/json; charset=utf-8');
+                // Picks emitidos sin resultado aún
+                const pending = db.prepare(`
+          SELECT p.id, p.ts, p.event_id, p.event, p.sport, p.market, p.selection,
+                 p.odd_decimal   AS entry_odd,
+                 p.opening_odd_decimal,
+                 p.conf, p.conf_heuristic, p.conf_learned,
+                 p.edge, p.stake, p.stake_mode, p.score_version,
+                 p.f_prob_justa, p.f_avance, p.f_situacion, p.f_linea, p.f_apertura
+          FROM picks p
+          WHERE p.stake IS NOT NULL
+            AND (p.result IS NULL OR p.result NOT IN ('win','loss','push'))
+          ORDER BY p.ts DESC
+          LIMIT 50
+        `).all();
+                const live = pending.map((p) => {
+                    // Historial de cuotas de los últimos 60 snapshots
+                    const history = db.prepare(`
+            SELECT odd_decimal, ts, suspended
+            FROM snapshots
+            WHERE event_id = ? AND market = ? AND selection = ?
+            ORDER BY ts DESC
+            LIMIT 60
+          `).all(p.event_id, p.market, p.selection);
+                    const activeHistory = history.filter((s) => !s.suspended);
+                    const currentOdd = activeHistory.length > 0 ? activeHistory[0].odd_decimal : null;
+                    const prevOdd = activeHistory.length > 1 ? activeHistory[1].odd_decimal : null;
+                    const oldestOdd = activeHistory.length > 0 ? activeHistory.at(-1).odd_decimal : null;
+                    // Dirección del último movimiento
+                    let direction = 'stable';
+                    if (currentOdd != null && prevOdd != null) {
+                        if (currentOdd > prevOdd + 0.005)
+                            direction = 'up';
+                        else if (currentOdd < prevOdd - 0.005)
+                            direction = 'down';
+                    }
+                    // Live CLV = (entry_odd - current_odd) / entry_odd * 100
+                    // Positivo = la línea se movió EN CONTRA nuestra posición (favorable para nosotros si apostamos Under/Over)
+                    const liveCLV = (currentOdd != null && p.entry_odd != null)
+                        ? Number(((p.entry_odd - currentOdd) / p.entry_odd * 100).toFixed(2))
+                        : null;
+                    // Drift total desde el inicio (% cambio apertura→actual)
+                    const totalDrift = (currentOdd != null && oldestOdd != null && oldestOdd > 0)
+                        ? Number(((currentOdd - oldestOdd) / oldestOdd * 100).toFixed(2))
+                        : null;
+                    // Tiempo transcurrido desde emisión
+                    const elapsedMs = Date.now() - new Date(p.ts).getTime();
+                    const elapsedMin = Math.floor(elapsedMs / 60000);
+                    // ¿Cuota suspendida? Puede indicar inicio de partido o resolución
+                    const isSuspended = history.length > 0 && history[0].suspended === 1;
+                    // Señal de alerta: movimiento brusco > 5% en últimos snapshots
+                    let alertSignal = null;
+                    if (liveCLV !== null && Math.abs(liveCLV) > 5) {
+                        alertSignal = liveCLV > 0 ? 'LINE_MOVED_AGAINST_US' : 'LINE_MOVED_FOR_US';
+                    }
+                    if (isSuspended)
+                        alertSignal = 'SUSPENDED';
+                    return {
+                        ...p,
+                        current_odd: currentOdd,
+                        prev_odd: prevOdd,
+                        direction,
+                        live_clv: liveCLV,
+                        total_drift: totalDrift,
+                        elapsed_min: elapsedMin,
+                        snapshot_count: history.length,
+                        is_suspended: isSuspended,
+                        alert: alertSignal,
+                        // Mini-historial de cuotas para sparkline (últimos 20)
+                        sparkline: activeHistory.slice(0, 20).reverse().map((s) => s.odd_decimal),
+                    };
+                });
+                res.writeHead(200);
+                res.end(JSON.stringify({ count: live.length, live }));
+                return;
+            }
             // 4. Archivos Estáticos del Dashboard
             // Limpiar query string (?v=x) del URL antes de buscar el archivo
             const cleanUrl = (url === '/' ? 'index.html' : url.split('?')[0]);
