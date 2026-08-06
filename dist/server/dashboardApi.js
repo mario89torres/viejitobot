@@ -213,8 +213,8 @@ function createDashboardServer(port = 3001) {
                     if (currentOdd != null && p.entry_odd != null) {
                         const dropRatio = (p.entry_odd - currentOdd) / p.entry_odd;
                         const spikeRatio = currentOdd / p.entry_odd;
-                        // PROFIT LOCK: Cuota cayó 30%+ a nuestro favor (ej: 1.70 -> 1.10 = +54.5% profit)
-                        if (dropRatio >= 0.30) {
+                        // PROFIT LOCK: Cuota cayó 15%+ a nuestro favor (ej: 1.50 -> 1.25 = +20% profit)
+                        if (dropRatio >= 0.15 || (liveCLV || 0) >= 15) {
                             alertSignal = 'PROFIT_LOCK';
                             lockedProfitPct = Number(((p.entry_odd - currentOdd) / currentOdd * 100).toFixed(1));
                         }
@@ -319,7 +319,7 @@ function createDashboardServer(port = 3001) {
                     recommendation = `🎯 SEÑAL EMPATE ESTRUCTURAL: La cuota entró en una meseta horizontal ultrastable (Varianza ${drawSignal.variance} en 20+ snaps). El partido entró en equilibrio táctico definitivo. Alta probabilidad de Empate / Under.`;
                     recColor = '#56b6c2'; // cyan
                 }
-                else if (mfePeakRoi >= 30 && pick.result !== 'win') {
+                else if (mfePeakRoi >= 15 && pick.result !== 'win') {
                     trajectory = '⚡ PROFIT LOCK ALCANZADO';
                     recommendation = `⚡ LOCK PROFIT / CASHOUT: Este pick alcanzó un pico máximo de ganancia de +${mfePeakRoi}% (cuota cayó a @${minOdd.toFixed(2)}). Recomendado asegurar ganancia.`;
                     recColor = '#e5c07b'; // oro
