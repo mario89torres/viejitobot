@@ -246,6 +246,16 @@ export function createDashboardServer(port = 3001) {
         return;
       }
 
+      // 4.b API Global Draws (Minuto 75+ — Universo completo de partidos de fútbol con Empate Estructural)
+      if (url === '/api/global-draws') {
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        const { scanGlobalDraws75 } = require(path.join(__dirname, '..', 'globalDrawScanner'));
+        const draws = scanGlobalDraws75();
+        res.writeHead(200);
+        res.end(JSON.stringify({ count: draws.length, draws }));
+        return;
+      }
+
       // 5. API Pick Timeline — Detalle de snapshots e historial completo de un pick específico
       if (url.startsWith('/api/pick-timeline')) {
         res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -406,8 +416,14 @@ export function createDashboardServer(port = 3001) {
 
     if (token && chatId) {
       const { sendProfitLockAlert, sendStructuralDrawAlert, sendSniperAlert } = require(path.join(__dirname, '..', 'telegram'));
+      const { checkAndBroadcastGlobalDraws } = require(path.join(__dirname, '..', 'globalDrawScanner'));
+
       setInterval(async () => {
         try {
+          // 1. Escanear todo el universo de partidos de fútbol en min 75+ (Global Draw Scanner)
+          await checkAndBroadcastGlobalDraws(token, chatId);
+
+          // 2. Escanear picks en desarrollo para Profit Lock / Sniper
           const liveRes: any = await fetch(`http://localhost:${port}/api/live`).then(r => r.json());
           if (!liveRes?.live) return;
 
