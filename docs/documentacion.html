@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Playdoit Monitor — Documentación Técnica</title>
+<style>
+  @page { size: A4; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Segoe UI", Arial, sans-serif;
+    color: #1a1a2e;
+    margin: 0;
+    font-size: 10.5pt;
+    line-height: 1.55;
+  }
+  p, li { text-align: justify; }
+  /* ---------- Contenido ---------- */
+  .page { padding: 0 22mm; }
+  h2 {
+    color: #0f1b3d;
+    font-size: 15pt;
+    border-bottom: 2.5px solid #b3122f;
+    padding-bottom: 2mm;
+    margin-top: 9mm;
+    page-break-after: avoid;
+  }
+  h3 { color: #1a2f5e; font-size: 12pt; margin-top: 6mm; page-break-after: avoid; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 4mm 0;
+    font-size: 9.5pt;
+    page-break-inside: auto;
+  }
+  tr { page-break-inside: avoid; }
+  thead { display: table-header-group; }
+  th {
+    background: #0f1b3d;
+    color: #fff;
+    text-align: left;
+    padding: 2.2mm 3mm;
+    font-weight: 600;
+  }
+  td { padding: 2mm 3mm; border-bottom: 1px solid #d5d9e4; vertical-align: top; text-align: justify; }
+  tr:nth-child(even) td { background: #f3f5fa; }
+  code, pre {
+    font-family: "Consolas", monospace;
+    background: #eef1f7;
+    border-radius: 3px;
+  }
+  code { padding: 0.5mm 1.5mm; font-size: 9pt; }
+  pre {
+    padding: 4mm;
+    font-size: 8.5pt;
+    line-height: 1.45;
+    border-left: 3px solid #b3122f;
+    white-space: pre-wrap;
+    page-break-inside: avoid;
+  }
+  .notice {
+    background: #fdf0f2;
+    border-left: 4px solid #b3122f;
+    padding: 4mm 5mm;
+    margin: 5mm 0;
+    font-size: 9.5pt;
+  }
+  .formula {
+    background: #0f1b3d;
+    color: #fff;
+    text-align: center;
+    padding: 5mm;
+    font-family: "Consolas", monospace;
+    font-size: 11pt;
+    border-radius: 4px;
+    margin: 5mm 0;
+  }
+  .toc td { border-bottom: 1px dotted #aab; }
+  .footer-note { font-size: 8.5pt; color: #667; margin-top: 8mm; border-top: 1px solid #ccd; padding-top: 3mm; }
+</style>
+</head>
+<body>
+
+<div class="page">
+
+<h2>1. Resumen ejecutivo</h2>
+<p>Playdoit Monitor es un sistema automatizado que recolecta, normaliza, almacena y analiza los momios de eventos deportivos en vivo publicados en Playdoit.mx, entregando los resultados mediante un bot interactivo de Telegram. El sistema consume directamente la API JSON del proveedor del sportsbook (Altenar), lo que permite ciclos completos de recolección en aproximadamente siete segundos, sin necesidad de un navegador automatizado, con mayor estabilidad y con los momios entregados nativamente en formato decimal.</p>
+<p>Además de los listados ordenados por momio, el sistema incorpora un algoritmo de índice de confianza que combina la probabilidad implícita depurada del margen de la casa, el avance del juego, la situación del marcador interpretada según el tipo de mercado y la tendencia histórica de la línea, así como un módulo de backtesting que registra y liquida automáticamente las selecciones emitidas para medir su tasa de acierto real.</p>
+
+<div class="notice"><strong>Aviso legal.</strong> Este sistema consume de forma automatizada la API del sportsbook utilizado por Playdoit.mx, lo cual puede contravenir los términos de servicio del sitio. Su uso es bajo responsabilidad del operador, con intervalos de consulta moderados. Este documento y el sistema descrito no constituyen consejo de apuestas ni garantía de resultados.</div>
+
+<h2>2. Arquitectura general</h2>
+<p>El sistema se organiza en seis capas desacopladas, cada una implementada en un módulo independiente:</p>
+<table>
+  <thead><tr><th>Capa</th><th>Módulo</th><th>Responsabilidad</th></tr></thead>
+  <tr><td>Recolección</td><td><code>src/fetcher.js</code></td><td>Descarga el panorama en vivo de todos los deportes desde la API de Altenar, con reintentos con retroceso exponencial y pausa de 500 ms entre deportes.</td></tr>
+  <tr><td>Normalización</td><td><code>src/normalize.js</code></td><td>Aplana la estructura eventos–mercados–momios a filas homogéneas; calcula el momio americano, la probabilidad justa sin margen, el minuto de juego y el número de set.</td></tr>
+  <tr><td>Almacenamiento</td><td><code>src/db.js</code></td><td>Base SQLite (<code>snapshots.db</code>) con las tablas <code>snapshots</code> (histórico de momios) y <code>picks</code> (registro y liquidación de selecciones).</td></tr>
+  <tr><td>Análisis</td><td><code>src/analyze.js</code>, <code>src/confidence.js</code>, <code>src/markets.js</code></td><td>Ordenamiento por momio con filtros, algoritmo de índice de confianza y motor de interpretación y calificación de mercados.</td></tr>
+  <tr><td>Orquestación</td><td><code>bot.js</code></td><td>Bot de Telegram por long-polling, recolector de fondo periódico y liquidación automática de picks.</td></tr>
+  <tr><td>Notificación</td><td><code>src/telegram.js</code></td><td>Composición y envío de mensajes HTML a través de la API de Telegram, restringido a un único chat autorizado.</td></tr>
+</table>
+<p>Existe además un modo alternativo (<code>index.js</code>) que envía el top de jugadas por intervalos fijos de tiempo, útil como respaldo o para pruebas con la opción <code>--once</code>.</p>
+
+<h2>3. Fuente de datos</h2>
+<p>Durante la fase de exploración se identificó que Playdoit.mx opera su sección deportiva mediante el proveedor Altenar, cuyo frontend consulta la API pública <code>sb2frontend-altenar2.biahosted.com</code>. El sistema replica dichas consultas con los encabezados apropiados (<code>User-Agent</code> de navegador, <code>Referer</code> y <code>Origin</code> del sitio), utilizando el endpoint <code>GetLiveOverview</code> de manera global para enumerar los deportes activos y de manera individual por deporte para obtener eventos, mercados, momios, marcadores y minuto o parte en curso.</p>
+<p>Este enfoque sustituye el raspado del DOM con navegador sin cabeza, reduciendo el tiempo de ciclo de decenas de segundos a aproximadamente siete, eliminando la fragilidad ante cambios visuales del sitio y entregando los momios ya en formato decimal.</p>
+
+<h2>4. Instalación y configuración</h2>
+<p>Requisito: Node.js 18 o superior (el sistema utiliza <code>fetch</code> nativo). Instalación de dependencias:</p>
+<pre>npm install</pre>
+<p>La configuración se define en el archivo <code>.env</code>:</p>
+<table>
+  <thead><tr><th>Variable</th><th>Descripción</th><th>Valor por defecto</th></tr></thead>
+  <tr><td><code>TELEGRAM_BOT_TOKEN</code></td><td>Token del bot emitido por @BotFather.</td><td>—</td></tr>
+  <tr><td><code>TELEGRAM_CHAT_ID</code></td><td>Identificador del chat autorizado; el resto de chats se ignora.</td><td>—</td></tr>
+  <tr><td><code>SAMPLE_MINUTES</code></td><td>Frecuencia del recolector de fondo.</td><td>3</td></tr>
+  <tr><td><code>INTERVAL_MINUTES</code></td><td>Intervalo del modo de envío periódico (<code>index.js</code>).</td><td>10</td></tr>
+  <tr><td><code>TOP_N</code></td><td>Tamaño del listado por defecto.</td><td>10</td></tr>
+  <tr><td><code>MIN_ODDS</code> / <code>MAX_ODDS</code></td><td>Rango de momios decimales admitido.</td><td>1.05 / 100</td></tr>
+  <tr><td><code>EXCLUDE_SPORTS</code></td><td>Deportes excluidos globalmente, separados por coma.</td><td>vacío</td></tr>
+</table>
+<p>Ejecución:</p>
+<pre>node bot.js          # modo principal: bot interactivo + recolector de fondo
+node index.js        # modo alternativo: envío por intervalos
+node index.js --once # ciclo único de prueba</pre>
+
+<h2>5. Comandos del bot de Telegram</h2>
+<table>
+  <thead><tr><th>Comando</th><th>Descripción</th></tr></thead>
+  <tr><td><code>/top</code></td><td>Diez momios decimales más bajos entre todos los deportes en vivo.</td></tr>
+  <tr><td><code>/top 5</code></td><td>Limita el listado a N jugadas (máximo 25).</td></tr>
+  <tr><td><code>/top futbol</code></td><td>Filtra por deporte, con búsqueda parcial e insensible a acentos.</td></tr>
+  <tr><td><code>/top 1.5-3</code></td><td>Restringe el rango de momios decimales.</td></tr>
+  <tr><td><code>/top futbol +60</code></td><td>Solo partidos con sesenta o más minutos disputados.</td></tr>
+  <tr><td><code>/top tenis s2</code></td><td>Solo partidos en el segundo set (o parte/cuarto) en adelante.</td></tr>
+  <tr><td><code>/top 5 futbol +75 1.2-3</code></td><td>Todos los filtros anteriores son combinables entre sí.</td></tr>
+  <tr><td><code>/seguras</code></td><td>Tres jugadas con mayor índice de confianza; e-sports excluidos por defecto.</td></tr>
+  <tr><td><code>/seguras futbol</code></td><td>Variante filtrada por deporte; permite solicitar e-sports explícitamente.</td></tr>
+  <tr><td><code>/stats</code></td><td>Tasa de acierto histórica de <code>/seguras</code> por nivel de confianza.</td></tr>
+  <tr><td><code>/deportes</code></td><td>Deportes en vivo con conteo de eventos y jugadas disponibles.</td></tr>
+  <tr><td><code>/help</code></td><td>Resumen de comandos.</td></tr>
+</table>
+
+<h2>6. Algoritmo de índice de confianza</h2>
+<p>Cada jugada candidata, con momio decimal entre 1.05 y 3.00, recibe un índice de confianza en el intervalo [0, 1] calculado como combinación ponderada de cuatro factores:</p>
+<div class="formula">conf = 0.45·probJusta + 0.20·avance + 0.20·situación + 0.15·línea</div>
+<table>
+  <thead><tr><th>Factor</th><th>Peso</th><th>Método de cálculo</th></tr></thead>
+  <tr><td>Probabilidad justa</td><td>45%</td><td>Probabilidad implícita del momio normalizada dentro de su mercado, <code>(1/momio) / Σ(1/momios)</code>, eliminando así el margen de la casa (vig), que infla las probabilidades entre cinco y ocho puntos porcentuales.</td></tr>
+  <tr><td>Avance del juego</td><td>20%</td><td>Proporción del juego transcurrido: minuto entre duración reglamentaria, o set actual entre sets totales, con parámetros específicos por deporte. A menor tiempo restante, mayor certeza del estado actual.</td></tr>
+  <tr><td>Situación del juego</td><td>20%</td><td>Evaluación del marcador actual interpretada según el tipo de mercado de la selección (véase la sección 6.1).</td></tr>
+  <tr><td>Tendencia de línea</td><td>15%</td><td>Sobre todos los snapshots de la última hora: pendiente relativa del momio (línea descendente indica mayor confianza del mercado) menos una penalización por volatilidad (línea oscilante indica incertidumbre).</td></tr>
+</table>
+
+<h3>6.1 Evaluación de la situación por tipo de mercado</h3>
+<table>
+  <thead><tr><th>Mercado</th><th>Criterio de evaluación en vivo</th></tr></thead>
+  <tr><td>Ganador / 1x2</td><td>Ventaja del marcador a favor de la selección, normalizada por el margen decisivo del deporte.</td></tr>
+  <tr><td>Empate</td><td>Favorable en proporción inversa a la diferencia actual del marcador.</td></tr>
+  <tr><td>Doble oportunidad</td><td>Mide exclusivamente el riesgo del resultado no cubierto por la selección.</td></tr>
+  <tr><td>Hándicap</td><td>Aplica el hándicap contratado al marcador vigente.</td></tr>
+  <tr><td>Total (Más/Menos)</td><td>Proyecta el ritmo de anotación al final del encuentro y lo compara con la línea; si la línea ya fue superada, la jugada se considera ganada (Más) o descartada (Menos).</td></tr>
+  <tr><td>Ambos marcan</td><td>Detecta si la condición ya se cumplió; en caso contrario pondera el tiempo restante.</td></tr>
+</table>
+
+<h3>6.2 Parámetros por deporte</h3>
+<table>
+  <thead><tr><th>Deporte</th><th>Duración</th><th>Margen decisivo</th><th>Sets</th></tr></thead>
+  <tr><td>Fútbol</td><td>90 min</td><td>2 goles</td><td>—</td></tr>
+  <tr><td>Fútbol Rápido</td><td>40 min</td><td>2 goles</td><td>—</td></tr>
+  <tr><td>Baloncesto</td><td>48 min</td><td>12 puntos</td><td>—</td></tr>
+  <tr><td>Hockey</td><td>60 min</td><td>2 goles</td><td>—</td></tr>
+  <tr><td>Béisbol</td><td>9 innings</td><td>3 carreras</td><td>—</td></tr>
+  <tr><td>Tenis</td><td>—</td><td>1 set</td><td>3</td></tr>
+  <tr><td>Voleibol / Tenis de mesa / Dardos</td><td>—</td><td>2</td><td>5</td></tr>
+  <tr><td>Otros (valor por defecto)</td><td>90 min</td><td>3</td><td>3</td></tr>
+</table>
+
+<h2>7. Backtesting y medición de desempeño</h2>
+<p>Cada ejecución del comando <code>/seguras</code> registra sus selecciones en la tabla <code>picks</code>, incluyendo momio, índice de confianza y marca de tiempo. El recolector de fondo detecta cuándo un evento abandona el listado en vivo y procede a liquidar automáticamente las selecciones pendientes: el módulo de mercados califica cada pick como acierto o fallo contra el último marcador conocido del evento. El comando <code>/stats</code> presenta la tasa de acierto agregada por nivel de confianza (alta: 75% o más; media: 60–75%; baja: menos de 60%), permitiendo verificar la calibración de los pesos del algoritmo con datos reales.</p>
+<div class="notice"><strong>Limitación conocida.</strong> La liquidación emplea el último marcador muestreado por el recolector (cada tres minutos por defecto) y no el resultado oficial del encuentro, por lo que en finales muy cerrados el resultado registrado puede diferir del real. Las selecciones no calificables se marcan como <code>unknown</code> y quedan excluidas de las estadísticas.</div>
+
+<h2>8. Modelo de datos</h2>
+<h3>8.1 Tabla <code>snapshots</code></h3>
+<p>Registra una fila por momio observado en cada ciclo de recolección:</p>
+<pre>ts, sport, sport_id, champ, event_id, event, score, live_time,
+market, selection, odd_decimal, odd_american</pre>
+<h3>8.2 Tabla <code>picks</code></h3>
+<p>Registra las selecciones emitidas por <code>/seguras</code> y su liquidación:</p>
+<pre>ts, event_id, event, sport, market, selection, odd_decimal, conf,
+result, final_score, settled_ts</pre>
+<h3>8.3 Consultas de referencia</h3>
+<pre>-- Movimiento de línea de un evento
+SELECT ts, market, selection, odd_decimal FROM snapshots
+WHERE event_id = 16838147 ORDER BY ts;
+
+-- Historial de picks liquidados
+SELECT ts, event, selection, odd_decimal, conf, result, final_score
+FROM picks WHERE result IS NOT NULL ORDER BY ts DESC;</pre>
+
+<h2>9. Consideraciones operativas</h2>
+<p>El bot permanece activo mientras su proceso siga en ejecución; para operación permanente se recomienda configurarlo como tarea programada de Windows o como servicio. Las consultas a la API se realizan con encabezados de navegador legítimos, pausa de 500 ms entre deportes y reintentos con retroceso ante fallos, a fin de mantener una huella de tráfico moderada. El bot únicamente atiende mensajes provenientes del chat autorizado en la configuración, descartando cualquier otro origen. Finalmente, la calidad del factor de tendencia de línea es proporcional al historial acumulado: el recolector de fondo alimenta la base de datos cada tres minutos incluso sin actividad del usuario.</p>
+
+<div class="footer-note">Playdoit Monitor · Documentación técnica v1.0 · 16 de julio de 2026 · Documento de uso interno. La información contenida describe un sistema de análisis de datos y no constituye asesoría financiera ni de apuestas.</div>
+
+</div>
+</body>
+</html>

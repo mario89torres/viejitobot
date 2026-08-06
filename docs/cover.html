@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Portada</title>
+<style>
+  @page { size: A4; margin: 0; }
+  * { box-sizing: border-box; }
+  body { font-family: "Segoe UI", Arial, sans-serif; margin: 0; }
+  .cover {
+    height: 297mm;
+    background: linear-gradient(135deg, #0f1b3d 0%, #1a2f5e 55%, #b3122f 100%);
+    color: #fff;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    padding: 30mm 25mm;
+  }
+  .cover .brand { font-size: 13pt; letter-spacing: 4px; text-transform: uppercase; opacity: .85; }
+  .cover h1 { font-size: 34pt; margin: 0 0 6mm 0; font-weight: 700; line-height: 1.15; }
+  .cover .subtitle { font-size: 14pt; font-weight: 300; opacity: .9; }
+  .cover .rule { width: 40mm; height: 2mm; background: #e63950; margin: 10mm 0; }
+  .cover .meta { font-size: 10pt; opacity: .8; line-height: 1.9; }
+</style>
+</head>
+<body>
+<div class="cover">
+  <div>
+    <div class="brand">Documentación Técnica Corporativa</div>
+  </div>
+  <div>
+    <h1>Playdoit Monitor</h1>
+    <div class="rule"></div>
+    <div class="subtitle">Sistema de monitoreo, análisis y notificación de momios deportivos en vivo con bot interactivo de Telegram</div>
+  </div>
+  <div class="meta">
+    Versión 1.0<br>
+    Fecha de emisión: 16 de julio de 2026<br>
+    Plataforma: Node.js 18+ · SQLite · API Telegram<br>
+    Clasificación: Uso interno
+  </div>
+</div>
+</body>
+</html>

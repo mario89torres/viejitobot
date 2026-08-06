@@ -1,0 +1,42 @@
+# Environment variables & secrets
+.env
+.env.*
+!.env.example
+
+# Node modules & dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Databases & local state
+snapshots.db
+snapshots.db-journal
+snapshots.db-wal
+snapshots.db-shm
+
+# Logs
+*.log
+bot.log
+bot.log.*
+
+# Datasets & temporary exports
+dataset.csv
+model_candidate.json
+
+# Probe / scratch files
+probe*.png
+probe*.html
+probe*.json
+
+# OS & IDE metadata
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.claude/
+
+# Unrelated temporary folders
+ai-job-search/
+curso-basquet-tizayuca/
+pmbtc/
