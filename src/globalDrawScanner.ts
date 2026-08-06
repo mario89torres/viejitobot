@@ -28,7 +28,7 @@ export function scanGlobalDraws75() {
   const recentEvents = db.prepare(`
     SELECT DISTINCT event_id, event, sport_id, sport, score, live_time
     FROM snapshots
-    WHERE (sport_id = 66 OR LOWER(sport) LIKE '%futbol%')
+    WHERE (sport_id = 66 OR LOWER(sport) LIKE '%futbol%' OR LOWER(sport) LIKE '%fútbol%' OR sport IS NULL)
       AND ts >= ?
     ORDER BY ts DESC
   `).all(since) as any[];

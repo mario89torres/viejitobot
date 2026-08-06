@@ -367,8 +367,8 @@ function isBlockedMarket(r) {
     return true;
   }
 
-  // Veto a selecciones directas de "Empate" o "Draw"
-  if (sel === 'empate' || sel === 'draw') {
+  // Veto a selecciones directas de "Empate" o "Draw" (EXCEPTO si es una Señal de Empate Estructural Flatline)
+  if ((sel === 'empate' || sel === 'draw') && !r.isStructuralDraw && r.alert !== 'STRUCTURAL_DRAW') {
     return true;
   }
 
