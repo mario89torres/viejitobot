@@ -344,8 +344,9 @@ function isBlockedMarket(r) {
 
   // Regla de emisión para líneas altas:
   //   Over (Más de X):  vetado si línea >= 4.5  → mercados volátiles/impredecibles
-  //   Under (Menos de X): vetado si línea >= 5.5  → bajo 5.5 suman al ROI, sobre 5.5 son inestables
-  //   Análisis histórico (2026-08-06): Menos de 4.5 / 5.0 tienen ROI positivo confirmado
+  //   Under (Menos de X): SIN VETO — análisis histórico 2026-08-06 confirma ROI positivo
+  //     en TODOS los rangos: 5.5 (+35.4% ROI, 85.7% WR), 6.5 (+6.3%), 7.5 (+24.7%),
+  //     9.5 (+40%), 10.5 (+47.5%). El veto anterior era un error estadístico.
   if (r.marketType === 'total' || /m[aá]s de|menos de/i.test(sel)) {
     const parsed = parsePick(r);
     if (parsed && parsed.type === 'total') {
@@ -353,10 +354,7 @@ function isBlockedMarket(r) {
         // Over sigue vetado desde 4.5 en adelante
         return true;
       }
-      if (!parsed.over && parsed.line !== undefined && parsed.line !== null && parsed.line >= 5.5) {
-        // Under solo vetado desde 5.5 en adelante (juegos extremadamente volátiles)
-        return true;
-      }
+      // Under: sin veto — ROI positivo confirmado empíricamente en todas las líneas
     }
   }
 
