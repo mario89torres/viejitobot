@@ -5,7 +5,7 @@ const confPath = path.join(__dirname, '..', 'src', 'confidence');
 const tgPath = path.join(__dirname, '..', 'src', 'telegram');
 
 const { db } = require(dbPath);
-const { computeStructuralDrawSignal } = require(confPath);
+const { computeStructuralDrawSignal, computeStake } = require(confPath);
 const { sendStructuralDrawAlert } = require(tgPath);
 
 /**
@@ -13,8 +13,8 @@ const { sendStructuralDrawAlert } = require(tgPath);
  * Muestra y audita TODO el universo de partidos de fútbol en vivo del mundo
  * que se encuentren en el minuto 75 o posterior.
  *
- * Filtra aquellos que mantengan una varianza ultrabaja (\sigma <= 0.025)
- * en la cuota de Empate / DNB / Totales, emitiendo una alerta cuantitativa.
+ * Registra automáticamente cada señal como un Pick oficial en la base de datos `picks`
+ * y emite la alerta al Canal de Telegram VIP.
  */
 function parseMinute(liveTimeStr: any): number | null {
   if (!liveTimeStr) return null;
@@ -64,7 +64,7 @@ export function scanGlobalDraws75() {
         variance: drawSig.variance,
         mean_odd: drawSig.mean,
         sample_count: drawSig.sampleCount,
-        market: snaps[0]?.market || 'Empate / Resultado Final',
+        market: snaps[0]?.market || 'Resultado Final (Tiempo Regular)',
         selection: snaps[0]?.selection || 'Empate',
         entry_odd: drawSig.mean,
         current_odd: activeOdds[0],
@@ -87,15 +87,57 @@ export async function checkAndBroadcastGlobalDraws(token: string, chatId: string
       if (alertedGlobalEvents.has(key)) continue;
 
       alertedGlobalEvents.add(key);
-      console.log(`[scanner] 🎯 Alerta Global Empate (Min ${c.elapsed_min}') emitida para ${c.event}`);
+
+      // 📝 REGISTRAR COMO PICK OFICIAL EN LA BASE DE DATOS
+      const existing = db.prepare(`
+        SELECT id FROM picks WHERE event_id = ? AND market = ? AND selection = ?
+      `).get(c.event_id, c.market, c.selection);
+
+      let pickId = existing?.id;
+
+      if (!pickId) {
+        const nowTs = new Date().toISOString();
+        const conf = 0.76;
+        const oddDecimal = c.current_odd || c.entry_odd || 1.75;
+        const stake = computeStake ? computeStake({ conf, oddDecimal }) : 1.5;
+
+        const info = db.prepare(`
+          INSERT INTO picks (
+            ts, event_id, event, sport, market, selection, odd_decimal, conf, stake,
+            f_prob_justa, f_avance, f_situacion, f_linea, conf_heuristic, conf_learned
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          nowTs,
+          c.event_id,
+          c.event,
+          c.sport,
+          c.market,
+          c.selection,
+          oddDecimal,
+          conf,
+          stake,
+          0.72, // f_prob_justa
+          0.85, // f_avance (minuto 75+)
+          0.75, // f_situacion
+          0.82, // f_linea (meseta estabilizada)
+          conf,
+          conf
+        );
+
+        pickId = info.lastInsertRowid;
+        console.log(`[scanner] 📝 Pick Oficial Registrado en BD: ID #${pickId} (${c.event})`);
+      }
+
+      console.log(`[scanner] 🎯 Alerta Global Empate (Min ${c.elapsed_min}') emitida a Telegram para ${c.event}`);
       await sendStructuralDrawAlert(token, chatId, {
-        id: c.event_id,
+        id: pickId,
         event: c.event,
         sport: c.sport,
         score: `${c.score} (${c.live_time})`,
         market: c.market,
         selection: c.selection,
         current_odd: c.current_odd,
+        variance: c.variance,
       });
     }
   } catch (e: any) {
