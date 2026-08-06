@@ -896,7 +896,11 @@ async function handleMessage(rawText, chatId = CHAT_ID, fromUser = null) {
   const args = parts.slice(1);
 
   try {
-    if (cmd === '/top') await handleTop(args);
+    const pickMatch = text.trim().match(/^(?:\/pick|\/ticket|#)?\s*(\d+)$/i);
+    if (pickMatch && (cmd === '/pick' || cmd === '/ticket' || /^(?:#)?\d+$/.test(text.trim()))) {
+      const { sendPickInspectorCard } = require('./src/telegram');
+      await sendPickInspectorCard(TOKEN, chatId, parseInt(pickMatch[1], 10));
+    } else if (cmd === '/top') await handleTop(args);
     else if (cmd === '/seguras') await handleSeguras(args);
     else if (cmd === '/golden') await handleGolden(args);
     else if (cmd === '/parlay') await handleParlay(args);

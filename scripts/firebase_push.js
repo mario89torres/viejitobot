@@ -8,7 +8,8 @@
  */
 
 const path = require('path');
-const admin = require('firebase-admin');
+const { initializeApp, getApps, cert } = require('firebase-admin/app');
+const { getFirestore } = require('firebase-admin/firestore');
 const { calculateQuantitativeHealth } = require('../src/health');
 const { stakeStats } = require('../src/metrics');
 const { db } = require('../src/db');
@@ -18,27 +19,24 @@ const PROJECT_ID = 'playdoit-monitor-bot';
 const PUSH_INTERVAL_MS = 5 * 60 * 1000; // cada 5 minutos
 
 function initFirebase() {
-  // 1. Intenta con serviceAccountKey.json si existe
   const keyPath = path.join(__dirname, '..', 'serviceAccountKey.json');
   const fs = require('fs');
   try {
-    if (fs.existsSync(keyPath)) {
-      const serviceAccount = require(keyPath);
-      admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
-      console.log('[firebase_push] ✅ Usando serviceAccountKey.json');
-    } else {
-      // 2. Usa Application Default Credentials (firebase login ya autenticó)
-      admin.initializeApp({
-        credential: admin.credential.applicationDefault(),
-        projectId: PROJECT_ID,
-      });
-      console.log('[firebase_push] ✅ Usando Application Default Credentials');
+    if (!getApps().length) {
+      if (fs.existsSync(keyPath)) {
+        const serviceAccount = require(keyPath);
+        initializeApp({ credential: cert(serviceAccount) });
+        console.log('[firebase_push] ✅ Usando serviceAccountKey.json');
+      } else {
+        initializeApp({ projectId: PROJECT_ID });
+        console.log('[firebase_push] ✅ Usando Firebase Project ID:', PROJECT_ID);
+      }
     }
   } catch (e) {
     console.error('[firebase_push] ❌ Error init Firebase:', e.message);
     process.exit(1);
   }
-  return admin.firestore();
+  return getFirestore();
 }
 
 const normSport = (s) => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
