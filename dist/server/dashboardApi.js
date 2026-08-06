@@ -45,7 +45,7 @@ const dashboardDir = path.join(__dirname, '..', '..', 'dashboard');
 const { calculateQuantitativeHealth } = require(healthPath);
 const { stakeStats } = require(metricsPath);
 const { db } = require(dbPath);
-const { excludedSports, isBlockedMarket, isBlockedOver } = require(confPath);
+const { excludedSports, isBlockedMarket, isBlockedOver, isSuspensionOrInstabilityInWindow } = require(confPath);
 const normSport = (s) => (s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
 function createDashboardServer(port = 3001) {
     const server = http.createServer((req, res) => {
@@ -87,7 +87,8 @@ function createDashboardServer(port = 3001) {
                     const isExclSport = excl.includes(normSport(r.sport));
                     const isOver = isBlockedOver(r);
                     const isMktBlocked = isBlockedMarket(r);
-                    return !isExclSport && !isOver && !isMktBlocked;
+                    const isWindowInvalid = isSuspensionOrInstabilityInWindow(r, 60);
+                    return !isExclSport && !isOver && !isMktBlocked && !isWindowInvalid;
                 }).slice(0, 50).map((r) => {
                     const profit = r.result === 'win' ? (r.stake * (r.odd_decimal - 1)) : (r.result === 'loss' ? -r.stake : 0);
                     return {
@@ -102,7 +103,7 @@ function createDashboardServer(port = 3001) {
                 res.end(JSON.stringify({ acceptedCount: accepted.length, accepted }));
                 return;
             }
-            // 3. API Rejected Picks (Picks bloqueados por la doble capa)
+            // 3. API Rejected Picks (Picks bloqueados por la doble capa o ventana de confirmación)
             if (url === '/api/rejected') {
                 res.setHeader('Content-Type', 'application/json; charset=utf-8');
                 const excl = excludedSports();
@@ -119,17 +120,18 @@ function createDashboardServer(port = 3001) {
                     const isExclSport = excl.includes(normSport(r.sport));
                     const isOver = isBlockedOver(r);
                     const isMktBlocked = isBlockedMarket(r);
-                    return isExclSport || isOver || isMktBlocked;
+                    const isWindowInvalid = isSuspensionOrInstabilityInWindow(r, 60);
+                    return isExclSport || isOver || isMktBlocked || isWindowInvalid;
                 }).map((r) => {
                     let reason = 'Mercado Bloqueado';
                     if (excl.includes(normSport(r.sport)))
                         reason = 'Deporte Excluido';
                     else if (isBlockedOver(r))
                         reason = 'Over en Fútbol Bloqueado';
+                    else if (isSuspensionOrInstabilityInWindow(r, 60))
+                        reason = 'Suspensión/Inestabilidad en 1 min';
                     else if (/m[aá]s de/i.test(r.selection || '') && (r.market || '').match(/4\.5|5\.0|5\.5/))
                         reason = 'Over >= 4.5 Bloqueado';
-                    else if (/menos de/i.test(r.selection || '') && (r.market || '').match(/5\.5|6\.0|6\.5/))
-                        reason = 'Under >= 5.5 Bloqueado';
                     else if ((r.market || '').toLowerCase().includes('empate no accion'))
                         reason = 'DNB Débil / No Cumple Edge';
                     let statusTag = '⚪ Pendiente';

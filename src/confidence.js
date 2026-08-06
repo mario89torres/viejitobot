@@ -390,6 +390,55 @@ function isExcluded(sport, list) {
 const blockOversIn = () => (process.env.BLOCK_OVERS_IN ?? 'futbol')
   .split(',').map(s => s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim()).filter(Boolean);
 
+/**
+ * Filtro de Seguridad / Confirmación de 1 Minuto:
+ * Evalúa si el mercado/selección ha sufrido una suspensión (suspended = 1)
+ * o una inestabilidad brusca de cuotas (>12% hacia arriba) en los últimos 60 segundos.
+ * 
+ * Si el mercado fue suspendido o la cuota colapsó en el último minuto,
+ * se RECHAZA el candidato para Zona de Oro / Emisión.
+ */
+function isSuspensionOrInstabilityInWindow(r, windowSeconds = 60) {
+  if (!r) return false;
+  const eventId = r.eventId || r.event_id;
+  const market = r.market;
+  const selection = r.selection;
+  if (!eventId || !market || !selection) return false;
+
+  const since = new Date(Date.now() - windowSeconds * 1000).toISOString();
+
+  try {
+    const rows = db.prepare(`
+      SELECT odd_decimal, suspended, ts
+      FROM snapshots
+      WHERE event_id = ? AND market = ? AND selection = ? AND ts >= ?
+      ORDER BY ts ASC
+    `).all(eventId, market, selection);
+
+    if (!rows || rows.length === 0) return false;
+
+    // 1. Veto si hubo alguna suspensión durante el último minuto
+    const hasSuspension = rows.some(s => s.suspended === 1);
+    if (hasSuspension) {
+      return true;
+    }
+
+    // 2. Veto si la cuota subió > 12% respecto al mínimo en el último minuto (línea inestable/en contra)
+    const currentOdd = r.oddDecimal || r.odd_decimal;
+    const activeOdds = rows.filter(s => s.odd_decimal > 0).map(s => s.odd_decimal);
+    if (currentOdd && activeOdds.length > 0) {
+      const minObserved = Math.min(...activeOdds);
+      if (minObserved > 0 && (currentOdd - minObserved) / minObserved > 0.12) {
+        return true;
+      }
+    }
+  } catch (e) {
+    // Si la BD está bloqueada o falla la consulta, no vetar por defecto
+  }
+
+  return false;
+}
+
 function rankPicks(rows, { minOdds = Number(process.env.MIN_ODDS || 1.35), maxOdds = 3, minEdge = 0, minConf = 0, n = 3 } = {}) {
   const seen = new Set();
   const excl = excludedSports();
@@ -401,6 +450,7 @@ function rankPicks(rows, { minOdds = Number(process.env.MIN_ODDS || 1.35), maxOd
     .filter(r => !isUncertain(r))
     .filter(r => !isBlockedOver(r))
     .filter(r => !isBlockedMarket(r))
+    .filter(r => !isSuspensionOrInstabilityInWindow(r, 60))
     .filter(r => minConf <= 0 || r.conf >= minConf)
     .filter(r => { const th = edgeThresholdFor(r, minEdge); return th <= 0 || r.edge >= th; })
     .sort((a, b) => b.conf - a.conf)
@@ -444,6 +494,7 @@ function goldenPick(rows, {
     .filter(r => !isUncertain(r))
     .filter(r => !isBlockedOver(r))
     .filter(r => !isBlockedMarket(r))
+    .filter(r => !isSuspensionOrInstabilityInWindow(r, 60))
     .filter(r => r.conf >= minConf && r.edge > 0 && r.edge >= minEdge)
     .sort((a, b) => b.edge - a.edge);
   return candidates[0] || null;
@@ -512,6 +563,7 @@ function parlayCombos(rows, {
 module.exports = {
   scoreRow, safestPicks, rankPicks, goldenPick, parlayCombos, aperturaFactor, lineTrend, SCORE_VERSION,
   isExcluded, excludedSports, baseballProgress, isOverPick, isBlockedOver, isBlockedMarket, isUncertain, isFootballUnder, edgeThresholdFor,
+  isSuspensionOrInstabilityInWindow,
   computeStake, kellyFraction, STAKE_MODE,
 };
 
