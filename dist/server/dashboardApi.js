@@ -223,15 +223,16 @@ function createDashboardServer(port = 3001) {
                             alertSignal = 'SNIPER_VALUE';
                             sniperSpikeRatio = Number(spikeRatio.toFixed(2));
                         }
-                        else if (Math.abs(liveCLV || 0) > 5) {
-                            alertSignal = liveCLV > 0 ? 'LINE_MOVED_AGAINST_US' : 'LINE_MOVED_FOR_US';
-                        }
                     }
-                    // SEÑAL DE EMPATE ESTRUCTURAL (Flatline)
+                    // SEÑAL DE EMPATE ESTRUCTURAL (Flatline) - Alta prioridad sobre movimientos genéricos
                     const oddsArray = activeHistory.map((s) => s.odd_decimal);
                     const drawSignal = computeStructuralDrawSignal(oddsArray, p.score);
                     if (drawSignal.isStructuralDraw && !alertSignal) {
                         alertSignal = 'STRUCTURAL_DRAW';
+                    }
+                    // Movimientos genéricos de línea (solo si no hay alerta prioritaria de LOCK, SNIPER o DRAW)
+                    if (!alertSignal && Math.abs(liveCLV || 0) > 5) {
+                        alertSignal = liveCLV > 0 ? 'LINE_MOVED_AGAINST_US' : 'LINE_MOVED_FOR_US';
                     }
                     if (isSuspended)
                         alertSignal = 'SUSPENDED';
