@@ -187,6 +187,18 @@
     .tag-win { color: var(--green); font-weight: 700; }
     .tag-loss { color: var(--red); font-weight: 700; }
     .tag-reason { color: var(--yellow); font-size: 12px; font-weight: 500; }
+
+    .badge-loss-min {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      background: rgba(255, 23, 68, 0.15);
+      color: #ff1744;
+      border: 1px solid rgba(255, 23, 68, 0.4);
+      padding: 2px 6px;
+      border-radius: 4px;
+      margin-left: 6px;
+      display: inline-block;
+    }
   </style>
 </head>
 <body>
@@ -270,7 +282,7 @@
             <th>Momio</th>
             <th>Conf (Modelo)</th>
             <th>Stake</th>
-            <th>Resultado Neto</th>
+            <th>Resultado Neto / Minuto Pérdida</th>
           </tr>
         </thead>
         <tbody id="tbodyAccepted">
@@ -292,7 +304,7 @@
             <th>Momio</th>
             <th>Stake Orig</th>
             <th>Motivo de Exclusión</th>
-            <th>Resolución Real</th>
+            <th>Resolución Real / Minuto Pérdida</th>
           </tr>
         </thead>
         <tbody id="tbodyRejected">
@@ -302,6 +314,6 @@
     </div>
   </section>
 
-  <script src="app.js?v=3.1"></script>
+  <script src="app.js?v=3.2"></script>
 </body>
 </html>

@@ -136,8 +136,8 @@ async function loadDashboardData() {
           let resTag = `✅ +${(p.profit || 0).toFixed(2)}u`;
           if (p.result === 'loss') {
             tagClass = 'tag-loss';
-            const minLoss = p.loss_minute ? ` (min ${p.loss_minute}')` : '';
-            resTag = `❌ -${(p.stake || 0).toFixed(2)}u${minLoss}`;
+            const minBadge = p.loss_minute ? `<span class="badge-loss-min">⏱️ min ${p.loss_minute}'</span>` : '';
+            resTag = `❌ -${(p.stake || 0).toFixed(2)}u ${minBadge}`;
           } else if (p.result === 'push') {
             tagClass = 'mono';
             resTag = `⚪ 0.00u`;
@@ -183,6 +183,11 @@ async function loadDashboardData() {
           const oddVal = r.odd_decimal ? r.odd_decimal.toFixed(2) : '-';
           const stakeVal = r.stake ? `${r.stake}u` : '-';
 
+          let statusTag = r.statusTag || '-';
+          if (r.result === 'loss' && r.loss_minute) {
+            statusTag = `❌ Perdido (-${r.stake.toFixed(2)}u) <span class="badge-loss-min">⏱️ min ${r.loss_minute}'</span>`;
+          }
+
           return `
             <tr>
               <td class="mono">#${r.id}</td>
@@ -193,7 +198,7 @@ async function loadDashboardData() {
               <td class="mono">@ ${oddVal}</td>
               <td class="mono">${stakeVal}</td>
               <td><span class="tag-reason">⚠️ ${r.reason || 'Bloqueado'}</span></td>
-              <td><span class="mono" style="color: ${resColor}; font-weight: 700;">${r.statusTag || '-'}</span></td>
+              <td><span class="mono" style="color: ${resColor}; font-weight: 700;">${statusTag}</span></td>
             </tr>
           `;
         }).join('');
