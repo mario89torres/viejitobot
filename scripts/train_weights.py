@@ -48,7 +48,7 @@ ROOT = Path(__file__).resolve().parent.parent
 # El heurístico de referencia usa sus 4 factores con pesos fijos; el modelo
 # aprende además con f_apertura (drift desde la primera observación en vivo).
 HEUR_FEATURES = ["f_prob_justa", "f_avance", "f_situacion", "f_linea"]
-HEUR_WEIGHTS = np.array([0.45, 0.20, 0.20, 0.15])
+HEUR_WEIGHTS = np.array([0.35, 0.30, 0.20, 0.15])
 FEATURES = HEUR_FEATURES + ["f_apertura"]
 MIN_SAMPLES = 80          # mínimo absoluto para intentar entrenar
 SPORT_MIN = 50            # picks mínimos para dummy propia de deporte

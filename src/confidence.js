@@ -188,7 +188,7 @@ function scoreRow(row) {
   const fApertura = aperturaFactor(openingOdd, row.oddDecimal);
 
   // El conf mostrado depende de MODEL_MODE (src/model.js); el heurístico
-  // 0.45/0.20/0.20/0.15 sigue vivo como fallback y para el modo shadow.
+  // 0.35/0.30/0.20/0.15 sigue vivo como fallback y para el modo shadow.
   // f_apertura solo la consume el modelo aprendido (los pesos fijos no cambian).
   //
   // Para selecciones "Más de X" (Over) cuya línea no ha sido alcanzada aún,

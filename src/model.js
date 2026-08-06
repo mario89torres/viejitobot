@@ -66,7 +66,7 @@ function heuristicConf(features) {
 // nuevas como f_apertura que el heurístico no usa); si al momento de inferir
 // falta alguna, se asume el valor neutro 0.5.
 function learnedConf(features, sport) {
-  if (!model) return null;
+  if (!model || model.adopted === false) return null;
   const featList = Array.isArray(model.features) && model.features.length ? model.features : FEATURES;
   let z = model.intercept;
   for (const f of featList) z += (model.coef[f] || 0) * (features[f] ?? 0.5);
