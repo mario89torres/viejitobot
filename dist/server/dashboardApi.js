@@ -148,13 +148,18 @@ function createDashboardServer(port = 3001) {
                 return;
             }
             // 4. Archivos Estáticos del Dashboard
-            let filePath = path.join(dashboardDir, url === '/' ? 'index.html' : url);
+            // Limpiar query string (?v=x) del URL antes de buscar el archivo
+            const cleanUrl = (url === '/' ? 'index.html' : url.split('?')[0]);
+            let filePath = path.join(dashboardDir, cleanUrl);
             if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
                 const ext = path.extname(filePath);
                 const contentType = ext === '.html' ? 'text/html; charset=utf-8' :
                     ext === '.js' ? 'application/javascript; charset=utf-8' :
                         ext === '.css' ? 'text/css; charset=utf-8' : 'text/plain';
                 res.setHeader('Content-Type', contentType);
+                res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+                res.setHeader('Pragma', 'no-cache');
+                res.setHeader('Expires', '0');
                 res.writeHead(200);
                 res.end(fs.readFileSync(filePath));
                 return;

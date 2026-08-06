@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="es">
 <head>
   <meta charset="UTF-8">
@@ -234,17 +234,17 @@
     <div class="card-kpi">
       <div class="kpi-label">Brier Score (OOS)</div>
       <div class="kpi-val val-cyan" id="kpiBrier">0.0000</div>
-      <div class="kpi-sub">Precisión estocástica</div>
+      <div class="kpi-sub">PrecisiÃ³n estocÃ¡stica</div>
     </div>
     <div class="card-kpi">
-      <div class="kpi-label">Error Calibración (ECE)</div>
+      <div class="kpi-label">Error CalibraciÃ³n (ECE)</div>
       <div class="kpi-val" id="kpiEce">0.00%</div>
-      <div class="kpi-sub">Límite saludable < 5.0%</div>
+      <div class="kpi-sub">LÃ­mite saludable < 5.0%</div>
     </div>
     <div class="card-kpi">
       <div class="kpi-label">Unidades Salvadas (Filtro)</div>
       <div class="kpi-val val-green" id="kpiSavedUnits">+0.00u</div>
-      <div class="kpi-sub" id="kpiLossesAvoided">0 pérdidas prevenidas</div>
+      <div class="kpi-sub" id="kpiLossesAvoided">0 pÃ©rdidas prevenidas</div>
     </div>
   </section>
 
@@ -267,10 +267,10 @@
   <!-- Table View with Tabs -->
   <section class="card-panel">
     <div class="panel-header">
-      <div class="panel-title" id="tableTitle">⚡ HISTÓRICO DE PICKS EMITIDOS EN VIVO (ÚLTIMOS 50)</div>
+      <div class="panel-title" id="tableTitle">âš¡ HISTÃ“RICO DE PICKS EMITIDOS EN VIVO (ÃšLTIMOS 50)</div>
       <div class="tab-group">
-        <button class="tab-btn active" id="btnTabAccepted" onclick="switchTab('accepted')">⚡ Emitidos (50)</button>
-        <button class="tab-btn" id="btnTabRejected" onclick="switchTab('rejected')">🛡️ Descartados (Filtro)</button>
+        <button class="tab-btn active" id="btnTabAccepted" onclick="switchTab('accepted')">âš¡ Emitidos (50)</button>
+        <button class="tab-btn" id="btnTabRejected" onclick="switchTab('rejected')">ðŸ›¡ï¸ Descartados (Filtro)</button>
       </div>
     </div>
 
@@ -283,11 +283,11 @@
             <th>Fecha / Hora</th>
             <th>Evento</th>
             <th>Deporte</th>
-            <th>Mercado & Selección</th>
+            <th>Mercado & SelecciÃ³n</th>
             <th>Momio</th>
             <th>Conf (Modelo)</th>
             <th>Stake</th>
-            <th>Resultado Neto / Minuto Pérdida</th>
+            <th>Resultado Neto / Minuto PÃ©rdida</th>
           </tr>
         </thead>
         <tbody id="tbodyAccepted">
@@ -305,11 +305,11 @@
             <th>Fecha / Hora</th>
             <th>Evento</th>
             <th>Deporte</th>
-            <th>Mercado & Selección</th>
+            <th>Mercado & SelecciÃ³n</th>
             <th>Momio</th>
             <th>Stake Orig</th>
-            <th>Motivo de Exclusión</th>
-            <th>Resolución Real / Minuto Pérdida</th>
+            <th>Motivo de ExclusiÃ³n</th>
+            <th>ResoluciÃ³n Real / Minuto PÃ©rdida</th>
           </tr>
         </thead>
         <tbody id="tbodyRejected">
@@ -319,6 +319,6 @@
     </div>
   </section>
 
-  <script src="app.js?v=3.3"></script>
+  <script src="app.js?v=4.0"></script>
 </body>
 </html>
