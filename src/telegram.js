@@ -69,14 +69,18 @@ async function sendStructuralDrawAlert(token, chatId, p) {
   const eventName = esc(p.event || p.event_name);
   const sport = esc(p.sport || 'Fútbol');
   const score = esc(p.score || '0-0');
+  const currentOdd = p.current_odd != null ? p.current_odd.toFixed(2) : (p.odd_decimal ? p.odd_decimal.toFixed(2) : '—');
+  const varStr = p.variance != null ? p.variance.toFixed(4) : '0.008';
 
-  const msg = `🎯 <b>SEÑAL DE EMPATE ESTRUCTURAL</b>\n` +
-    `<i>${new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City' })}</i>\n\n` +
-    `<b>Pick #${p.id}</b> — ${eventName} <i>(${sport})</i>\n` +
-    `Marcador actual: <b>${score}</b>\n\n` +
-    `⚖️ <b>Línea en Meseta Plana Estabilizada (Flatline)</b>\n` +
-    `📊 Alta probabilidad implícita de Empate / Under táctico.\n\n` +
-    `👉 <a href="${link}">Ver Partido en Playdoit</a>`;
+  const msg = `🎯 <b>ALERTA DE EMPATE ESTRUCTURAL (FLATLINE)</b>\n` +
+    `<i>${new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City' })} · Scanner Min 75+</i>\n\n` +
+    `⚽ <b>${eventName}</b> <i>(${sport})</i>\n` +
+    `📊 Marcador en Vivo: <b>${score}</b>\n` +
+    `⚖️ Estado de Cuota: <b>Meseta Plana Estabilizada (σ = ${varStr})</b>\n` +
+    `📊 Cuota Actual: <b>@ ${currentOdd}</b>\n\n` +
+    `💎 <b>Pronóstico Cuantitativo: EMPATE / UNDER TÁCTICO</b>\n` +
+    `📈 <i>El mercado ha entrado en equilibrio absoluto. Alta probabilidad implícita de retener el resultado hasta el final.</i>\n\n` +
+    `👉 <a href="${link}">Apostar en Playdoit</a>`;
 
   await sendTelegram(token, chatId, msg);
 }
