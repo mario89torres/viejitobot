@@ -1,0 +1,36 @@
+{
+  "version": "v20260806_074715",
+  "trained_at": "2026-08-06T07:47:15.639495+00:00",
+  "n_samples": 943,
+  "score_versions": [
+    2
+  ],
+  "adopted": false,
+  "features": [
+    "f_prob_justa",
+    "f_avance",
+    "f_situacion",
+    "f_linea",
+    "f_apertura"
+  ],
+  "intercept": -1.4483129462093782,
+  "coef": {
+    "f_prob_justa": 1.442750300977581,
+    "f_avance": 1.3237319073069014,
+    "f_situacion": -0.09716186096680128,
+    "f_linea": -0.127944491575102,
+    "f_apertura": 0.2911991617466593
+  },
+  "calibration": {
+    "x": [
+      0,
+      0.5,
+      1
+    ],
+    "y": [
+      0,
+      0.5,
+      1
+    ]
+  }
+}

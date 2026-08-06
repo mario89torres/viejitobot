@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Playdoit Monitor - Dashboard Analytics Cuantitativo</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --card-bg: #161b22;
+      --border: #30363d;
+      --text: #c9d1d9;
+      --text-muted: #8b949e;
+      --accent: #58a6ff;
+      --green: #238636;
+      --green-glow: #2ea043;
+      --red: #da3633;
+      --yellow: #d29922;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 24px;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 24px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    h1 { margin: 0; font-size: 24px; color: #fff; }
+    .badge {
+      padding: 6px 12px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .badge-ok { background: rgba(46, 160, 67, 0.2); color: #3fb950; border: 1px solid #2ea043; }
+    .badge-warn { background: rgba(210, 153, 34, 0.2); color: #d29922; border: 1px solid #d29922; }
+
+    .grid-kpi {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .kpi-title { font-size: 13px; color: var(--text-muted); margin-bottom: 8px; }
+    .kpi-value { font-size: 24px; font-weight: 700; color: #fff; }
+    .kpi-sub { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+    .positive { color: #3fb950; }
+    .negative { color: #f85149; }
+
+    .grid-charts {
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    @media (max-width: 900px) {
+      .grid-charts { grid-template-columns: 1fr; }
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    th, td {
+      padding: 10px 12px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+    th { background: #21262d; color: var(--text-muted); font-weight: 600; }
+    tr:hover { background: #21262d; }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>📊 Playdoit Monitor 3.0 - Performance Analytics</h1>
+      <span style="font-size: 13px; color: var(--text-muted);">Motor Cuantitativo & Dashboard MLOps</span>
+    </div>
+    <div id="healthBadge" class="badge badge-warn">🟡 Evaluando Salud...</div>
+  </header>
+
+  <section class="grid-kpi">
+    <div class="card">
+      <div class="kpi-title">ROI GLOBAL ACUMULADO</div>
+      <div class="kpi-value positive" id="kpiRoi">+0.00%</div>
+      <div class="kpi-sub" id="kpiProfit">+0.00u neta</div>
+    </div>
+    <div class="card">
+      <div class="kpi-title">TASA DE ACIERTO (WIN RATE)</div>
+      <div class="kpi-value" id="kpiWr">0.0%</div>
+      <div class="kpi-sub" id="kpiWins">0 aciertos / 0 picks</div>
+    </div>
+    <div class="card">
+      <div class="kpi-title">BRIER SCORE (OOS)</div>
+      <div class="kpi-value" id="kpiBrier">0.0000</div>
+      <div class="kpi-sub">Precisión probabilística</div>
+    </div>
+    <div class="card">
+      <div class="kpi-title">ERROR CALIBRACIÓN (ECE)</div>
+      <div class="kpi-value" id="kpiEce">0.00%</div>
+      <div class="kpi-sub">Límite saludable < 5.0%</div>
+    </div>
+    <div class="card">
+      <div class="kpi-title">SHARPE RATIO ANUALIZADO</div>
+      <div class="kpi-value positive" id="kpiSharpe">0.00</div>
+      <div class="kpi-sub">Retorno ajustado a riesgo</div>
+    </div>
+  </section>
+
+  <section class="grid-charts">
+    <div class="card">
+      <div class="kpi-title">CURVA DE BANCA ACUMULADA (UNIDADES NETA)</div>
+      <canvas id="chartEquity" height="120"></canvas>
+    </div>
+    <div class="card">
+      <div class="kpi-title">RENDIMIENTO POR DEPORTE</div>
+      <canvas id="chartSports" height="250"></canvas>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="kpi-title" style="margin-bottom: 16px;">🔍 PICKS DESCARTADOS POR EL FILTRO DE DOBLE CAPA (ÚLTIMOS 20)</div>
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Hora</th>
+          <th>Evento</th>
+          <th>Deporte</th>
+          <th>Mercado & Selección</th>
+          <th>Stake Orig</th>
+          <th>Motivo de Exclusión</th>
+        </tr>
+      </thead>
+      <tbody id="tableRejected">
+        <tr><td colspan="7" style="text-align: center; color: var(--text-muted);">Cargando registros...</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <script src="app.js"></script>
+</body>
+</html>
