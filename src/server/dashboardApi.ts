@@ -61,8 +61,7 @@ export function createDashboardServer(port = 3001) {
           const isExclSport = excl.includes(normSport(r.sport));
           const isOver = isBlockedOver(r);
           const isMktBlocked = isBlockedMarket(r);
-          const isWindowInvalid = isSuspensionOrInstabilityInWindow(r, 60);
-          return !isExclSport && !isOver && !isMktBlocked && !isWindowInvalid;
+          return !isExclSport && !isOver && !isMktBlocked;
         }).slice(0, 50).map((r: any) => {
           const profit = r.result === 'win' ? (r.stake * (r.odd_decimal - 1)) : (r.result === 'loss' ? -r.stake : 0);
           return {
@@ -98,13 +97,11 @@ export function createDashboardServer(port = 3001) {
           const isExclSport = excl.includes(normSport(r.sport));
           const isOver = isBlockedOver(r);
           const isMktBlocked = isBlockedMarket(r);
-          const isWindowInvalid = isSuspensionOrInstabilityInWindow(r, 60);
-          return isExclSport || isOver || isMktBlocked || isWindowInvalid;
+          return isExclSport || isOver || isMktBlocked;
         }).map((r: any) => {
           let reason = 'Mercado Bloqueado';
           if (excl.includes(normSport(r.sport))) reason = 'Deporte Excluido';
           else if (isBlockedOver(r)) reason = 'Over en Fútbol Bloqueado';
-          else if (isSuspensionOrInstabilityInWindow(r, 60)) reason = 'Suspensión/Inestabilidad en 1 min';
           else if (/m[aá]s de/i.test(r.selection || '') && (r.market || '').match(/4\.5|5\.0|5\.5/)) reason = 'Over >= 4.5 Bloqueado';
           else if ((r.market || '').toLowerCase().includes('empate no accion')) reason = 'DNB Débil / No Cumple Edge';
 

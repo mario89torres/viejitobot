@@ -402,6 +402,9 @@ const blockOversIn = () => (process.env.BLOCK_OVERS_IN ?? 'futbol')
  */
 function isRejectedBy5Guards(r) {
   if (!r) return false;
+  // Si el pick ya está resuelto o guardado (win/loss/push), no evaluar ventana live histórica
+  if (r.result && ['win', 'loss', 'push'].includes(r.result)) return false;
+
   const eventId = r.eventId || r.event_id;
   const market = r.market;
   const selection = r.selection;
