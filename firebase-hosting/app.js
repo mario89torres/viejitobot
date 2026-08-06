@@ -4,7 +4,7 @@ const API_URL = window.location.origin + '/api';
 const TABS = ['charts', 'picks', 'rejected', 'live', 'matrix'];
 let cachedAcceptedPicks = [];
 
-function openTab(name) {
+async function openTab(name) {
   TABS.forEach(t => {
     const cap = t.charAt(0).toUpperCase() + t.slice(1);
     document.getElementById('panel' + cap)?.classList.remove('active');
@@ -13,9 +13,17 @@ function openTab(name) {
   const cap = name.charAt(0).toUpperCase() + name.slice(1);
   document.getElementById('panel' + cap)?.classList.add('active');
   document.getElementById('btn'   + cap)?.classList.add('active');
-  // Auto-fetch live data or render matrix
+  
   if (name === 'live') refreshLive();
-  if (name === 'matrix') renderMatrix(cachedAcceptedPicks);
+  if (name === 'matrix') {
+    if (!cachedAcceptedPicks || !cachedAcceptedPicks.length) {
+      try {
+        const res = await fetch(`${API_URL}/accepted`).then(r => r.json());
+        if (res?.accepted) cachedAcceptedPicks = res.accepted;
+      } catch (e) {}
+    }
+    renderMatrix(cachedAcceptedPicks);
+  }
 }
 
 // ── Formatters ────────────────────────────────────────────────
