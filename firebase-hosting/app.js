@@ -59,6 +59,13 @@ function calcCLV(entry, closing) {
   return ((entry - closing) / closing * 100).toFixed(1);
 }
 
+function playdoitLink(eventId, sportId, eventName) {
+  if (!eventName) return '—';
+  if (!eventId) return eventName;
+  const url = `https://www.playdoit.mx/#/sport/${sportId || 66}/event/${eventId}`;
+  return `<a href="${url}" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline" title="Apostar en Playdoit">${eventName}</a>`;
+}
+
 function drawEquityCanvas(byDay) {
   try {
     const canvas = document.getElementById('chartEquity');
@@ -203,7 +210,7 @@ function renderDashboard(summary, accepted, rejected) {
         return `<tr>
           <td class="mono" style="color:var(--text-muted)">#${p.id}</td>
           <td class="mono">${formatDate(p.ts)}</td>
-          <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis"><b>${p.event||'-'}</b></td>
+          <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis"><b>${playdoitLink(p.event_id, p.sport_id, p.event)}</b></td>
           <td>${p.sport||'-'}</td>
           <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis">${p.market||'-'}: <b>${p.selection||'-'}</b></td>
           <td>${engineBadge}</td>

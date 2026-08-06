@@ -33,6 +33,13 @@ function clvTag(entry, closing) {
   return `<span class="${cls}">${c >= 0 ? '+' : ''}${c}%</span>`;
 }
 
+function playdoitLink(eventId, sportId, eventName) {
+  if (!eventName) return '—';
+  if (!eventId) return eventName;
+  const url = `https://www.playdoit.mx/#/sport/${sportId || 66}/event/${eventId}`;
+  return `<a href="${url}" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline;text-decoration-color:var(--border2)" title="Apostar en Playdoit">${eventName}</a>`;
+}
+
 function miniBar(val, color) {
   if (val == null) return '<span class="c-dim">—</span>';
   const w = Math.round(val * 40);
@@ -180,7 +187,7 @@ function renderPicks(accepted) {
     return `<tr>
       <td class="col-id">#${p.id}</td>
       <td class="col-ts">${fmtTs(p.ts)}</td>
-      <td class="col-event">${p.event || '—'}</td>
+      <td class="col-event">${playdoitLink(p.event_id, p.sport_id, p.event)}</td>
       <td class="col-sport">${p.sport || '—'}</td>
       <td class="col-mkt">${p.market || '—'} <span class="c-dim">·</span> <b>${p.selection || '—'}</b></td>
       <td>${eng}</td>
@@ -229,7 +236,7 @@ function renderRejected(rejected) {
     return `<tr>
       <td class="col-id">#${r.id}</td>
       <td class="col-ts">${fmtTs(r.ts)}</td>
-      <td class="col-event">${r.event || '—'}</td>
+      <td class="col-event">${playdoitLink(r.event_id, r.sport_id, r.event)}</td>
       <td class="col-sport">${r.sport || '—'}</td>
       <td class="col-mkt">${r.market || '—'} <span class="c-dim">·</span> <b>${r.selection || '—'}</b></td>
       <td class="col-odd">${fmtOdd(r.odd_decimal)}</td>
@@ -395,7 +402,7 @@ function renderLive(liveData) {
     return `<tr>
       <td class="col-id">#${p.id}</td>
       <td class="c-dim">${elapsed}</td>
-      <td class="col-event">${p.event || '—'}</td>
+      <td class="col-event">${playdoitLink(p.event_id, p.sport_id, p.event)}</td>
       <td class="col-sport">${p.sport || '—'}</td>
       <td class="col-mkt">${p.market || '—'} <span class="c-dim">·</span> <b>${p.selection || '—'}</b></td>
       <td class="col-odd">${p.entry_odd != null ? p.entry_odd.toFixed(3) : '—'}</td>
