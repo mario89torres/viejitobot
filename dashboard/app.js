@@ -393,6 +393,10 @@ function renderLive(liveData) {
           cardClass = 'card-pending';
           badgeText = `🎯 SNIPER @${p.current_odd ? p.current_odd.toFixed(2) : ''}`;
           badgeStyle = 'background:rgba(97,175,239,0.25);color:var(--cyan);border:1px solid var(--cyan);box-shadow:0 0 8px rgba(97,175,239,0.3)';
+        } else if (p.alert === 'STRUCTURAL_DRAW') {
+          cardClass = 'card-pending';
+          badgeText = `🎯 EMPATE FLATLINE`;
+          badgeStyle = 'background:rgba(86,182,194,0.25);color:#56b6c2;border:1px solid #56b6c2;box-shadow:0 0 8px rgba(86,182,194,0.3)';
         } else if (p.is_suspended || p.alert === 'SUSPENDED') {
           cardClass = 'card-pending';
           badgeText = '⏸ SUSPENDIDA';
@@ -467,6 +471,7 @@ function renderLive(liveData) {
     let alertTag = '<span class="alert-ok">ok</span>';
     if (p.alert === 'PROFIT_LOCK')                alertTag = `<span class="alert-badge" style="background:rgba(229,192,123,0.3);color:#ffd700;border:1px solid #ffd700">⚡ LOCK +${p.locked_profit_pct || 30}%</span>`;
     else if (p.alert === 'SNIPER_VALUE')          alertTag = `<span class="alert-badge" style="background:rgba(97,175,239,0.25);color:var(--cyan);border:1px solid var(--cyan)">🎯 SNIPER @${p.current_odd ? p.current_odd.toFixed(2) : ''}</span>`;
+    else if (p.alert === 'STRUCTURAL_DRAW')       alertTag = `<span class="alert-badge" style="background:rgba(86,182,194,0.25);color:#56b6c2;border:1px solid #56b6c2">🎯 EMPATE FLATLINE</span>`;
     else if (p.alert === 'SUSPENDED')             alertTag = '<span class="alert-badge alert-suspended">⏸ SUSPENDIDA</span>';
     else if (p.alert === 'LINE_MOVED_AGAINST_US') alertTag = '<span class="alert-badge alert-against">⚠ LÍNEA vs</span>';
     else if (p.alert === 'LINE_MOVED_FOR_US')     alertTag = '<span class="alert-badge alert-for">✓ LÍNEA a favor</span>';

@@ -45,7 +45,7 @@ const dashboardDir = path.join(__dirname, '..', '..', 'dashboard');
 const { calculateQuantitativeHealth } = require(healthPath);
 const { stakeStats } = require(metricsPath);
 const { db } = require(dbPath);
-const { excludedSports, isBlockedMarket, isBlockedOver, isSuspensionOrInstabilityInWindow } = require(confPath);
+const { excludedSports, isBlockedMarket, isBlockedOver, isSuspensionOrInstabilityInWindow, computeStructuralDrawSignal } = require(confPath);
 const normSport = (s) => (s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
 function createDashboardServer(port = 3001) {
     const server = http.createServer((req, res) => {
@@ -206,7 +206,7 @@ function createDashboardServer(port = 3001) {
                     const elapsedMin = Math.floor(elapsedMs / 60000);
                     // ¿Cuota suspendida? Puede indicar inicio de partido o resolución
                     const isSuspended = history.length > 0 && history[0].suspended === 1;
-                    // ── INNOVACIÓN 1: Detección de PROFIT LOCK & SNIPER VALUE ──
+                    // ── INNOVACIÓN 1: Detección de PROFIT LOCK, SNIPER VALUE & EMPATE ESTRUCTURAL ──
                     let alertSignal = null;
                     let lockedProfitPct = null;
                     let sniperSpikeRatio = null;
@@ -227,6 +227,12 @@ function createDashboardServer(port = 3001) {
                             alertSignal = liveCLV > 0 ? 'LINE_MOVED_AGAINST_US' : 'LINE_MOVED_FOR_US';
                         }
                     }
+                    // SEÑAL DE EMPATE ESTRUCTURAL (Flatline)
+                    const oddsArray = activeHistory.map((s) => s.odd_decimal);
+                    const drawSignal = computeStructuralDrawSignal(oddsArray, p.score);
+                    if (drawSignal.isStructuralDraw && !alertSignal) {
+                        alertSignal = 'STRUCTURAL_DRAW';
+                    }
                     if (isSuspended)
                         alertSignal = 'SUSPENDED';
                     return {
@@ -242,6 +248,7 @@ function createDashboardServer(port = 3001) {
                         alert: alertSignal,
                         locked_profit_pct: lockedProfitPct,
                         sniper_spike_ratio: sniperSpikeRatio,
+                        structural_draw: drawSignal,
                         // Mini-historial de cuotas para sparkline (últimos 20)
                         sparkline: activeHistory.slice(0, 20).reverse().map((s) => s.odd_decimal),
                     };
@@ -284,7 +291,7 @@ function createDashboardServer(port = 3001) {
           LIMIT 100
         `).all(pick.event_id);
                 const timeline = snapshots.length > 0 ? snapshots : eventSnapshots;
-                // ── INNOVACIÓN 2: Cálculo de MFE (Max Favorable Excursion) & Diagnóstico ──
+                // ── INNOVACIÓN 2: Cálculo de MFE & SEÑAL DE EMPATE ESTRUCTURAL (Flatline) ──
                 const activeOdds = timeline.filter((s) => !s.suspended && s.odd_decimal > 0).map((s) => s.odd_decimal);
                 const minOdd = activeOdds.length > 0 ? Math.min(...activeOdds) : pick.odd_decimal;
                 const maxOdd = activeOdds.length > 0 ? Math.max(...activeOdds) : pick.odd_decimal;
@@ -294,10 +301,16 @@ function createDashboardServer(port = 3001) {
                 const mfePeakRoi = (initialOdd && minOdd && minOdd < initialOdd)
                     ? Number(((initialOdd - minOdd) / minOdd * 100).toFixed(1))
                     : 0;
+                const drawSignal = computeStructuralDrawSignal(activeOdds, pick.final_score || (timeline.length > 0 ? timeline.at(-1).score : ''));
                 let trajectory = 'ESTABLE';
                 let recommendation = 'MANTENER: Posición sin desviaciones extremas.';
                 let recColor = '#98c379'; // verde
-                if (mfePeakRoi >= 30 && pick.result !== 'win') {
+                if (drawSignal.isStructuralDraw && pick.result !== 'win' && pick.result !== 'loss') {
+                    trajectory = '🎯 EMPATE ESTRUCTURAL (FLATLINE)';
+                    recommendation = `🎯 SEÑAL EMPATE ESTRUCTURAL: La cuota entró en una meseta horizontal ultrastable (Varianza ${drawSignal.variance} en 20+ snaps). El partido entró en equilibrio táctico definitivo. Alta probabilidad de Empate / Under.`;
+                    recColor = '#56b6c2'; // cyan
+                }
+                else if (mfePeakRoi >= 30 && pick.result !== 'win') {
                     trajectory = '⚡ PROFIT LOCK ALCANZADO';
                     recommendation = `⚡ LOCK PROFIT / CASHOUT: Este pick alcanzó un pico máximo de ganancia de +${mfePeakRoi}% (cuota cayó a @${minOdd.toFixed(2)}). Recomendado asegurar ganancia.`;
                     recColor = '#e5c07b'; // oro

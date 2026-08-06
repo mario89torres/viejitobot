@@ -110,6 +110,36 @@ function lineTrend(row) {
   return { lineFactor, lineDelta: relDelta, points: prices.length };
 }
 
+/**
+ * 🎯 SEÑAL DE EMPATE ESTRUCTURAL (Line Flatline & Mean Reversion Signal)
+ * Detecta cuando un mercado entra en una meseta horizontal ultrastable (baja varianza)
+ * tras un periodo de volatilidad o avance del partido (>50% de duración).
+ * Indica equilibrio táctico entre equipos (alta probabilidad de Empate / Under).
+ */
+function computeStructuralDrawSignal(oddsList, scoreStr = '') {
+  if (!oddsList || oddsList.length < 10) return { isStructuralDraw: false, variance: null };
+  const lastOdds = oddsList.slice(0, 20);
+  const mean = lastOdds.reduce((a, b) => a + b, 0) / lastOdds.length;
+  const variance = Math.sqrt(lastOdds.reduce((sq, n) => sq + Math.pow(n - mean, 2), 0) / lastOdds.length);
+
+  // Varianza ultrabaja (< 0.025) = Línea completamente plana y estabilizada
+  const isFlatline = variance <= 0.025;
+  let isTiedScore = false;
+  if (scoreStr) {
+    const parts = scoreStr.split('-').map(Number);
+    if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+      isTiedScore = parts[0] === parts[1];
+    }
+  }
+
+  return {
+    isStructuralDraw: isFlatline && (isTiedScore || lastOdds.length >= 15),
+    variance: Number(variance.toFixed(4)),
+    mean: Number(mean.toFixed(3)),
+    sampleCount: lastOdds.length
+  };
+}
+
 // Dimensionamiento de la apuesta en unidades (1 unidad = 5% del bankroll).
 //
 // Por defecto medio-Kelly: en el backtest de estrategias de staking (picks
@@ -622,7 +652,7 @@ function parlayCombos(rows, {
 module.exports = {
   scoreRow, safestPicks, rankPicks, goldenPick, parlayCombos, aperturaFactor, lineTrend, SCORE_VERSION,
   isExcluded, excludedSports, baseballProgress, isOverPick, isBlockedOver, isBlockedMarket, isUncertain, isFootballUnder, edgeThresholdFor,
-  isSuspensionOrInstabilityInWindow, isRejectedBy5Guards,
+  isSuspensionOrInstabilityInWindow, isRejectedBy5Guards, computeStructuralDrawSignal,
   computeStake, kellyFraction, STAKE_MODE,
 };
 
