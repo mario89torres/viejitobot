@@ -342,14 +342,19 @@ function isBlockedMarket(r) {
     return true;
   }
 
-  // Veto de emisión a selecciones "Más de X" (Over) y "Menos de X" (Under) con línea >= 4.5
+  // Regla de emisión para líneas altas:
+  //   Over (Más de X):  vetado si línea >= 4.5  → mercados volátiles/impredecibles
+  //   Under (Menos de X): vetado si línea >= 5.5  → bajo 5.5 suman al ROI, sobre 5.5 son inestables
+  //   Análisis histórico (2026-08-06): Menos de 4.5 / 5.0 tienen ROI positivo confirmado
   if (r.marketType === 'total' || /m[aá]s de|menos de/i.test(sel)) {
     const parsed = parsePick(r);
     if (parsed && parsed.type === 'total') {
       if (parsed.over && parsed.line !== undefined && parsed.line !== null && parsed.line >= 4.5) {
+        // Over sigue vetado desde 4.5 en adelante
         return true;
       }
-      if (!parsed.over && parsed.line !== undefined && parsed.line !== null && parsed.line >= 4.5) {
+      if (!parsed.over && parsed.line !== undefined && parsed.line !== null && parsed.line >= 5.5) {
+        // Under solo vetado desde 5.5 en adelante (juegos extremadamente volátiles)
         return true;
       }
     }

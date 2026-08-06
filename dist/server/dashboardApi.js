@@ -126,8 +126,10 @@ function createDashboardServer(port = 3001) {
                         reason = 'Deporte Excluido';
                     else if (isBlockedOver(r))
                         reason = 'Over en Fútbol Bloqueado';
-                    else if (/m[aá]s de|menos de/i.test(r.selection) && (r.market || '').includes('4.5'))
-                        reason = 'Línea >= 4.5 Bloqueada';
+                    else if (/m[aá]s de/i.test(r.selection || '') && (r.market || '').match(/4\.5|5\.0|5\.5/))
+                        reason = 'Over >= 4.5 Bloqueado';
+                    else if (/menos de/i.test(r.selection || '') && (r.market || '').match(/5\.5|6\.0|6\.5/))
+                        reason = 'Under >= 5.5 Bloqueado';
                     else if ((r.market || '').toLowerCase().includes('empate no accion'))
                         reason = 'DNB Débil / No Cumple Edge';
                     let statusTag = '⚪ Pendiente';
