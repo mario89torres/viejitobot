@@ -72,7 +72,12 @@ function createDashboardServer(port = 3001) {
                 res.setHeader('Content-Type', 'application/json; charset=utf-8');
                 const excl = excludedSports();
                 const rawPicks = db.prepare(`
-          SELECT id, ts, event_id, event, sport, market, selection, odd_decimal, conf, conf_heuristic, conf_learned, result, final_score, stake, loss_minute
+          SELECT id, ts, event_id, event, sport, market, selection,
+                 odd_decimal, opening_odd_decimal, sharp_entry_odd, sharp_closing_odd,
+                 conf, conf_heuristic, conf_learned, edge,
+                 f_prob_justa, f_avance, f_situacion, f_linea, f_apertura,
+                 stake, stake_mode, score_version,
+                 result, loss_minute
           FROM picks
           WHERE stake IS NOT NULL AND result IN ('win', 'loss', 'push')
           ORDER BY ts DESC
@@ -89,6 +94,8 @@ function createDashboardServer(port = 3001) {
                         ...r,
                         profit: Number(profit.toFixed(2)),
                         confPct: (r.conf * 100).toFixed(1) + '%',
+                        confHeurPct: r.conf_heuristic != null ? (r.conf_heuristic * 100).toFixed(1) + '%' : null,
+                        confMLPct: r.conf_learned != null ? (r.conf_learned * 100).toFixed(1) + '%' : null,
                     };
                 });
                 res.writeHead(200);
