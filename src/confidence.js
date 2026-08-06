@@ -391,52 +391,108 @@ const blockOversIn = () => (process.env.BLOCK_OVERS_IN ?? 'futbol')
   .split(',').map(s => s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim()).filter(Boolean);
 
 /**
- * Filtro de Seguridad / Confirmación de 1 Minuto:
- * Evalúa si el mercado/selección ha sufrido una suspensión (suspended = 1)
- * o una inestabilidad brusca de cuotas (>12% hacia arriba) en los últimos 60 segundos.
- * 
- * Si el mercado fue suspendido o la cuota colapsó en el último minuto,
- * se RECHAZA el candidato para Zona de Oro / Emisión.
+ * 🛡️ PROTOCOLO DE VALIDACIÓN DE 5 GUARDIAS (Anti-Ghost & Latency Protocol)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 1. Guardia 1: Score Shock Guard (Calma de Marcador 90s sin goles/puntos recientes)
+ * 2. Guardia 2: Heartbeat Latency Anomaly (Silencio de Feed >15s pre-suspensión)
+ * 3. Guardia 3: Line Stability Window (Sin suspensión ni drift >10% en 60s)
+ * 4. Guardia 4: Safe Margin Buffer (Colchón de seguridad línea vs marcador)
+ * 5. Guardia 5: Snapshot Maturity Check (Mínimo 4-5 snapshots activos observados)
+ * ─────────────────────────────────────────────────────────────────────────────
  */
-function isSuspensionOrInstabilityInWindow(r, windowSeconds = 60) {
+function isRejectedBy5Guards(r) {
   if (!r) return false;
   const eventId = r.eventId || r.event_id;
   const market = r.market;
   const selection = r.selection;
   if (!eventId || !market || !selection) return false;
 
-  const since = new Date(Date.now() - windowSeconds * 1000).toISOString();
-
   try {
-    const rows = db.prepare(`
+    // ── GUARDIA 5: Mínimo 4 Snapshots Activos Muestreados ──
+    const allSnaps = db.prepare(`
+      SELECT id, ts, score, odd_decimal, suspended
+      FROM snapshots
+      WHERE event_id = ? AND market = ? AND selection = ?
+      ORDER BY ts DESC
+      LIMIT 20
+    `).all(eventId, market, selection);
+
+    const activeSnaps = allSnaps.filter(s => s.suspended === 0);
+    if (activeSnaps.length < 4) {
+      return true; // RECHAZADO: Mercado inmaduro (<4 snapshots activos)
+    }
+
+    // ── GUARDIA 2: Silencio de Feed (Latencia > 15s) ──
+    const lastSnapTs = new Date(activeSnaps[0].ts).getTime();
+    const elapsedSec = (Date.now() - lastSnapTs) / 1000;
+    if (elapsedSec > 15) {
+      return true; // RECHAZADO: Silencio sospechoso de feed (>15s sin update)
+    }
+
+    // ── GUARDIA 1: Calma de Marcador (Score Shock Guard 90s) ──
+    const scoreSince = new Date(Date.now() - 90 * 1000).toISOString();
+    const scoreSnaps = db.prepare(`
+      SELECT score, ts
+      FROM snapshots
+      WHERE event_id = ? AND ts >= ?
+      ORDER BY ts ASC
+    `).all(eventId, scoreSince);
+
+    if (scoreSnaps.length > 1) {
+      const firstScore = scoreSnaps[0].score;
+      const lastScore = scoreSnaps.at(-1).score;
+      if (firstScore && lastScore && firstScore !== lastScore) {
+        return true; // RECHAZADO: Hubo cambio de marcador en los últimos 90s
+      }
+    }
+
+    // ── GUARDIA 3: Estabilidad de Línea (Ventana 60s) ──
+    const windowSince = new Date(Date.now() - 60 * 1000).toISOString();
+    const windowSnaps = db.prepare(`
       SELECT odd_decimal, suspended, ts
       FROM snapshots
       WHERE event_id = ? AND market = ? AND selection = ? AND ts >= ?
       ORDER BY ts ASC
-    `).all(eventId, market, selection);
+    `).all(eventId, market, selection, windowSince);
 
-    if (!rows || rows.length === 0) return false;
-
-    // 1. Veto si hubo alguna suspensión durante el último minuto
-    const hasSuspension = rows.some(s => s.suspended === 1);
-    if (hasSuspension) {
-      return true;
+    if (windowSnaps.some(s => s.suspended === 1)) {
+      return true; // RECHAZADO: Hubo suspensión en la ventana de 60s
     }
 
-    // 2. Veto si la cuota subió > 12% respecto al mínimo en el último minuto (línea inestable/en contra)
     const currentOdd = r.oddDecimal || r.odd_decimal;
-    const activeOdds = rows.filter(s => s.odd_decimal > 0).map(s => s.odd_decimal);
-    if (currentOdd && activeOdds.length > 0) {
-      const minObserved = Math.min(...activeOdds);
-      if (minObserved > 0 && (currentOdd - minObserved) / minObserved > 0.12) {
-        return true;
+    const windowOdds = windowSnaps.filter(s => s.odd_decimal > 0).map(s => s.odd_decimal);
+    if (currentOdd && windowOdds.length > 0) {
+      const minOdd = Math.min(...windowOdds);
+      if (minOdd > 0 && (currentOdd - minOdd) / minOdd > 0.10) {
+        return true; // RECHAZADO: Cuota subió >10% en el último minuto
       }
     }
+
+    // ── GUARDIA 4: Colchón de Margen Seguro (Safe Margin Buffer) ──
+    const parsed = parsePick(r);
+    if (parsed && parsed.type === 'total' && !parsed.over && parsed.line !== undefined) {
+      const currentScore = r.score || (activeSnaps.length > 0 ? activeSnaps[0].score : null);
+      if (currentScore) {
+        const parts = currentScore.split('-').map(Number);
+        if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+          const totalGoals = parts[0] + parts[1];
+          if (totalGoals >= parsed.line - 0.5) {
+            return true; // RECHAZADO: Colchón de goles agotado (ej: 2 goles en Under 2.5)
+          }
+        }
+      }
+    }
+
   } catch (e) {
-    // Si la BD está bloqueada o falla la consulta, no vetar por defecto
+    // No vetar si falla la consulta por bloqueo puntual
   }
 
   return false;
+}
+
+// Alias para mantener compatibilidad
+function isSuspensionOrInstabilityInWindow(r, windowSeconds = 60) {
+  return isRejectedBy5Guards(r);
 }
 
 function rankPicks(rows, { minOdds = Number(process.env.MIN_ODDS || 1.35), maxOdds = 3, minEdge = 0, minConf = 0, n = 3 } = {}) {
@@ -450,7 +506,7 @@ function rankPicks(rows, { minOdds = Number(process.env.MIN_ODDS || 1.35), maxOd
     .filter(r => !isUncertain(r))
     .filter(r => !isBlockedOver(r))
     .filter(r => !isBlockedMarket(r))
-    .filter(r => !isSuspensionOrInstabilityInWindow(r, 60))
+    .filter(r => !isRejectedBy5Guards(r))
     .filter(r => minConf <= 0 || r.conf >= minConf)
     .filter(r => { const th = edgeThresholdFor(r, minEdge); return th <= 0 || r.edge >= th; })
     .sort((a, b) => b.conf - a.conf)
@@ -494,7 +550,7 @@ function goldenPick(rows, {
     .filter(r => !isUncertain(r))
     .filter(r => !isBlockedOver(r))
     .filter(r => !isBlockedMarket(r))
-    .filter(r => !isSuspensionOrInstabilityInWindow(r, 60))
+    .filter(r => !isRejectedBy5Guards(r))
     .filter(r => r.conf >= minConf && r.edge > 0 && r.edge >= minEdge)
     .sort((a, b) => b.edge - a.edge);
   return candidates[0] || null;
@@ -563,7 +619,7 @@ function parlayCombos(rows, {
 module.exports = {
   scoreRow, safestPicks, rankPicks, goldenPick, parlayCombos, aperturaFactor, lineTrend, SCORE_VERSION,
   isExcluded, excludedSports, baseballProgress, isOverPick, isBlockedOver, isBlockedMarket, isUncertain, isFootballUnder, edgeThresholdFor,
-  isSuspensionOrInstabilityInWindow,
+  isSuspensionOrInstabilityInWindow, isRejectedBy5Guards,
   computeStake, kellyFraction, STAKE_MODE,
 };
 

@@ -16,12 +16,50 @@ function esc(s) {
   return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+async function verifyPreShotExpress(pick) {
+  const BASE = 'https://sb2frontend-altenar2.biahosted.com/api/widget';
+  const COMMON = 'culture=es-ES&timezoneOffset=360&integration=playdoit2&deviceType=1&numFormat=en-GB&countryCode=MX';
+  const sportId = pick.sport_id || pick.sportId || 66;
+  const eventId = pick.event_id || pick.eventId;
+  if (!eventId) return true;
+
+  try {
+    const res = await fetch(`${BASE}/GetLiveOverview?${COMMON}&sportId=${sportId}`, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+        'Referer': 'https://www.playdoit.mx/',
+        'Accept': 'application/json'
+      },
+      signal: AbortSignal.timeout(1500)
+    });
+    if (!res.ok) return true;
+    const data = await res.json();
+    const ev = (data.events || []).find((e) => e.id === eventId);
+    if (!ev) return false; // Evento ya no existe o finalizó
+    if (ev.isBooked === false || ev.status !== 1) return false; // Evento suspendido
+    return true;
+  } catch (e) {
+    return true; // En caso de timeout de red, permitir envío
+  }
+}
+
 async function formatMessage(picks) {
   const now = new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City' });
-  let msg = `<b>🎯 Top ${picks.length} — Playdoit en vivo</b>\n<i>${now}</i>\n\n`;
 
-  for (let i = 0; i < picks.length; i++) {
-    const p = picks[i];
+  // Guardia 3 Express: Re-check síncrono pre-disparo
+  const verifiedPicks = [];
+  for (const p of picks) {
+    const isStillActive = await verifyPreShotExpress(p);
+    if (isStillActive) verifiedPicks.push(p);
+    else console.warn(`[telegram] 🛡️ Guardia 3 Pre-Shot: Pick #${p.id || p.eventId} cancelado en vuelo por suspensión express`);
+  }
+
+  if (!verifiedPicks.length) return null;
+
+  let msg = `<b>🎯 Top ${verifiedPicks.length} — Playdoit en vivo</b>\n<i>${now}</i>\n\n`;
+
+  for (let i = 0; i < verifiedPicks.length; i++) {
+    const p = verifiedPicks[i];
     const link = await generateBetLink(p);
     const oddDec = p.oddDecimal != null ? p.oddDecimal.toFixed(2) : (p.odd_decimal ? p.odd_decimal.toFixed(2) : '—');
     const oddAmer = p.oddAmerican || '';
