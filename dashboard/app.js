@@ -1,7 +1,9 @@
 const API_URL = window.location.origin + '/api';
 
 // ── Tab navigation ────────────────────────────────────────────
-const TABS = ['charts', 'picks', 'rejected', 'live'];
+const TABS = ['charts', 'picks', 'rejected', 'live', 'matrix'];
+let cachedAcceptedPicks = [];
+
 function openTab(name) {
   TABS.forEach(t => {
     const cap = t.charAt(0).toUpperCase() + t.slice(1);
@@ -11,8 +13,9 @@ function openTab(name) {
   const cap = name.charAt(0).toUpperCase() + name.slice(1);
   document.getElementById('panel' + cap)?.classList.add('active');
   document.getElementById('btn'   + cap)?.classList.add('active');
-  // Auto-fetch live data when switching to that tab
+  // Auto-fetch live data or render matrix
   if (name === 'live') refreshLive();
+  if (name === 'matrix') renderMatrix(cachedAcceptedPicks);
 }
 
 // ── Formatters ────────────────────────────────────────────────
@@ -293,7 +296,15 @@ async function loadData() {
     }
 
     // Accepted
-    if (resAccepted?.accepted) renderPicks(resAccepted.accepted);
+    if (resAccepted?.accepted) {
+      cachedAcceptedPicks = resAccepted.accepted;
+      renderPicks(cachedAcceptedPicks);
+      const cntMat = document.getElementById('cntMatrix');
+      if (cntMat) cntMat.textContent = `(${cachedAcceptedPicks.length})`;
+      if (document.getElementById('panelMatrix')?.classList.contains('active')) {
+        renderMatrix(cachedAcceptedPicks);
+      }
+    }
 
     // Rejected
     if (resRejected) {
@@ -443,6 +454,233 @@ setInterval(() => {
   const livePanel = document.getElementById('panelLive');
   if (livePanel?.classList.contains('active')) refreshLive();
 }, 30000);
+
+// ── Render Matrix 10x5 ─────────────────────────────────────────
+function renderMatrix(picks) {
+  const grid = document.getElementById('matrixGrid');
+  if (!grid) return;
+
+  if (!picks || !picks.length) {
+    grid.innerHTML = `<div class="c-dim" style="grid-column:1/-1;text-align:center;padding:40px">no hay picks para mostrar en la matriz</div>`;
+    return;
+  }
+
+  // Tomar los últimos 50 picks
+  const list = picks.slice(0, 50);
+
+  grid.innerHTML = list.map((p, idx) => {
+    let cardClass = 'card-pending';
+    let badgeText = '● LIVE';
+    let badgeStyle = 'background:rgba(229,192,123,0.15);color:var(--yellow)';
+
+    if (p.result === 'win') {
+      cardClass = 'card-win';
+      badgeText = `✓ +${(p.profit || 0).toFixed(2)}u`;
+      badgeStyle = 'background:rgba(152,195,121,0.2);color:var(--green)';
+    } else if (p.result === 'loss') {
+      cardClass = 'card-loss';
+      badgeText = `✗ -${(p.stake || 0).toFixed(2)}u`;
+      badgeStyle = 'background:rgba(224,108,117,0.2);color:var(--red)';
+    } else if (p.result === 'push') {
+      cardClass = 'card-push';
+      badgeText = '⚪ 0.00u';
+      badgeStyle = 'background:rgba(255,255,255,0.05);color:var(--gray)';
+    }
+
+    const shortSport = (p.sport || 'Fútbol').slice(0, 8);
+    const shortEvent = (p.event || '—').slice(0, 24);
+    const shortMkt   = (p.selection || p.market || '—').slice(0, 18);
+    const oddVal     = p.odd_decimal ? `@ ${p.odd_decimal.toFixed(2)}` : '—';
+
+    return `<div class="matrix-card ${cardClass}" onclick="openPickModal(${p.id})">
+      <div>
+        <div class="mcard-top">
+          <span class="mcard-id">#${p.id}</span>
+          <span class="mcard-sport">${shortSport}</span>
+        </div>
+        <div class="mcard-event">${shortEvent}</div>
+        <div class="mcard-mkt">${shortMkt}</div>
+      </div>
+      <div class="mcard-bottom">
+        <span class="mcard-odd">${oddVal}</span>
+        <span class="mcard-badge" style="${badgeStyle}">${badgeText}</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ── Fullscreen Pick Inspector Modal ────────────────────────────
+async function openPickModal(pickId) {
+  const modal = document.getElementById('modalPickInspector');
+  if (!modal) return;
+  modal.classList.add('active');
+
+  // Reset modal fields
+  document.getElementById('mModalTitle').innerHTML = `<span>#${pickId}</span> <span style="color:var(--gray)">|</span> <span>Cargando datos de snapshots...</span>`;
+  document.getElementById('mModalSub').textContent = 'Consultando base de datos cuantitativa...';
+  document.getElementById('mModalRecText').textContent = 'Analizando trayectoria de cuotas...';
+  document.getElementById('mModalRecBadge').textContent = 'PROCESANDO';
+
+  try {
+    const res = await fetch(`${API_URL}/pick-timeline?id=${pickId}`).then(r => r.json());
+    if (res.error) {
+      document.getElementById('mModalTitle').textContent = `Error: ${res.error}`;
+      return;
+    }
+
+    const { pick, analytics, timeline } = res;
+
+    // Header
+    const titleEl = document.getElementById('mModalTitle');
+    const playLink = playdoitLink(pick.event_id, pick.sport_id, pick.event);
+    titleEl.innerHTML = `<span>#${pick.id}</span> <span style="color:var(--gray)">|</span> <span>${playLink}</span> <span class="c-cyan" style="font-size:12px">(${pick.sport})</span>`;
+
+    const subEl = document.getElementById('mModalSub');
+    subEl.innerHTML = `Mercado: <b>${pick.market}</b> · Selección: <b style="color:var(--yellow)">${pick.selection}</b> · Emitido: ${fmtTs(pick.ts)}`;
+
+    // Banner recommendation
+    const banner = document.getElementById('mModalBanner');
+    const recText = document.getElementById('mModalRecText');
+    const recBadge = document.getElementById('mModalRecBadge');
+
+    recText.textContent = analytics.recommendation;
+    recBadge.textContent = analytics.trajectory;
+    recBadge.style.background = analytics.recColor;
+    recBadge.style.color = '#000';
+    banner.style.background = analytics.recColor + '1a';
+    banner.style.borderColor = analytics.recColor + '66';
+    banner.style.color = analytics.recColor;
+
+    // Stats breakdown
+    const statsEl = document.getElementById('mModalStats');
+    if (statsEl) {
+      statsEl.innerHTML = `
+        <div class="modal-stat-row"><span class="modal-stat-label">Cuota Entrada:</span><span class="modal-stat-value c-orange">@ ${fmtOdd(pick.odd_decimal)}</span></div>
+        <div class="modal-stat-row"><span class="modal-stat-label">Última Cuota Snap:</span><span class="modal-stat-value" style="color:${analytics.lastOdd < pick.odd_decimal ? '#98c379' : analytics.lastOdd > pick.odd_decimal ? '#e06c75' : '#d4d4d4'}">@ ${fmtOdd(analytics.lastOdd)}</span></div>
+        <div class="modal-stat-row"><span class="modal-stat-label">Rango Cuota Snap:</span><span class="modal-stat-value c-dim">mín @ ${fmtOdd(analytics.minOdd)} / máx @ ${fmtOdd(analytics.maxOdd)}</span></div>
+        <div class="modal-stat-row"><span class="modal-stat-label">Confianza Total:</span><span class="modal-stat-value c-blue">${pick.confPct}</span></div>
+        <div class="modal-stat-row"><span class="modal-stat-label">ConfHeuristic / ConfML:</span><span class="modal-stat-value c-purple">${pick.confHeurPct || '—'} / ${pick.confMLPct || '—'}</span></div>
+        <div class="modal-stat-row"><span class="modal-stat-label">Edge Estimado:</span><span class="modal-stat-value c-yellow">${fmtEdge(pick.edge)}</span></div>
+        <div class="modal-stat-row"><span class="modal-stat-label">Stake Recomendado:</span><span class="modal-stat-value">${pick.stake}u (${modeLabel(pick.stake_mode)})</span></div>
+        <div class="modal-stat-row"><span class="modal-stat-label">Resultado Final:</span><span class="modal-stat-value" style="color:${pick.result === 'win' ? '#98c379' : pick.result === 'loss' ? '#e06c75' : '#555'}">${(pick.result || 'PENDIENTE').toUpperCase()} ${pick.loss_minute ? `(min ${pick.loss_minute}')` : ''}</span></div>
+      `;
+    }
+
+    // Canvas Chart
+    drawModalSnapshotChart('chartModalSnapshot', timeline, pick.odd_decimal);
+
+    // Timeline Table
+    const snapBody = document.getElementById('mModalSnapBody');
+    const snapCount = document.getElementById('mModalSnapCount');
+    if (snapCount) snapCount.textContent = timeline.length;
+
+    if (snapBody) {
+      if (!timeline.length) {
+        snapBody.innerHTML = `<tr><td colspan="7" class="c-dim" style="text-align:center">sin snapshots registrados para este evento</td></tr>`;
+      } else {
+        snapBody.innerHTML = timeline.map(s => {
+          const isSusp = s.suspended === 1;
+          return `<tr>
+            <td class="col-id">#${s.id}</td>
+            <td class="c-dim">${fmtTs(s.ts)}</td>
+            <td class="col-ts">${s.live_time || '—'}</td>
+            <td style="color:#fff;font-weight:600">${s.score || '—'}</td>
+            <td class="col-odd" style="color:${s.odd_decimal < pick.odd_decimal ? '#98c379' : s.odd_decimal > pick.odd_decimal ? '#e06c75' : '#d4d4d4'}">@ ${fmtOdd(s.odd_decimal)}</td>
+            <td class="c-dim">${s.odd_american || '—'}</td>
+            <td>${isSusp ? '<span class="alert-badge alert-suspended">⏸ SUSPENDIDO</span>' : '<span class="c-green">✓ ACTIVO</span>'}</td>
+          </tr>`;
+        }).join('');
+      }
+    }
+
+  } catch (e) {
+    console.error('openPickModal error:', e);
+  }
+}
+
+function closePickModal() {
+  const modal = document.getElementById('modalPickInspector');
+  if (modal) modal.classList.remove('active');
+}
+
+// Esc key listener to close modal
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closePickModal();
+});
+
+// ── Draw Modal Odds Timeline Chart ──────────────────────────────
+function drawModalSnapshotChart(canvasId, timeline, entryOdd) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+
+  const rect = canvas.getBoundingClientRect();
+  const W = rect.width || 700;
+  const H = 220;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, W, H);
+
+  const activeSnaps = timeline.filter(s => !s.suspended && s.odd_decimal > 0);
+  const data = activeSnaps.map(s => s.odd_decimal);
+
+  if (!data.length) {
+    ctx.font = '12px JetBrains Mono, monospace'; ctx.fillStyle = '#555';
+    ctx.fillText('Sin historial de cuotas disponible en snapshots', 20, H / 2);
+    return;
+  }
+
+  const allVals = [...data, entryOdd].filter(Boolean);
+  const minV = Math.min(...allVals) * 0.95;
+  const maxV = Math.max(...allVals) * 1.05;
+  const range = (maxV - minV) || 0.1;
+
+  const pL = 50, pR = 20, pT = 20, pB = 30;
+  const gW = W - pL - pR, gH = H - pT - pB;
+
+  // Grid
+  ctx.strokeStyle = '#1a1a1a'; ctx.lineWidth = 1;
+  ctx.font = '10px JetBrains Mono, monospace'; ctx.fillStyle = '#3a3a3a';
+  for (let i = 0; i <= 4; i++) {
+    const yV = minV + range * i / 4;
+    const yP = pT + gH - (i / 4) * gH;
+    ctx.beginPath(); ctx.moveTo(pL, yP); ctx.lineTo(W - pR, yP); ctx.stroke();
+    ctx.fillText(`@${yV.toFixed(2)}`, 5, yP + 3);
+  }
+
+  // Entry Odd Baseline
+  if (entryOdd) {
+    const ey = pT + gH - ((entryOdd - minV) / range) * gH;
+    ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = '#e5c07b'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(pL, ey); ctx.lineTo(W - pR, ey); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#e5c07b'; ctx.fillText(`Entry @ ${entryOdd.toFixed(2)}`, W - pR - 90, ey - 4);
+  }
+
+  const pts = activeSnaps.map((s, i) => ({
+    x: pL + (activeSnaps.length < 2 ? gW / 2 : i / (activeSnaps.length - 1) * gW),
+    y: pT + gH - ((s.odd_decimal - minV) / range) * gH,
+    score: s.score,
+    time: s.live_time || fmtTs(s.ts).slice(6),
+  }));
+
+  // Line
+  const first = data[0], last = data.at(-1);
+  const col = last <= entryOdd ? '#98c379' : '#e06c75';
+
+  ctx.beginPath();
+  pts.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+  ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.stroke();
+
+  // Dots
+  pts.forEach((p, i) => {
+    ctx.beginPath(); ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+    ctx.fillStyle = col; ctx.fill();
+    ctx.strokeStyle = '#09090b'; ctx.lineWidth = 1; ctx.stroke();
+  });
+}
 
 // Init
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', loadData);

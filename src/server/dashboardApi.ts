@@ -218,6 +218,111 @@ export function createDashboardServer(port = 3001) {
         return;
       }
 
+      // 5. API Pick Timeline — Detalle de snapshots e historial completo de un pick específico
+      if (url.startsWith('/api/pick-timeline')) {
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        const urlObj = new URL(url, 'http://localhost:3001');
+        const pickId = urlObj.searchParams.get('id');
+
+        if (!pickId) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: 'Falta id del pick' }));
+          return;
+        }
+
+        const pick = db.prepare(`
+          SELECT * FROM picks WHERE id = ?
+        `).get(pickId);
+
+        if (!pick) {
+          res.writeHead(404);
+          res.end(JSON.stringify({ error: 'Pick no encontrado' }));
+          return;
+        }
+
+        // Obtener TODOS los snapshots para este evento, mercado y selección
+        const snapshots = db.prepare(`
+          SELECT id, ts, score, live_time, odd_decimal, odd_american, suspended
+          FROM snapshots
+          WHERE event_id = ? AND market = ? AND selection = ?
+          ORDER BY ts ASC
+        `).all(pick.event_id, pick.market, pick.selection);
+
+        // Si no hay snapshots directos con el mercado exacto, traer snapshots del evento
+        const eventSnapshots = snapshots.length > 0 ? [] : db.prepare(`
+          SELECT id, ts, score, live_time, odd_decimal, suspended
+          FROM snapshots
+          WHERE event_id = ?
+          ORDER BY ts ASC
+          LIMIT 100
+        `).all(pick.event_id);
+
+        const timeline = snapshots.length > 0 ? snapshots : eventSnapshots;
+
+        // Calcular diagnóstico / trayectoria
+        const activeOdds = timeline.filter((s: any) => !s.suspended && s.odd_decimal > 0).map((s: any) => s.odd_decimal);
+        const minOdd = activeOdds.length > 0 ? Math.min(...activeOdds) : pick.odd_decimal;
+        const maxOdd = activeOdds.length > 0 ? Math.max(...activeOdds) : pick.odd_decimal;
+        const initialOdd = pick.odd_decimal;
+        const lastOdd = activeOdds.length > 0 ? activeOdds.at(-1) : pick.odd_decimal;
+
+        // Trayectoria: 'FAVORABLE', 'DESFAVORABLE', 'CRÍTICO'
+        let trajectory = 'ESTABLE';
+        let recommendation = 'MANTENER: Posición sin desviaciones extremas.';
+        let recColor = '#98c379'; // verde
+
+        if (pick.result === 'win') {
+          trajectory = 'VICTORIA CONFIRMADA';
+          recommendation = 'GANADO: Cobro total realizado.';
+          recColor = '#98c379';
+        } else if (pick.result === 'loss') {
+          trajectory = 'PÉRDIDA CONFIRMADA';
+          recommendation = pick.loss_minute ? `PERDIDO: Ocurrió colapso en min ${pick.loss_minute}'.` : 'PERDIDO: Evento finalizado en contra.';
+          recColor = '#e06c75';
+        } else {
+          // Pick pendiente en vivo
+          if (lastOdd > initialOdd * 1.5) {
+            trajectory = 'DESFAVORABLE CRÍTICO';
+            recommendation = '⚠️ ALERTA CASHOUT: La cuota subió >50%. Evaluar cashout o cobertura para salvar stake.';
+            recColor = '#e06c75';
+          } else if (lastOdd > initialOdd * 1.15) {
+            trajectory = 'DESFAVORABLE MODERADO';
+            recommendation = '⚠️ PRECAUCIÓN: La cuota subió >15%. Monitorear tendencia de goles/puntos.';
+            recColor = '#e5c07b';
+          } else if (lastOdd < initialOdd * 0.8) {
+            trajectory = 'MUY FAVORABLE';
+            recommendation = '✅ EXCELENTE: La cuota bajó >20%. Probabilidad implícita en aumento constante.';
+            recColor = '#98c379';
+          } else if (lastOdd < initialOdd) {
+            trajectory = 'FAVORABLE';
+            recommendation = '✅ LÍNEA A FAVOR: Movimiento positivo de cuota.';
+            recColor = '#98c379';
+          }
+        }
+
+        res.writeHead(200);
+        res.end(JSON.stringify({
+          pick: {
+            ...pick,
+            confPct: (pick.conf * 100).toFixed(1) + '%',
+            confHeurPct: pick.conf_heuristic != null ? (pick.conf_heuristic * 100).toFixed(1) + '%' : null,
+            confMLPct: pick.conf_learned != null ? (pick.conf_learned * 100).toFixed(1) + '%' : null,
+          },
+          analytics: {
+            initialOdd,
+            lastOdd,
+            minOdd,
+            maxOdd,
+            snapshotCount: timeline.length,
+            trajectory,
+            recommendation,
+            recColor,
+          },
+          timeline,
+        }));
+        return;
+      }
+
       // 4. Archivos Estáticos del Dashboard
       // Limpiar query string (?v=x) del URL antes de buscar el archivo
       const cleanUrl = (url === '/' ? 'index.html' : url.split('?')[0]);

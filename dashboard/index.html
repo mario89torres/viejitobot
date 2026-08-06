@@ -276,6 +276,157 @@
 
     .snap-count { color: var(--gray); font-size: 10px; }
     canvas.sparkline { display: inline-block !important; width: 70px !important; height: 22px !important; vertical-align: middle; }
+
+    /* ── Matrix 10x5 Grid ── */
+    .matrix-container {
+      padding: 10px 0;
+    }
+    .matrix-legend {
+      display: flex; gap: 16px; align-items: center; margin-bottom: 14px; font-size: 10px; color: var(--gray);
+    }
+    .matrix-legend-item { display: flex; align-items: center; gap: 6px; }
+    .matrix-legend-box { width: 12px; height: 12px; border-radius: 2px; }
+
+    .matrix-grid {
+      display: grid;
+      grid-template-columns: repeat(10, 1fr);
+      gap: 8px;
+    }
+    @media (max-width: 1400px) { .matrix-grid { grid-template-columns: repeat(5, 1fr); } }
+    @media (max-width: 800px)  { .matrix-grid { grid-template-columns: repeat(2, 1fr); } }
+
+    .matrix-card {
+      background: var(--bg1);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 10px 8px;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      min-height: 90px;
+      transition: all 0.2s ease;
+      position: relative;
+      overflow: hidden;
+    }
+    .matrix-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 16px rgba(0,0,0,0.6);
+    }
+
+    .matrix-card.card-win {
+      background: rgba(152,195,121,0.08);
+      border-color: rgba(152,195,121,0.35);
+    }
+    .matrix-card.card-win:hover {
+      border-color: var(--green);
+      box-shadow: 0 0 12px rgba(152,195,121,0.3);
+    }
+
+    .matrix-card.card-loss {
+      background: rgba(224,108,117,0.08);
+      border-color: rgba(224,108,117,0.35);
+    }
+    .matrix-card.card-loss:hover {
+      border-color: var(--red);
+      box-shadow: 0 0 12px rgba(224,108,117,0.3);
+    }
+
+    .matrix-card.card-push {
+      background: rgba(255,255,255,0.02);
+      border-color: var(--border);
+    }
+
+    .matrix-card.card-pending {
+      background: rgba(229,192,123,0.08);
+      border-color: rgba(229,192,123,0.35);
+    }
+
+    .mcard-top { display: flex; justify-content: space-between; font-size: 10px; color: var(--gray); margin-bottom: 4px; }
+    .mcard-id  { font-family: 'JetBrains Mono', monospace; font-weight: 600; }
+    .mcard-sport { color: var(--cyan); font-size: 9px; }
+    .mcard-event { font-size: 10px; font-weight: 600; color: var(--fg); line-height: 1.2; margin-bottom: 6px; max-height: 26px; overflow: hidden; }
+    .mcard-mkt   { font-size: 9px; color: var(--yellow); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .mcard-bottom { display: flex; justify-content: space-between; align-items: flex-end; margin-top: 6px; pt: 4px; border-top: 1px solid rgba(255,255,255,0.04); }
+    .mcard-odd  { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--orange); font-weight: 600; }
+    .mcard-badge { font-size: 9px; font-weight: 700; padding: 1px 4px; border-radius: 2px; }
+
+    /* ── Fullscreen Pick Inspector Modal ── */
+    .modal-overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0, 0, 0, 0.94);
+      backdrop-filter: blur(10px);
+      z-index: 9999;
+      display: none;
+      padding: 24px;
+      overflow-y: auto;
+    }
+    .modal-overlay.active { display: block; }
+
+    .modal-box {
+      max-width: 1200px;
+      margin: 0 auto;
+      background: #09090b;
+      border: 1px solid var(--border2);
+      border-radius: 8px;
+      padding: 24px;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.8);
+      position: relative;
+    }
+    .modal-close-btn {
+      position: absolute;
+      top: 16px; right: 20px;
+      background: var(--bg2);
+      border: 1px solid var(--border2);
+      color: var(--fg);
+      padding: 6px 14px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 11px;
+      transition: all 0.15s;
+    }
+    .modal-close-btn:hover { background: var(--red); color: #fff; border-color: var(--red); }
+
+    .modal-head-title { font-size: 16px; font-weight: 700; color: #fff; margin-bottom: 4px; display: flex; align-items: center; gap: 10px; }
+    .modal-head-sub   { font-size: 11px; color: var(--gray); margin-bottom: 16px; }
+
+    .banner-recommendation {
+      padding: 12px 16px;
+      border-radius: 6px;
+      margin-bottom: 20px;
+      font-size: 12px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .modal-grid-2col {
+      display: grid;
+      grid-template-columns: 1fr 340px;
+      gap: 20px;
+      margin-bottom: 20px;
+    }
+    @media (max-width: 960px) { .modal-grid-2col { grid-template-columns: 1fr; } }
+
+    .modal-panel-box {
+      background: var(--bg1);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 16px;
+    }
+    .modal-panel-title {
+      font-size: 10px; color: var(--gray); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px;
+    }
+
+    .modal-stat-row {
+      display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.04); font-size: 11px;
+    }
+    .modal-stat-label { color: var(--gray); }
+    .modal-stat-value { font-weight: 600; font-family: 'JetBrains Mono', monospace; }
   </style>
 </head>
 <body>
@@ -370,6 +521,9 @@
         </button>
         <button class="tab" id="btnLive" onclick="openTab('live')">
           <span class="tab-icon" style="color:var(--red)">●</span> live tracking <span style="color:var(--gray)" id="cntLive"></span>
+        </button>
+        <button class="tab" id="btnMatrix" onclick="openTab('matrix')">
+          <span class="tab-icon" style="color:var(--green)">⊞</span> matriz 50 picks <span style="color:var(--gray)" id="cntMatrix"></span>
         </button>
       </div>
 
@@ -508,9 +662,89 @@
             </tbody>
           </table>
         </div>
+      <!-- Panel: Matrix 10x5 -->
+      <div class="panel" id="panelMatrix">
+        <div class="tbl-header">
+          <div class="tbl-title">
+            <span style="color:var(--green)">picks.matrix</span>
+            // cuadrícula 10×5 · últimos 50 picks emitidos · click para ficha completa y evaluación de cashout
+          </div>
+        </div>
+
+        <div class="matrix-container">
+          <div class="matrix-legend">
+            <div class="matrix-legend-item"><div class="matrix-legend-box" style="background:rgba(152,195,121,0.2);border:1px solid var(--green)"></div> <span>Ganado (Win)</span></div>
+            <div class="matrix-legend-item"><div class="matrix-legend-box" style="background:rgba(224,108,117,0.2);border:1px solid var(--red)"></div> <span>Perdido (Loss)</span></div>
+            <div class="matrix-legend-item"><div class="matrix-legend-box" style="background:rgba(229,192,123,0.2);border:1px solid var(--yellow)"></div> <span>Pendiente (Live)</span></div>
+            <div class="matrix-legend-item"><div class="matrix-legend-box" style="background:rgba(255,255,255,0.05);border:1px solid var(--border)"></div> <span>Nulo (Push)</span></div>
+          </div>
+
+          <div class="matrix-grid" id="matrixGrid">
+            <!-- 50 Tarjetas generadas dinámicamente -->
+            <div class="c-dim" style="grid-column: 1 / -1; text-align: center; padding: 40px;">cargando matriz de 50 picks...</div>
+          </div>
+        </div>
       </div>
 
     </main>
+  </div>
+
+  <!-- Fullscreen Pick Inspector Modal -->
+  <div class="modal-overlay" id="modalPickInspector" onclick="if(event.target===this)closePickModal()">
+    <div class="modal-box">
+      <button class="modal-close-btn" onclick="closePickModal()">✕ Cerrar (Esc)</button>
+
+      <div class="modal-head-title" id="mModalTitle">
+        <span>#---</span> <span style="color:var(--gray)">|</span> <span>Cargando pick...</span>
+      </div>
+      <div class="modal-head-sub" id="mModalSub">—</div>
+
+      <!-- Recommendation / Cashout Banner -->
+      <div class="banner-recommendation" id="mModalBanner" style="background:rgba(152,195,121,0.12);border:1px solid var(--green);color:var(--green)">
+        <div id="mModalRecText">Cargando diagnóstico...</div>
+        <div id="mModalRecBadge" class="eng" style="font-size:11px;padding:3px 8px">ESTABLE</div>
+      </div>
+
+      <div class="modal-grid-2col">
+        <!-- Chart Panel -->
+        <div class="modal-panel-box">
+          <div class="modal-panel-title">// evolución de cuota & snapshots</div>
+          <canvas id="chartModalSnapshot" height="220" style="width:100%!important;display:block"></canvas>
+        </div>
+
+        <!-- Breakdown Panel -->
+        <div class="modal-panel-box">
+          <div class="modal-panel-title">// deslose de features & stake</div>
+          <div id="mModalStats">
+            <!-- Rellenado dinámicamente -->
+          </div>
+        </div>
+      </div>
+
+      <!-- Snapshots History Table -->
+      <div class="modal-panel-box">
+        <div class="modal-panel-title">// historial de snapshots capturados (<span id="mModalSnapCount">0</span>)</div>
+        <div class="tbl-wrap" style="max-height:240px;overflow-y:auto">
+          <table>
+            <thead>
+              <tr>
+                <th>id</th>
+                <th>timestamp</th>
+                <th>minuto live</th>
+                <th>marcador</th>
+                <th>cuota decimal</th>
+                <th>cuota americana</th>
+                <th>estado mercado</th>
+              </tr>
+            </thead>
+            <tbody id="mModalSnapBody">
+              <tr><td colspan="7" class="c-dim" style="text-align:center">cargando historial...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
   </div>
 
   <script src="app.js?v=7.0"></script>
