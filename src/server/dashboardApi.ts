@@ -415,8 +415,11 @@ export function createDashboardServer(port = 3001) {
     const chatId = process.env.TELEGRAM_VIP_CHANNEL_ID || process.env.TELEGRAM_CHAT_ID;
 
     if (token && chatId) {
-      const { sendProfitLockAlert, sendStructuralDrawAlert, sendSniperAlert } = require(path.join(__dirname, '..', 'telegram'));
+      const { sendProfitLockAlert, sendStructuralDrawAlert, sendSniperAlert, startTelegramBotListener } = require(path.join(__dirname, '..', 'telegram'));
       const { checkAndBroadcastGlobalDraws } = require(path.join(__dirname, '..', 'globalDrawScanner'));
+
+      // Iniciar listener interactivo de comandos de Telegram (/pick 2008, #2008)
+      startTelegramBotListener(token);
 
       setInterval(async () => {
         try {
