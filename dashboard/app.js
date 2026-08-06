@@ -385,7 +385,15 @@ function renderLive(liveData) {
         let badgeText = '● LIVE';
         let badgeStyle = 'background:rgba(229,192,123,0.15);color:var(--yellow)';
 
-        if (p.is_suspended || p.alert === 'SUSPENDED') {
+        if (p.alert === 'PROFIT_LOCK') {
+          cardClass = 'card-win';
+          badgeText = `⚡ LOCK +${p.locked_profit_pct || 30}%`;
+          badgeStyle = 'background:rgba(229,192,123,0.3);color:#ffd700;border:1px solid #ffd700;box-shadow:0 0 8px rgba(255,215,0,0.3)';
+        } else if (p.alert === 'SNIPER_VALUE') {
+          cardClass = 'card-pending';
+          badgeText = `🎯 SNIPER @${p.current_odd ? p.current_odd.toFixed(2) : ''}`;
+          badgeStyle = 'background:rgba(97,175,239,0.25);color:var(--cyan);border:1px solid var(--cyan);box-shadow:0 0 8px rgba(97,175,239,0.3)';
+        } else if (p.is_suspended || p.alert === 'SUSPENDED') {
           cardClass = 'card-pending';
           badgeText = '⏸ SUSPENDIDA';
           badgeStyle = 'background:rgba(229,192,123,0.25);color:var(--yellow);border:1px solid rgba(229,192,123,0.5)';
@@ -457,7 +465,9 @@ function renderLive(liveData) {
 
     // Alert badge
     let alertTag = '<span class="alert-ok">ok</span>';
-    if (p.alert === 'SUSPENDED')           alertTag = '<span class="alert-badge alert-suspended">⏸ SUSPENDIDA</span>';
+    if (p.alert === 'PROFIT_LOCK')                alertTag = `<span class="alert-badge" style="background:rgba(229,192,123,0.3);color:#ffd700;border:1px solid #ffd700">⚡ LOCK +${p.locked_profit_pct || 30}%</span>`;
+    else if (p.alert === 'SNIPER_VALUE')          alertTag = `<span class="alert-badge" style="background:rgba(97,175,239,0.25);color:var(--cyan);border:1px solid var(--cyan)">🎯 SNIPER @${p.current_odd ? p.current_odd.toFixed(2) : ''}</span>`;
+    else if (p.alert === 'SUSPENDED')             alertTag = '<span class="alert-badge alert-suspended">⏸ SUSPENDIDA</span>';
     else if (p.alert === 'LINE_MOVED_AGAINST_US') alertTag = '<span class="alert-badge alert-against">⚠ LÍNEA vs</span>';
     else if (p.alert === 'LINE_MOVED_FOR_US')     alertTag = '<span class="alert-badge alert-for">✓ LÍNEA a favor</span>';
 

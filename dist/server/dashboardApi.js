@@ -206,10 +206,26 @@ function createDashboardServer(port = 3001) {
                     const elapsedMin = Math.floor(elapsedMs / 60000);
                     // ¿Cuota suspendida? Puede indicar inicio de partido o resolución
                     const isSuspended = history.length > 0 && history[0].suspended === 1;
-                    // Señal de alerta: movimiento brusco > 5% en últimos snapshots
+                    // ── INNOVACIÓN 1: Detección de PROFIT LOCK & SNIPER VALUE ──
                     let alertSignal = null;
-                    if (liveCLV !== null && Math.abs(liveCLV) > 5) {
-                        alertSignal = liveCLV > 0 ? 'LINE_MOVED_AGAINST_US' : 'LINE_MOVED_FOR_US';
+                    let lockedProfitPct = null;
+                    let sniperSpikeRatio = null;
+                    if (currentOdd != null && p.entry_odd != null) {
+                        const dropRatio = (p.entry_odd - currentOdd) / p.entry_odd;
+                        const spikeRatio = currentOdd / p.entry_odd;
+                        // PROFIT LOCK: Cuota cayó 30%+ a nuestro favor (ej: 1.70 -> 1.10 = +54.5% profit)
+                        if (dropRatio >= 0.30) {
+                            alertSignal = 'PROFIT_LOCK';
+                            lockedProfitPct = Number(((p.entry_odd - currentOdd) / currentOdd * 100).toFixed(1));
+                        }
+                        // SNIPER VALUE: Cuota subió 35%+ por sobre-reacción del mercado (ej: 1.70 -> 3.40)
+                        else if (spikeRatio >= 1.35 && (p.f_avance || 0.5) >= 0.40) {
+                            alertSignal = 'SNIPER_VALUE';
+                            sniperSpikeRatio = Number(spikeRatio.toFixed(2));
+                        }
+                        else if (Math.abs(liveCLV || 0) > 5) {
+                            alertSignal = liveCLV > 0 ? 'LINE_MOVED_AGAINST_US' : 'LINE_MOVED_FOR_US';
+                        }
                     }
                     if (isSuspended)
                         alertSignal = 'SUSPENDED';
@@ -224,6 +240,8 @@ function createDashboardServer(port = 3001) {
                         snapshot_count: history.length,
                         is_suspended: isSuspended,
                         alert: alertSignal,
+                        locked_profit_pct: lockedProfitPct,
+                        sniper_spike_ratio: sniperSpikeRatio,
                         // Mini-historial de cuotas para sparkline (últimos 20)
                         sparkline: activeHistory.slice(0, 20).reverse().map((s) => s.odd_decimal),
                     };
@@ -266,24 +284,34 @@ function createDashboardServer(port = 3001) {
           LIMIT 100
         `).all(pick.event_id);
                 const timeline = snapshots.length > 0 ? snapshots : eventSnapshots;
-                // Calcular diagnóstico / trayectoria
+                // ── INNOVACIÓN 2: Cálculo de MFE (Max Favorable Excursion) & Diagnóstico ──
                 const activeOdds = timeline.filter((s) => !s.suspended && s.odd_decimal > 0).map((s) => s.odd_decimal);
                 const minOdd = activeOdds.length > 0 ? Math.min(...activeOdds) : pick.odd_decimal;
                 const maxOdd = activeOdds.length > 0 ? Math.max(...activeOdds) : pick.odd_decimal;
                 const initialOdd = pick.odd_decimal;
                 const lastOdd = activeOdds.length > 0 ? activeOdds.at(-1) : pick.odd_decimal;
-                // Trayectoria: 'FAVORABLE', 'DESFAVORABLE', 'CRÍTICO'
+                // MFE Peak ROI (% Máximo de ganancia posible en el mejor momento del partido)
+                const mfePeakRoi = (initialOdd && minOdd && minOdd < initialOdd)
+                    ? Number(((initialOdd - minOdd) / minOdd * 100).toFixed(1))
+                    : 0;
                 let trajectory = 'ESTABLE';
                 let recommendation = 'MANTENER: Posición sin desviaciones extremas.';
                 let recColor = '#98c379'; // verde
-                if (pick.result === 'win') {
+                if (mfePeakRoi >= 30 && pick.result !== 'win') {
+                    trajectory = '⚡ PROFIT LOCK ALCANZADO';
+                    recommendation = `⚡ LOCK PROFIT / CASHOUT: Este pick alcanzó un pico máximo de ganancia de +${mfePeakRoi}% (cuota cayó a @${minOdd.toFixed(2)}). Recomendado asegurar ganancia.`;
+                    recColor = '#e5c07b'; // oro
+                }
+                else if (pick.result === 'win') {
                     trajectory = 'VICTORIA CONFIRMADA';
-                    recommendation = 'GANADO: Cobro total realizado.';
+                    recommendation = `GANADO: Cobro total realizado. (Pico de ganancia alcanzado: +${mfePeakRoi}% MFE).`;
                     recColor = '#98c379';
                 }
                 else if (pick.result === 'loss') {
-                    trajectory = 'PÉRDIDA CONFIRMADA';
-                    recommendation = pick.loss_minute ? `PERDIDO: Ocurrió colapso en min ${pick.loss_minute}'.` : 'PERDIDO: Evento finalizado en contra.';
+                    trajectory = mfePeakRoi >= 25 ? 'PÉRDIDA TRAS PICO CASHOUT' : 'PÉRDIDA CONFIRMADA';
+                    recommendation = mfePeakRoi >= 25
+                        ? `PERDIDO AL FINAL: El pick dio oportunidad de Cashout de +${mfePeakRoi}% (cuota @${minOdd.toFixed(2)}) antes del colapso en min ${pick.loss_minute || 'final'}.`
+                        : (pick.loss_minute ? `PERDIDO: Ocurrió colapso en min ${pick.loss_minute}'.` : 'PERDIDO: Evento finalizado en contra.');
                     recColor = '#e06c75';
                 }
                 else {
@@ -300,7 +328,7 @@ function createDashboardServer(port = 3001) {
                     }
                     else if (lastOdd < initialOdd * 0.8) {
                         trajectory = 'MUY FAVORABLE';
-                        recommendation = '✅ EXCELENTE: La cuota bajó >20%. Probabilidad implícita en aumento constante.';
+                        recommendation = `✅ EXCELENTE: La cuota bajó >20%. MFE actual: +${mfePeakRoi}% ROI.`;
                         recColor = '#98c379';
                     }
                     else if (lastOdd < initialOdd) {
@@ -322,6 +350,7 @@ function createDashboardServer(port = 3001) {
                         lastOdd,
                         minOdd,
                         maxOdd,
+                        mfePeakRoi,
                         snapshotCount: timeline.length,
                         trajectory,
                         recommendation,
