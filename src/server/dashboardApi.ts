@@ -412,18 +412,20 @@ export function createDashboardServer(port = 3001) {
     // ── MONITOR EN VIVO Y DISPARADOR DE ALERTAS A TELEGRAM (CANAL VIP / CHAT) ──
     const alertedPicks = new Set<string>();
     const token = process.env.TELEGRAM_BOT_TOKEN;
-    const chatId = process.env.TELEGRAM_VIP_CHANNEL_ID || process.env.TELEGRAM_CHAT_ID;
+    const vipChannelId = process.env.TELEGRAM_VIP_CHANNEL_ID;
+    const personalChatId = process.env.TELEGRAM_CHAT_ID;
+    const targetChatId = vipChannelId || personalChatId;
 
-    if (token && chatId) {
+    if (token && targetChatId) {
       const { sendProfitLockAlert, sendStructuralDrawAlert, sendSniperAlert } = require(path.join(__dirname, '..', 'telegram'));
       const { checkAndBroadcastGlobalDraws } = require(path.join(__dirname, '..', 'globalDrawScanner'));
 
       setInterval(async () => {
         try {
           // 1. Escanear todo el universo de partidos de fútbol en min 75+ (Global Draw Scanner)
-          await checkAndBroadcastGlobalDraws(token, chatId);
+          await checkAndBroadcastGlobalDraws(token, targetChatId);
 
-          // 2. Escanear picks en desarrollo para Profit Lock / Sniper
+          // 2. Escanear picks en desarrollo para Profit Lock / Sniper / Structural Draw
           const liveRes: any = await fetch(`http://localhost:${port}/api/live`).then(r => r.json());
           if (!liveRes?.live) return;
 
@@ -432,17 +434,25 @@ export function createDashboardServer(port = 3001) {
             const alertKey = `${p.id}:${p.alert}`;
             if (alertedPicks.has(alertKey)) continue;
 
+            alertedPicks.add(alertKey);
+
+            const sendToBoth = async (fn: Function) => {
+              if (vipChannelId) {
+                try { await fn(token, vipChannelId, p); } catch (e: any) { console.error(`[telegram] Error envio VIP: ${e.message}`); }
+              }
+              if (personalChatId && personalChatId !== vipChannelId) {
+                try { await fn(token, personalChatId, p); } catch (e: any) { console.error(`[telegram] Error envio Personal: ${e.message}`); }
+              }
+            };
+
             if (p.alert === 'PROFIT_LOCK') {
-              await sendProfitLockAlert(token, chatId, p);
-              alertedPicks.add(alertKey);
+              await sendToBoth(sendProfitLockAlert);
               console.log(`[telegram] ⚡ Alerta Profit Lock enviada para Pick #${p.id}`);
             } else if (p.alert === 'SNIPER_VALUE') {
-              await sendSniperAlert(token, chatId, p);
-              alertedPicks.add(alertKey);
+              await sendToBoth(sendSniperAlert);
               console.log(`[telegram] 🎯 Alerta Sniper Value enviada para Pick #${p.id}`);
             } else if (p.alert === 'STRUCTURAL_DRAW') {
-              await sendStructuralDrawAlert(token, chatId, p);
-              alertedPicks.add(alertKey);
+              await sendToBoth(sendStructuralDrawAlert);
               console.log(`[telegram] 🎯 Alerta Empate Estructural enviada para Pick #${p.id}`);
             }
           }
