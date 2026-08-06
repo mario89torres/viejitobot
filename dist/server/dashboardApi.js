@@ -411,10 +411,10 @@ function createDashboardServer(port = 3001) {
     });
     server.listen(port, () => {
         console.log(`[Dashboard API] Servidor Web y API de métricas cuantitativas activo en http://localhost:${port}`);
-        // ── MONITOR EN VIVO Y DISPARADOR DE ALERTAS A TELEGRAM ──
+        // ── MONITOR EN VIVO Y DISPARADOR DE ALERTAS A TELEGRAM (CANAL VIP / CHAT) ──
         const alertedPicks = new Set();
         const token = process.env.TELEGRAM_BOT_TOKEN;
-        const chatId = process.env.TELEGRAM_CHAT_ID;
+        const chatId = process.env.TELEGRAM_VIP_CHANNEL_ID || process.env.TELEGRAM_CHAT_ID;
         if (token && chatId) {
             const { sendProfitLockAlert, sendStructuralDrawAlert, sendSniperAlert } = require(path.join(__dirname, '..', 'telegram'));
             const { checkAndBroadcastGlobalDraws } = require(path.join(__dirname, '..', 'globalDrawScanner'));
