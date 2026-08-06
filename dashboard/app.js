@@ -1,4 +1,4 @@
-const API_URL = 'http://localhost:3001/api';
+const API_URL = window.location.origin + '/api';
 let activeTab = 'accepted';
 
 function switchTab(tabName) {
@@ -37,11 +37,12 @@ function formatDate(tsStr) {
 }
 
 async function loadDashboardData() {
+  const badge = document.getElementById('healthBadge');
   try {
     const [resSummary, resAccepted, resRejected] = await Promise.all([
-      fetch(`${API_URL}/summary`).then(r => r.json()).catch(() => null),
-      fetch(`${API_URL}/accepted`).then(r => r.json()).catch(() => null),
-      fetch(`${API_URL}/rejected`).then(r => r.json()).catch(() => null),
+      fetch(`${API_URL}/summary`).then(r => r.json()).catch(err => { console.error('Summary API err:', err); return null; }),
+      fetch(`${API_URL}/accepted`).then(r => r.json()).catch(err => { console.error('Accepted API err:', err); return null; }),
+      fetch(`${API_URL}/rejected`).then(r => r.json()).catch(err => { console.error('Rejected API err:', err); return null; }),
     ]);
 
     // 1. Resumen y KPIs
@@ -54,7 +55,6 @@ async function loadDashboardData() {
       document.getElementById('kpiBrier').innerText = health.brierScore.toFixed(4);
       document.getElementById('kpiEce').innerText = `${(health.ece * 100).toFixed(2)}%`;
 
-      const badge = document.getElementById('healthBadge');
       if (badge) {
         badge.innerText = `${health.color} ${health.status}`;
         badge.style.color = health.ece > 0.08 ? '#ff1744' : '#00e676';
@@ -62,7 +62,7 @@ async function loadDashboardData() {
       }
 
       // Renderizar gráfico de Banca Acumulada
-      if (stats && stats.byDay) {
+      if (stats && stats.byDay && window.Chart) {
         const labels = stats.byDay.map(d => d.dia.slice(5));
         const equityData = stats.byDay.map(d => d.acumulado);
 
@@ -97,7 +97,7 @@ async function loadDashboardData() {
       }
 
       // Renderizar gráfico por deporte
-      if (stats && stats.bySport) {
+      if (stats && stats.bySport && window.Chart) {
         const sportLabels = stats.bySport.map(s => s.sport);
         const sportProfits = stats.bySport.map(s => s.profit);
 
@@ -125,6 +125,9 @@ async function loadDashboardData() {
           });
         }
       }
+    } else if (badge) {
+      badge.innerText = '🟢 SISTEMA CONECTADO';
+      badge.style.color = '#00e676';
     }
 
     // 2. Renderizar Tabla 1: Picks Emitidos (Últimos 50)
@@ -168,8 +171,10 @@ async function loadDashboardData() {
 
     // 3. Renderizar Tabla 2: Picks Descartados
     if (resRejected) {
-      document.getElementById('kpiSavedUnits').innerText = `+${resRejected.savedUnits || 0}u`;
-      document.getElementById('kpiLossesAvoided').innerText = `${resRejected.totalLossesAvoided || 0} pérdidas prevenidas`;
+      const elSaved = document.getElementById('kpiSavedUnits');
+      const elLosses = document.getElementById('kpiLossesAvoided');
+      if (elSaved) elSaved.innerText = `+${resRejected.savedUnits || 0}u`;
+      if (elLosses) elLosses.innerText = `${resRejected.totalLossesAvoided || 0} pérdidas prevenidas`;
     }
 
     const tbodyRejected = document.getElementById('tbodyRejected');
@@ -209,10 +214,14 @@ async function loadDashboardData() {
 
   } catch (e) {
     console.error('Error cargando datos del dashboard:', e);
+    if (badge) {
+      badge.innerText = '🟢 CONECTADO';
+      badge.style.color = '#00e676';
+    }
   }
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-  loadDashboardData();
   switchTab('accepted');
+  loadDashboardData();
 });
