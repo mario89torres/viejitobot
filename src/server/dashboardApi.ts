@@ -30,7 +30,7 @@ export function createDashboardServer(port = 3001) {
     const url = req.url || '/';
 
     try {
-      // 1. API Endpoints
+      // 1. API Summary
       if (url === '/api/summary') {
         res.setHeader('Content-Type', 'application/json; charset=utf-8');
         const health = calculateQuantitativeHealth({ windowDays: 30 });
@@ -40,6 +40,38 @@ export function createDashboardServer(port = 3001) {
         return;
       }
 
+      // 2. API Accepted Picks (Últimos 50 picks emitidos que pasaron los filtros)
+      if (url === '/api/accepted') {
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        const excl = excludedSports();
+        const rawPicks = db.prepare(`
+          SELECT id, ts, event_id, event, sport, market, selection, odd_decimal, conf, conf_heuristic, conf_learned, result, final_score, stake, loss_minute
+          FROM picks
+          WHERE stake IS NOT NULL AND result IN ('win', 'loss', 'push')
+          ORDER BY ts DESC
+          LIMIT 500
+        `).all();
+
+        const accepted = rawPicks.filter((r: any) => {
+          const isExclSport = excl.includes(normSport(r.sport));
+          const isOver = isBlockedOver(r);
+          const isMktBlocked = isBlockedMarket(r);
+          return !isExclSport && !isOver && !isMktBlocked;
+        }).slice(0, 50).map((r: any) => {
+          const profit = r.result === 'win' ? (r.stake * (r.odd_decimal - 1)) : (r.result === 'loss' ? -r.stake : 0);
+          return {
+            ...r,
+            profit: Number(profit.toFixed(2)),
+            confPct: (r.conf * 100).toFixed(1) + '%',
+          };
+        });
+
+        res.writeHead(200);
+        res.end(JSON.stringify({ acceptedCount: accepted.length, accepted }));
+        return;
+      }
+
+      // 3. API Rejected Picks (Picks bloqueados por la doble capa)
       if (url === '/api/rejected') {
         res.setHeader('Content-Type', 'application/json; charset=utf-8');
         const excl = excludedSports();
@@ -91,7 +123,7 @@ export function createDashboardServer(port = 3001) {
         return;
       }
 
-      // 2. Archivos Estáticos del Dashboard (/ -> index.html, /app.js)
+      // 4. Archivos Estáticos del Dashboard
       let filePath = path.join(dashboardDir, url === '/' ? 'index.html' : url);
       if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
         const ext = path.extname(filePath);
