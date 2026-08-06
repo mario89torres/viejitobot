@@ -10,14 +10,14 @@ function switchTab(tabName) {
   const title = document.getElementById('tableTitle');
 
   if (tabName === 'accepted') {
-    if (btnAcc) btnAcc.classList.add('active');
-    if (btnRej) btnRej.classList.remove('active');
+    if (btnAcc) btnAcc.className = 'tab-btn active';
+    if (btnRej) btnRej.className = 'tab-btn';
     if (viewAcc) viewAcc.style.display = 'block';
     if (viewRej) viewRej.style.display = 'none';
     if (title) title.innerText = '⚡ HISTÓRICO DE PICKS EMITIDOS EN VIVO (ÚLTIMOS 50)';
   } else {
-    if (btnRej) btnRej.classList.add('active');
-    if (btnAcc) btnAcc.classList.remove('active');
+    if (btnRej) btnRej.className = 'tab-btn active';
+    if (btnAcc) btnAcc.className = 'tab-btn';
     if (viewRej) viewRej.style.display = 'block';
     if (viewAcc) viewAcc.style.display = 'none';
     if (title) title.innerText = '🛡️ PICKS DESCARTADOS POR LA DOBLE CAPA & RESOLUCIÓN REAL';
@@ -34,6 +34,138 @@ function formatDate(tsStr) {
   } catch (e) {
     return tsStr.slice(5, 16);
   }
+}
+
+// Renderizador Nativo HTML5 Canvas 2D para la Curva de Banca (Garantía 100% Offline / No CDN)
+function drawEquityCanvas(byDay) {
+  const canvas = document.getElementById('chartEquity');
+  if (!canvas || !byDay || !byDay.length) return;
+
+  const rect = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = (rect.width || 600) * dpr;
+  canvas.height = (rect.height || 180) * dpr;
+
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  const W = rect.width || 600;
+  const H = rect.height || 180;
+
+  ctx.clearRect(0, 0, W, H);
+
+  const values = byDay.map(d => d.acumulado);
+  const labels = byDay.map(d => d.dia.slice(5));
+  let minV = Math.min(0, ...values);
+  let maxV = Math.max(10, ...values);
+  const range = (maxV - minV) || 1;
+
+  const padLeft = 45, padRight = 20, padTop = 20, padBottom = 30;
+  const graphW = W - padLeft - padRight;
+  const graphH = H - padTop - padBottom;
+
+  // Dibujar cuadrícula tenue
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+  ctx.lineWidth = 1;
+  ctx.font = '10px "JetBrains Mono", monospace';
+  ctx.fillStyle = '#64748b';
+
+  const gridSteps = 4;
+  for (let i = 0; i <= gridSteps; i++) {
+    const yVal = minV + (range * i) / gridSteps;
+    const yPos = padTop + graphH - (i / gridSteps) * graphH;
+    ctx.beginPath();
+    ctx.moveTo(padLeft, yPos);
+    ctx.lineTo(W - padRight, yPos);
+    ctx.stroke();
+    ctx.fillText(`${yVal >= 0 ? '+' : ''}${yVal.toFixed(1)}u`, 5, yPos + 3);
+  }
+
+  // Mapear puntos
+  const points = values.map((v, i) => {
+    const x = padLeft + (i / (values.length - 1 || 1)) * graphW;
+    const y = padTop + graphH - ((v - minV) / range) * graphH;
+    return { x, y, val: v, label: labels[i] };
+  });
+
+  // Dibujar relleno cian degradado
+  const gradient = ctx.createLinearGradient(0, padTop, 0, padTop + graphH);
+  gradient.addColorStop(0, 'rgba(0, 242, 254, 0.25)');
+  gradient.addColorStop(1, 'rgba(0, 242, 254, 0.0)');
+
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, padTop + graphH);
+  for (const p of points) ctx.lineTo(p.x, p.y);
+  ctx.lineTo(points[points.length - 1].x, padTop + graphH);
+  ctx.closePath();
+  ctx.fillStyle = gradient;
+  ctx.fill();
+
+  // Dibujar línea neón cian
+  ctx.beginPath();
+  for (let i = 0; i < points.length; i++) {
+    if (i === 0) ctx.moveTo(points[i].x, points[i].y);
+    else ctx.lineTo(points[i].x, points[i].y);
+  }
+  ctx.strokeStyle = '#00f2fe';
+  ctx.lineWidth = 2.5;
+  ctx.stroke();
+
+  // Dibujar puntos y etiquetas de eje X
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i];
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 3.5, 0, Math.PI * 2);
+    ctx.fillStyle = '#00f2fe';
+    ctx.fill();
+    ctx.strokeStyle = '#07090e';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    if (i % Math.ceil(points.length / 6) === 0 || i === points.length - 1) {
+      ctx.fillStyle = '#64748b';
+      ctx.fillText(p.label, p.x - 12, H - 8);
+    }
+  }
+}
+
+// Renderizador Nativo HTML5 Canvas 2D para Rendimiento por Deporte
+function drawSportsCanvas(bySport) {
+  const canvas = document.getElementById('chartSports');
+  if (!canvas || !bySport || !bySport.length) return;
+
+  const rect = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = (rect.width || 300) * dpr;
+  canvas.height = (rect.height || 180) * dpr;
+
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  const W = rect.width || 300;
+  const H = rect.height || 180;
+
+  ctx.clearRect(0, 0, W, H);
+
+  const padLeft = 80, padRight = 50, padTop = 15, padBottom = 15;
+  const barHeight = Math.min(22, (H - padTop - padBottom) / bySport.length - 6);
+
+  let maxVal = Math.max(1, ...bySport.map(s => Math.abs(s.profit)));
+
+  bySport.forEach((s, i) => {
+    const y = padTop + i * (barHeight + 8);
+    const barW = (Math.abs(s.profit) / maxVal) * (W - padLeft - padRight);
+    const isPos = s.profit >= 0;
+
+    ctx.font = '11px "Inter", sans-serif';
+    ctx.fillStyle = '#94a3b8';
+    ctx.fillText(s.sport.slice(0, 12), 5, y + barHeight - 6);
+
+    ctx.fillStyle = isPos ? '#00e676' : '#ff1744';
+    ctx.fillRect(padLeft, y, Math.max(4, barW), barHeight);
+
+    ctx.font = '11px "JetBrains Mono", monospace';
+    ctx.fillStyle = isPos ? '#00e676' : '#ff1744';
+    ctx.fillText(`${isPos ? '+' : ''}${s.profit.toFixed(1)}u`, padLeft + Math.max(4, barW) + 6, y + barHeight - 6);
+  });
 }
 
 async function loadDashboardData() {
@@ -61,70 +193,8 @@ async function loadDashboardData() {
         badge.style.borderColor = health.ece > 0.08 ? 'rgba(255, 23, 68, 0.4)' : 'rgba(0, 230, 118, 0.4)';
       }
 
-      // Renderizar gráfico de Banca Acumulada
-      if (stats && stats.byDay && window.Chart) {
-        const labels = stats.byDay.map(d => d.dia.slice(5));
-        const equityData = stats.byDay.map(d => d.acumulado);
-
-        const ctxEquity = document.getElementById('chartEquity');
-        if (ctxEquity) {
-          new Chart(ctxEquity.getContext('2d'), {
-            type: 'line',
-            data: {
-              labels,
-              datasets: [{
-                label: 'Banca Acumulada (u)',
-                data: equityData,
-                borderColor: '#00f2fe',
-                backgroundColor: 'rgba(0, 242, 254, 0.08)',
-                fill: true,
-                tension: 0.35,
-                borderWidth: 2,
-                pointRadius: 3,
-                pointBackgroundColor: '#00f2fe',
-              }]
-            },
-            options: {
-              responsive: true,
-              plugins: { legend: { display: false } },
-              scales: {
-                x: { grid: { color: 'rgba(255, 255, 255, 0.05)' }, ticks: { color: '#64748b', font: { family: 'JetBrains Mono' } } },
-                y: { grid: { color: 'rgba(255, 255, 255, 0.05)' }, ticks: { color: '#64748b', font: { family: 'JetBrains Mono' } } }
-              }
-            }
-          });
-        }
-      }
-
-      // Renderizar gráfico por deporte
-      if (stats && stats.bySport && window.Chart) {
-        const sportLabels = stats.bySport.map(s => s.sport);
-        const sportProfits = stats.bySport.map(s => s.profit);
-
-        const ctxSports = document.getElementById('chartSports');
-        if (ctxSports) {
-          new Chart(ctxSports.getContext('2d'), {
-            type: 'bar',
-            data: {
-              labels: sportLabels,
-              datasets: [{
-                label: 'Ganancia (u)',
-                data: sportProfits,
-                backgroundColor: sportProfits.map(v => v >= 0 ? '#00e676' : '#ff1744'),
-                borderRadius: 6,
-              }]
-            },
-            options: {
-              responsive: true,
-              plugins: { legend: { display: false } },
-              scales: {
-                x: { grid: { color: 'rgba(255, 255, 255, 0.05)' }, ticks: { color: '#64748b' } },
-                y: { grid: { color: 'rgba(255, 255, 255, 0.05)' }, ticks: { color: '#64748b' } }
-              }
-            }
-          });
-        }
-      }
+      if (stats && stats.byDay) drawEquityCanvas(stats.byDay);
+      if (stats && stats.bySport) drawSportsCanvas(stats.bySport);
     } else if (badge) {
       badge.innerText = '🟢 SISTEMA CONECTADO';
       badge.style.color = '#00e676';
@@ -214,14 +284,16 @@ async function loadDashboardData() {
 
   } catch (e) {
     console.error('Error cargando datos del dashboard:', e);
-    if (badge) {
-      badge.innerText = '🟢 CONECTADO';
-      badge.style.color = '#00e676';
-    }
   }
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+function runInit() {
   switchTab('accepted');
   loadDashboardData();
-});
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', runInit);
+} else {
+  runInit();
+}

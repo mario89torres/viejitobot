@@ -7,7 +7,6 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
     :root {
       --bg: #07090e;
@@ -132,6 +131,12 @@
     }
     .panel-title { font-size: 13px; font-family: 'JetBrains Mono', monospace; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: #ffffff; }
 
+    /* Canvas styling */
+    canvas {
+      width: 100% !important;
+      display: block;
+    }
+
     /* Tabs */
     .tab-group {
       display: flex;
@@ -247,15 +252,15 @@
   <section class="grid-charts">
     <div class="card-panel">
       <div class="panel-header">
-        <div class="panel-title">Curva de Banca Acumulada (Unidades)</div>
+        <div class="panel-title">Curva de Banca Acumulada (Unidades Neta)</div>
       </div>
-      <canvas id="chartEquity" height="120"></canvas>
+      <canvas id="chartEquity" height="180"></canvas>
     </div>
     <div class="card-panel">
       <div class="panel-header">
         <div class="panel-title">Rendimiento por Deporte</div>
       </div>
-      <canvas id="chartSports" height="240"></canvas>
+      <canvas id="chartSports" height="180"></canvas>
     </div>
   </section>
 
@@ -314,6 +319,6 @@
     </div>
   </section>
 
-  <script src="app.js?v=3.2"></script>
+  <script src="app.js?v=3.3"></script>
 </body>
 </html>
