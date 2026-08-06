@@ -73,10 +73,12 @@ function createDashboardServer(port = 3001) {
                 const rawPicks = db.prepare(`
           SELECT id, ts, event_id, event, sport, market, selection, odd_decimal, conf, result, final_score, stake, loss_minute
           FROM picks
-          WHERE stake IS NOT NULL AND result IN ('win', 'loss')
+          WHERE stake IS NOT NULL AND result IN ('win', 'loss', 'push')
           ORDER BY ts DESC
-          LIMIT 200
+          LIMIT 300
         `).all();
+                let savedUnits = 0;
+                let totalLossesAvoided = 0;
                 const rejected = rawPicks.filter((r) => {
                     const isExclSport = excl.includes(normSport(r.sport));
                     const isOver = isBlockedOver(r);
@@ -92,10 +94,28 @@ function createDashboardServer(port = 3001) {
                         reason = 'Línea >= 4.5 Bloqueada';
                     else if ((r.market || '').toLowerCase().includes('empate no accion'))
                         reason = 'DNB Débil / No Cumple Edge';
-                    return { ...r, reason };
+                    let statusTag = '⚪ Pendiente';
+                    if (r.result === 'win') {
+                        statusTag = `✅ Ganado (+${(r.stake * (r.odd_decimal - 1)).toFixed(2)}u)`;
+                    }
+                    else if (r.result === 'loss') {
+                        const minStr = r.loss_minute ? ` min ${r.loss_minute}'` : '';
+                        statusTag = `❌ Perdido (-${r.stake.toFixed(2)}u${minStr})`;
+                        savedUnits += r.stake;
+                        totalLossesAvoided += 1;
+                    }
+                    else if (r.result === 'push') {
+                        statusTag = `⚪ Nulo (0.00u)`;
+                    }
+                    return { ...r, reason, statusTag };
                 });
                 res.writeHead(200);
-                res.end(JSON.stringify({ rejectedCount: rejected.length, rejected }));
+                res.end(JSON.stringify({
+                    rejectedCount: rejected.length,
+                    totalLossesAvoided,
+                    savedUnits: Number(savedUnits.toFixed(2)),
+                    rejected
+                }));
                 return;
             }
             // 2. Archivos Estáticos del Dashboard (/ -> index.html, /app.js)

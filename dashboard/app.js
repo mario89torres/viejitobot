@@ -16,7 +16,11 @@ async function loadDashboardData() {
     document.getElementById('kpiWins').innerText = `${health.wins} aciertos / ${health.n} picks`;
     document.getElementById('kpiBrier').innerText = health.brierScore.toFixed(4);
     document.getElementById('kpiEce').innerText = `${(health.ece * 100).toFixed(2)}%`;
-    document.getElementById('kpiSharpe').innerText = health.sharpeRatio ? health.sharpeRatio.toFixed(2) : 'N/A';
+
+    if (resRejected) {
+      document.getElementById('kpiSavedUnits').innerText = `+${resRejected.savedUnits || 0}u`;
+      document.getElementById('kpiLossesAvoided').innerText = `${resRejected.totalLossesAvoided || 0} pérdidas prevenidas`;
+    }
 
     const badge = document.getElementById('healthBadge');
     badge.innerText = `${health.color} ${health.status}`;
@@ -81,22 +85,29 @@ async function loadDashboardData() {
       });
     }
 
-    // Renderizar tabla de rechazados
+    // Renderizar tabla de descartados con resolución real
     const tbody = document.getElementById('tableRejected');
     if (resRejected && resRejected.rejected && resRejected.rejected.length > 0) {
-      tbody.innerHTML = resRejected.rejected.slice(0, 20).map(r => `
-        <tr>
-          <td>#${r.id}</td>
-          <td>${r.ts ? r.ts.slice(11, 16) : '-'}</td>
-          <td><b>${r.event}</b></td>
-          <td>${r.sport}</td>
-          <td>${r.market}: <b>${r.selection}</b> @ ${r.odd_decimal.toFixed(2)}</td>
-          <td>${r.stake}u</td>
-          <td><span style="color: #f85149; font-weight: 600;">⚠️ ${r.reason}</span></td>
-        </tr>
-      `).join('');
+      tbody.innerHTML = resRejected.rejected.slice(0, 30).map(r => {
+        let resColor = '#8b949e';
+        if (r.result === 'win') resColor = '#3fb950';
+        else if (r.result === 'loss') resColor = '#f85149';
+
+        return `
+          <tr>
+            <td>#${r.id}</td>
+            <td>${r.ts ? r.ts.slice(11, 16) : '-'}</td>
+            <td><b>${r.event}</b></td>
+            <td>${r.sport}</td>
+            <td>${r.market}: <b>${r.selection}</b> @ ${r.odd_decimal.toFixed(2)}</td>
+            <td>${r.stake}u</td>
+            <td><span style="color: #d29922; font-weight: 600;">⚠️ ${r.reason}</span></td>
+            <td><span style="color: ${resColor}; font-weight: 700;">${r.statusTag}</span></td>
+          </tr>
+        `;
+      }).join('');
     } else {
-      tbody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--text-muted);">No hay picks rechazados recientemente.</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-muted);">No hay picks descartados recientemente.</td></tr>`;
     }
 
   } catch (e) {

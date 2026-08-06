@@ -98,7 +98,7 @@
     <div class="card">
       <div class="kpi-title">ROI GLOBAL ACUMULADO</div>
       <div class="kpi-value positive" id="kpiRoi">+0.00%</div>
-      <div class="kpi-sub" id="kpiProfit">+0.00u neta</div>
+      <div class="kpi-sub" id="kpiProfit">+0.00u ganancia neta</div>
     </div>
     <div class="card">
       <div class="kpi-title">TASA DE ACIERTO (WIN RATE)</div>
@@ -116,9 +116,9 @@
       <div class="kpi-sub">Límite saludable < 5.0%</div>
     </div>
     <div class="card">
-      <div class="kpi-title">SHARPE RATIO ANUALIZADO</div>
-      <div class="kpi-value positive" id="kpiSharpe">0.00</div>
-      <div class="kpi-sub">Retorno ajustado a riesgo</div>
+      <div class="kpi-title">PÉRDIDAS EVITADAS POR DOBLE CAPA</div>
+      <div class="kpi-value positive" id="kpiSavedUnits">+0.00u</div>
+      <div class="kpi-sub" id="kpiLossesAvoided">0 pérdidas prevenidas</div>
     </div>
   </section>
 
@@ -134,7 +134,7 @@
   </section>
 
   <section class="card">
-    <div class="kpi-title" style="margin-bottom: 16px;">🔍 PICKS DESCARTADOS POR EL FILTRO DE DOBLE CAPA (ÚLTIMOS 20)</div>
+    <div class="kpi-title" style="margin-bottom: 16px;">🔍 PICKS DESCARTADOS POR EL FILTRO DE DOBLE CAPA & RESOLUCIÓN REAL</div>
     <table>
       <thead>
         <tr>
@@ -145,10 +145,11 @@
           <th>Mercado & Selección</th>
           <th>Stake Orig</th>
           <th>Motivo de Exclusión</th>
+          <th>Resolución Real (Resultado)</th>
         </tr>
       </thead>
       <tbody id="tableRejected">
-        <tr><td colspan="7" style="text-align: center; color: var(--text-muted);">Cargando registros...</td></tr>
+        <tr><td colspan="8" style="text-align: center; color: var(--text-muted);">Cargando registros...</td></tr>
       </tbody>
     </table>
   </section>
