@@ -87,6 +87,8 @@ node index.js --once # un solo ciclo (útil para probar)
 | `/stats` | Tasa de acierto por confianza + calibración (Brier, log loss, ECE), CLV y semáforo de edge. |
 | `/health` | ECE de los últimos 200 picks liquidados; alerta si hay drift de calibración. |
 | `/deportes` | Deportes en vivo ahora con conteo de eventos y jugadas. |
+| `/dashboard` | **Solo dueño.** Levanta el panel web (puerto 3001), que además dispara las alertas automáticas. `status` y `off` para consultarlo y detenerlo. Alias: `/panel`. |
+| `/train` | **Solo dueño.** Exporta el dataset y reentrena el modelo. |
 | `/help` | Ayuda. |
 
 ---
@@ -231,5 +233,5 @@ FROM picks WHERE result IS NOT NULL ORDER BY ts DESC;
 
 - El bot corre como tarea programada de Windows (`PlaydoitMonitorBot`): arranca oculto al iniciar sesión y `scripts/run-bot.cmd` lo relanza solo si crashea (log en `bot.log`, rotado a `bot.log.old` en cada arranque). Tras cambiar código o `.env`, ejecuta `scripts\restart-bot.cmd`. Limitación: corre desde que inicias sesión; para que arranque sin login habría que marcar "Ejecutar tanto si el usuario inició sesión como si no" en el Programador de tareas (pide tu contraseña).
 - La API se consulta con `User-Agent` de navegador y `Referer` de playdoit.mx; hay una pausa de 500 ms entre deportes y reintentos con backoff ante fallos.
-- Solo responde al `TELEGRAM_CHAT_ID` configurado; mensajes de otros chats se ignoran.
+- **Control de acceso**: el bot atiende a cualquier chat, porque los suscriptores VIP necesitan `/start` y `/vip`. Los comandos que ejecutan procesos en la máquina (`/train`, `/dashboard`) están restringidos al `TELEGRAM_CHAT_ID` mediante `isOwner()`; el resto son de solo lectura y quedan abiertos a propósito. Cualquier comando nuevo que lance procesos, escriba en disco o gaste cuota de API debe pasar por `isOwner()`.
 - El factor de línea mejora con historial: el recolector de fondo alimenta la BD cada 3 minutos aunque no uses comandos.

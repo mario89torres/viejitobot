@@ -40,3 +40,6 @@ Thumbs.db
 ai-job-search/
 curso-basquet-tizayuca/
 pmbtc/
+
+# Cache del backtest de umbrales (regenerable, pesado)
+draw_universe_*.json
