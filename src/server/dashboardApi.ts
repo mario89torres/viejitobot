@@ -2,6 +2,8 @@ import * as http from 'http';
 import * as fs from 'fs';
 import * as path from 'path';
 
+require('dotenv').config();
+
 const healthPath = path.join(__dirname, '..', '..', 'src', 'health');
 const metricsPath = path.join(__dirname, '..', '..', 'src', 'metrics');
 const dbPath = path.join(__dirname, '..', '..', 'src', 'db');
@@ -52,7 +54,7 @@ export function createDashboardServer(port = 3001) {
                  stake, stake_mode, score_version,
                  result, loss_minute
           FROM picks
-          WHERE stake IS NOT NULL AND result IN ('win', 'loss', 'push')
+          WHERE stake IS NOT NULL
           ORDER BY ts DESC
           LIMIT 500
         `).all();
@@ -143,8 +145,7 @@ export function createDashboardServer(port = 3001) {
                  p.edge, p.stake, p.stake_mode, p.score_version,
                  p.f_prob_justa, p.f_avance, p.f_situacion, p.f_linea, p.f_apertura
           FROM picks p
-          WHERE p.stake IS NOT NULL
-            AND (p.result IS NULL OR p.result NOT IN ('win','loss','push'))
+          WHERE (p.result IS NULL OR p.result = 'unknown')
           ORDER BY p.ts DESC
           LIMIT 50
         `).all();
@@ -152,12 +153,17 @@ export function createDashboardServer(port = 3001) {
         const live = pending.map((p: any) => {
           // Historial de cuotas de los últimos 60 snapshots
           const history = db.prepare(`
-            SELECT odd_decimal, ts, suspended
+            SELECT odd_decimal, ts, suspended, score, live_time
             FROM snapshots
             WHERE event_id = ? AND market = ? AND selection = ?
             ORDER BY ts DESC
             LIMIT 60
           `).all(p.event_id, p.market, p.selection) as any[];
+
+          // Último marcador y minuto conocido (de cualquier snapshot, incluidos suspendidos)
+          const latestWithScore = history.find((s: any) => s.score && s.score !== '');
+          const latestScore = latestWithScore ? latestWithScore.score : null;
+          const latestLiveTime = latestWithScore ? latestWithScore.live_time : null;
 
           const activeHistory = history.filter((s: any) => !s.suspended);
           const currentOdd = activeHistory.length > 0 ? activeHistory[0].odd_decimal : null;
@@ -238,13 +244,17 @@ export function createDashboardServer(port = 3001) {
             locked_profit_pct: lockedProfitPct,
             sniper_spike_ratio: sniperSpikeRatio,
             structural_draw: drawSignal,
+            score: latestScore,
+            live_time: latestLiveTime,
             // Mini-historial de cuotas para sparkline (últimos 20)
             sparkline: activeHistory.slice(0, 20).reverse().map((s: any) => s.odd_decimal),
           };
         });
 
-        res.writeHead(200);
-        res.end(JSON.stringify({ count: live.length, live }));
+            // Filtrar picks activos (emitidos en las últimas 3 horas)
+            const liveFiltered = live.filter(p => (p.elapsed_min || 0) <= 180);
+            res.writeHead(200);
+            res.end(JSON.stringify({ count: liveFiltered.length, live: liveFiltered }));
         return;
       }
 
@@ -411,15 +421,20 @@ export function createDashboardServer(port = 3001) {
   server.listen(port, () => {
     console.log(`[Dashboard API] Servidor Web y API de métricas cuantitativas activo en http://localhost:${port}`);
 
-    // ── MONITOR EN VIVO Y DISPARADOR DE ALERTAS A TELEGRAM (CANAL VIP / CHAT) ──
-    const alertedPicks = new Set<string>();
+    // ── CACHE PERSISTENTE DE PICKS ALERTADOS (sobrevive reinicios) ──
+    const isPickAlerted = (key: string): boolean => {
+      try { return !!db.prepare('SELECT key FROM alerted_events WHERE key = ?').get(key); } catch { return false; }
+    };
+    const markPickAlerted = (key: string): void => {
+      try { db.prepare('INSERT OR IGNORE INTO alerted_events (key, ts) VALUES (?, ?)').run(key, new Date().toISOString()); } catch {}
+    };
     const token = process.env.TELEGRAM_BOT_TOKEN;
     const vipChannelId = process.env.TELEGRAM_VIP_CHANNEL_ID;
     const personalChatId = process.env.TELEGRAM_CHAT_ID;
     const targetChatId = vipChannelId || personalChatId;
 
     if (token && targetChatId) {
-      const { sendProfitLockAlert, sendStructuralDrawAlert, sendSniperAlert } = require(path.join(__dirname, '..', 'telegram'));
+      const { sendProfitLockAlert, sendStructuralDrawAlert, sendSniperAlert } = require(path.join(__dirname, '..', '..', 'src', 'telegram'));
       const { checkAndBroadcastGlobalDraws } = require(path.join(__dirname, '..', 'globalDrawScanner'));
 
       setInterval(async () => {
@@ -434,9 +449,9 @@ export function createDashboardServer(port = 3001) {
           for (const p of liveRes.live) {
             if (!p.alert) continue;
             const alertKey = `${p.id}:${p.alert}`;
-            if (alertedPicks.has(alertKey)) continue;
+            if (isPickAlerted(alertKey)) continue;
 
-            alertedPicks.add(alertKey);
+            markPickAlerted(alertKey);
 
             const sendToBoth = async (fn: Function) => {
               if (vipChannelId) {
@@ -447,13 +462,17 @@ export function createDashboardServer(port = 3001) {
               }
             };
 
-            if (p.alert === 'PROFIT_LOCK') {
-              await sendToBoth(sendProfitLockAlert);
-              console.log(`[telegram] ⚡ Alerta Profit Lock enviada para Pick #${p.id}`);
-            } else if (p.alert === 'SNIPER_VALUE') {
-              await sendToBoth(sendSniperAlert);
-              console.log(`[telegram] 🎯 Alerta Sniper Value enviada para Pick #${p.id}`);
-            } else if (p.alert === 'STRUCTURAL_DRAW') {
+            // Only enviar alertas para Empates Estructurales cuando el marcador actual es empate
+            const isScoreTie = (score: string | null): boolean => {
+              if (!score) return false;
+              const parts = score.split('-');
+              if (parts.length !== 2) return false;
+              const left = Number(parts[0].trim());
+              const right = Number(parts[1].trim());
+              return !isNaN(left) && !isNaN(right) && left === right;
+            };
+
+            if (p.alert === 'STRUCTURAL_DRAW' && isScoreTie(p.score)) {
               await sendToBoth(sendStructuralDrawAlert);
               console.log(`[telegram] 🎯 Alerta Empate Estructural enviada para Pick #${p.id}`);
             }
@@ -469,5 +488,7 @@ export function createDashboardServer(port = 3001) {
 }
 
 if (require.main === module) {
-  createDashboardServer(3001);
+  // Mismo valor que lee bot.js para /dashboard: si difieren, el bot sondearia
+  // un puerto y el panel abriria otro.
+  createDashboardServer(Number(process.env.DASHBOARD_PORT || 3001));
 }
