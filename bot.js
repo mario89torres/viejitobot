@@ -12,9 +12,12 @@ const { safestPicks, rankPicks, goldenPick, parlayCombos } = require('./src/conf
 const { computeMetrics, compareScores, edgeStats, computeHealth, stakeStats, stakePicksByDate } = require('./src/metrics');
 const { getMode, reloadModel } = require('./src/model');
 const sharp = require('./src/sharp');
-const { execFile } = require('child_process');
+const { execFile, spawn } = require('child_process');
 const { promisify } = require('util');
 const execFileP = promisify(execFile);
+const net = require('net');
+const path = require('path');
+const fs = require('fs');
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const CHAT_ID = String(process.env.TELEGRAM_CHAT_ID);
@@ -58,6 +61,12 @@ function norm(s) {
   return s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 }
 
+// El bot atiende a cualquier chat (los suscriptores VIP usan /start y /vip), asi
+// que los comandos que ejecutan procesos en la maquina se restringen al due\u00f1o.
+function isOwner(chatId) {
+  return String(chatId) === CHAT_ID;
+}
+
 async function getFreshRows() {
   const sportResults = await fetchAllLive();
   const rows = normalize(sportResults);
@@ -65,7 +74,7 @@ async function getFreshRows() {
   return { rows, sports: sportResults.map(r => r.sport) };
 }
 
-async function handleTop(args) {
+async function handleTop(args, chatId) {
   const cfg = { ...baseConfig };
   let sportFilter = null;
   let minMinute = null;
@@ -89,18 +98,18 @@ async function handleTop(args) {
     }
   }
 
-  await reply('⏳ Consultando momios en vivo...');
+  await reply(chatId, '⏳ Consultando momios en vivo...');
   const { rows } = await getFreshRows();
   let filtered = rows;
   if (sportFilter) filtered = filtered.filter(r => norm(r.sport).includes(sportFilter));
   if (minMinute !== null) filtered = filtered.filter(r => r.minute !== null && r.minute >= minMinute);
   if (minSet !== null) filtered = filtered.filter(r => r.setNum !== null && r.setNum >= minSet);
 
-  if (!filtered.length) return reply('No hay jugadas en vivo con esos filtros ahora mismo.');
+  if (!filtered.length) return reply(chatId, 'No hay jugadas en vivo con esos filtros ahora mismo.');
 
   const picks = topPicks(filtered, cfg);
-  if (!picks.length) return reply('No hay jugadas dentro del rango de momios indicado.');
-  await sendTelegram(TOKEN, CHAT_ID, formatMessage(picks));
+  if (!picks.length) return reply(chatId, 'No hay jugadas dentro del rango de momios indicado.');
+  await sendTelegram(TOKEN, chatId, formatMessage(picks));
 }
 
 function pct(x) { return `${Math.round(x * 100)}%`; }
@@ -181,18 +190,18 @@ function getCountryFlag(champ = '', event = '', sport = '') {
   return '🌐';
 }
 
-async function handleSeguras(args) {
+async function handleSeguras(args, chatId) {
   const sportFilter = args.length ? norm(args.join(' ')) : null;
-  await reply('⏳ Analizando jugadas en vivo...');
+  await reply(chatId, '⏳ Analizando jugadas en vivo...');
   const { rows } = await getFreshRows();
   let filtered = rows;
   if (sportFilter) filtered = filtered.filter(r => norm(r.sport).includes(sportFilter));
   // e-sports/simulados excluidos por defecto (ruidosos), salvo que los pidas explícitamente
   else filtered = filtered.filter(r => !norm(r.sport).startsWith('e-'));
-  if (!filtered.length) return reply('No hay jugadas en vivo con ese filtro ahora mismo.');
+  if (!filtered.length) return reply(chatId, 'No hay jugadas en vivo con ese filtro ahora mismo.');
 
   const picks = safestPicks(filtered, 3);
-  if (!picks.length) return reply('No hay jugadas candidatas en este momento.');
+  if (!picks.length) return reply(chatId, 'No hay jugadas candidatas en este momento.');
   // Se muestran todas, pero solo se REGISTRAN las nuevas: repetir /seguras no
   // debe duplicar filas en el dataset (los duplicados rompen la independencia
   // que el entrenamiento walk-forward asume).
@@ -227,12 +236,12 @@ async function handleSeguras(args) {
     }
     msg += '\n';
   }
-  await sendTelegram(TOKEN, CHAT_ID, msg);
+  await sendTelegram(TOKEN, chatId, msg);
 }
 
-async function handleStats() {
+async function handleStats(chatId) {
   const { buckets, pending } = getStats();
-  if (!buckets.length && !pending) return reply('Aún no hay picks registrados. Usa /seguras para empezar a acumular historial.');
+  if (!buckets.length && !pending) return reply(chatId, 'Aún no hay picks registrados. Usa /seguras para empezar a acumular historial.');
   let msg = '<b>📊 Rendimiento de /seguras</b>\n\n';
   let tw = 0, tl = 0;
   for (const b of buckets) {
@@ -289,22 +298,22 @@ async function handleStats() {
     if (es.rhoEdgeClv !== null) msg += `Spearman edge↔CLV_sharp: ${es.rhoEdgeClv.toFixed(2)}\n`;
     msg += `\n🚦 <b>${es.semaphore}</b>`;
   }
-  await reply(msg);
+  await reply(chatId, msg);
 }
 
 // ---------- /golden: un solo pick, la mejor relación seguridad/pago ----------
-async function handleGolden(args) {
+async function handleGolden(args, chatId) {
   const sportFilter = args.length ? norm(args.join(' ')) : null;
-  await reply('⏳ Buscando el pick dorado...');
+  await reply(chatId, '⏳ Buscando el pick dorado...');
   const { rows } = await getFreshRows();
   let filtered = rows;
   if (sportFilter) filtered = filtered.filter(r => norm(r.sport).includes(sportFilter));
   else filtered = filtered.filter(r => !norm(r.sport).startsWith('e-'));
-  if (!filtered.length) return reply('No hay jugadas en vivo con ese filtro ahora mismo.');
+  if (!filtered.length) return reply(chatId, 'No hay jugadas en vivo con ese filtro ahora mismo.');
 
   const p = goldenPick(filtered);
   if (!p) {
-    return reply('🥇 Ahora mismo no hay pick dorado: ninguna jugada cumple confianza ≥' +
+    return reply(chatId, '🥇 Ahora mismo no hay pick dorado: ninguna jugada cumple confianza ≥' +
       `${Math.round(100 * Number(process.env.GOLDEN_MIN_CONF || 0.70))}% con edge positivo ` +
       `a momio ≥${Number(process.env.GOLDEN_MIN_ODDS || 1.15).toFixed(2)}. Mejor no apostar que apostar caro.`);
   }
@@ -337,24 +346,24 @@ async function handleGolden(args) {
     msg += `Línea: ${dir} ${pct(Math.abs(p.lineDelta))}\n`;
   }
   msg += `\n<i>Criterio: edge máximo del universo en vivo con confianza ≥${Math.round(100 * Number(process.env.GOLDEN_MIN_CONF || 0.70))}% y momio ≥${Number(process.env.GOLDEN_MIN_ODDS || 1.15).toFixed(2)}.</i>`;
-  await sendTelegram(TOKEN, currentChatId || CHAT_ID, msg, MAIN_KEYBOARD);
+  await sendTelegram(TOKEN, chatId, msg, MAIN_KEYBOARD);
 }
 
 // ---------- /parlay: combos +EV con selección óptima ----------
 // Encuentra combinaciones de 2 ó 3 patas donde CADA pata tiene edge > 0 individual
 // y el combo resultante maximiza el Edge Compuesto ajustado con factor de penalización por varianza γ = 0.97^(K-1).
-async function handleParlay(args) {
+async function handleParlay(args, chatId) {
   const sportFilter = args.length ? norm(args.join(' ')) : null;
-  await reply('⏳ Analizando parlays +EV en vivo...');
+  await reply(chatId, '⏳ Analizando parlays +EV en vivo...');
   const { rows } = await getFreshRows();
   let filtered = rows;
   if (sportFilter) filtered = filtered.filter(r => norm(r.sport).includes(sportFilter));
   else filtered = filtered.filter(r => !norm(r.sport).startsWith('e-'));
-  if (!filtered.length) return reply('No hay jugadas en vivo con ese filtro ahora mismo.');
+  if (!filtered.length) return reply(chatId, 'No hay jugadas en vivo con ese filtro ahora mismo.');
 
   const combos = parlayCombos(filtered);
   if (!combos.length) {
-    return reply('🎰 Ahora mismo no hay combinaciones de parlay con +EV verificado en vivo. ' +
+    return reply(chatId, '🎰 Ahora mismo no hay combinaciones de parlay con +EV verificado en vivo. ' +
       'Es preferible abstenerse que forzar un combo con esperanza matemática negativa (-EV).');
   }
 
@@ -383,7 +392,7 @@ async function handleParlay(args) {
   msg += `<i>Criterio: exige edge > 0 en cada pata (partidos distintos) y aplica corrección por varianza (γ=0.97). ` +
     `Estos combos no se registran en /stats.</i>`;
 
-  await sendTelegram(TOKEN, currentChatId || CHAT_ID, msg, MAIN_KEYBOARD);
+  await sendTelegram(TOKEN, chatId, msg, MAIN_KEYBOARD);
 }
 
 // ---------- /train: reentrenamiento bajo demanda ----------
@@ -413,17 +422,17 @@ async function runTraining() {
   }
 }
 
-async function handleTrain() {
-  await reply('⏳ Exportando dataset y entrenando (walk-forward + calibración)...');
+async function handleTrain(chatId) {
+  await reply(chatId, '⏳ Exportando dataset y entrenando (walk-forward + calibración)...');
   const r = await runTraining();
   const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   // Telegram limita a 4096 chars por mensaje: trocea el reporte
   const text = r.text;
   for (let i = 0; i < text.length; i += 3500) {
-    await reply(`<pre>${esc(text.slice(i, i + 3500))}</pre>`);
+    await reply(chatId, `<pre>${esc(text.slice(i, i + 3500))}</pre>`);
   }
   if (r.ok) {
-    await reply(r.adopted
+    await reply(chatId, r.adopted
       ? `✅ <b>Modelo adoptado y recargado en caliente.</b> Modo actual: <b>${getMode()}</b>${getMode() !== 'learned' ? ' (sigue mostrando el heurístico; cambia MODEL_MODE=learned cuando el shadow lo confirme)' : ''}`
       : `ℹ️ El modelo NO superó la regla de adopción: se mantiene el heurístico (se escribió model_candidate.json para inspección).`);
   }
@@ -439,15 +448,15 @@ function parseVentana(args) {
   return m[2] === 'h' ? n : n * 24;
 }
 
-async function handleValidar(args) {
+async function handleValidar(args, chatId) {
   const horas = parseVentana(args);
   const etiqueta = horas < 24 ? `${horas} h` : `${(horas / 24).toFixed(0)} día(s)`;
-  await reply(`⏳ Validando liquidaciones de las últimas ${etiqueta} contra marcadores oficiales...`);
+  await reply(chatId, `⏳ Validando liquidaciones de las últimas ${etiqueta} contra marcadores oficiales...`);
   const { validateSettlements } = require('./src/validate');
   let r;
-  try { r = await validateSettlements({ hours: horas }); } catch (e) { return reply(`⚠️ Error: ${e.message}`); }
-  if (r.error) return reply(`⚠️ ${r.error}`);
-  if (!r.n) return reply(`No hay picks liquidados en las últimas ${etiqueta}.\n<i>Un pick tarda ~36 min de mediana en liquidarse; prueba una ventana mayor: /validar 6h</i>`);
+  try { r = await validateSettlements({ hours: horas }); } catch (e) { return reply(chatId, `⚠️ Error: ${e.message}`); }
+  if (r.error) return reply(chatId, `⚠️ ${r.error}`);
+  if (!r.n) return reply(chatId, `No hay picks liquidados en las últimas ${etiqueta}.\n<i>Un pick tarda ~36 min de mediana en liquidarse; prueba una ventana mayor: /validar 6h</i>`);
 
   const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   let msg = `<b>🔍 Validación de resultados</b>\n\n`;
@@ -456,7 +465,7 @@ async function handleValidar(args) {
   if (!r.checked) {
     msg += `\n<i>Ninguno pudo verificarse: sus ligas no tienen fuente oficial disponible. ` +
            `La liquidación por último marcador visto sigue sin contraste.</i>`;
-    return reply(msg);
+    return reply(chatId, msg);
   }
   const pctOk = (100 * r.ok / r.checked).toFixed(0);
   msg += `Marcador coincide: <b>${r.ok}/${r.checked}</b> (${pctOk}%)\n`;
@@ -480,166 +489,128 @@ async function handleValidar(args) {
     msg += `\n✅ Todas las liquidaciones verificadas son correctas.`;
   }
   msg += `\n<i>Créditos usados: ${r.credits}. No se modificó ningún registro: se reporta, no se corrige.</i>`;
-  await reply(msg);
+  await reply(chatId, msg);
 }
 
 const { calculateQuantitativeHealth } = require('./src/health');
 
-async function handleHealth() {
+async function handleHealth(chatId) {
   const esc = str => String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const fmtU = v => `${v >= 0 ? '+' : ''}${v.toFixed(2)}u`;
 
   const h = calculateQuantitativeHealth({ windowDays: 30 });
-  if (!h.n) return reply('Aún no hay picks liquidados con score para evaluar calibración.');
+  if (!h.n) return reply(chatId, 'Aún no hay picks liquidados con score para evaluar calibración.');
 
   let msg = `<b>🩺 RIGOR CUANTITATIVO Y SALUD DEL MODELO</b>\n`;
   msg += `<i>Estilo Polymarket Quantitative Engine</i>\n\n`;
   msg += `<b>Estado:</b> ${h.color} <b>${esc(h.status)}</b>\n`;
   msg += `<i>${esc(h.message)}</i>\n\n`;
 
-  msg += `<b>1. Calibración & Precisión (OOS):</b>\n`;
+  msg += `<b>1. Calibración &amp; Precisión (OOS):</b>\n`;
   msg += `• Muestras Evaluadas: <b>${h.n} picks</b>\n`;
   msg += `• Win Rate: <b>${h.wr.toFixed(1)}%</b> (${h.wins}/${h.n})\n`;
-  msg += `• Brier Score: <b>${h.brierScore.toFixed(4)}</b> (óptimo < 0.2000)\n`;
+  msg += `• Brier Score: <b>${h.brierScore.toFixed(4)}</b> (óptimo &lt; 0.2000)\n`;
   msg += `• Log Loss: <b>${h.logLoss.toFixed(4)}</b>\n`;
-  msg += `• ECE (Calibration Error): <b>${(h.ece * 100).toFixed(2)}%</b> (óptimo < 5.0%)\n\n`;
+  msg += `• ECE (Calibration Error): <b>${(h.ece * 100).toFixed(2)}%</b> (óptimo &lt; 5.0%)\n\n`;
 
   if (h.sharpN > 0) {
-    msg += `<b>2. Mercado Sharp & CLV (Pinnacle/Betfair):</b>\n`;
+    msg += `<b>2. Mercado Sharp &amp; CLV (Pinnacle/Betfair):</b>\n`;
     msg += `• Muestras Sharp: <b>${h.sharpN}</b>\n`;
-    msg += `• Sharp Beat Rate (% CLV > 0): <b>${h.clvBeatRate.toFixed(1)}%</b>\n`;
+    msg += `• Sharp Beat Rate (% CLV &gt; 0): <b>${h.clvBeatRate.toFixed(1)}%</b>\n`;
     msg += `• Ventaja Promedio CLV: <b>${h.avgClvPct >= 0 ? '+' : ''}${h.avgClvPct.toFixed(2)}%</b>\n\n`;
   }
 
   msg += `<b>3. Cartera & Riesgo Financiero:</b>\n`;
   msg += `• Apostado: <b>${h.totalStaked.toFixed(2)}u</b> | Ganancia: <b>${fmtU(h.totalProfit)}</b>\n`;
   msg += `• ROI Global: <b>${h.roi >= 0 ? '+' : ''}${h.roi.toFixed(2)}%</b>\n`;
-  if (h.sharpeRatio !== null) msg += `• Ratio de Sharpe: <b>${h.sharpeRatio.toFixed(2)}</b> (institucional > 1.50)\n`;
+  if (h.sharpeRatio !== null) msg += `• Ratio de Sharpe: <b>${h.sharpeRatio.toFixed(2)}</b> (institucional &gt; 1.50)\n`;
   if (h.maxDrawdown !== null) msg += `• Max Drawdown: <b>-${h.maxDrawdown.toFixed(2)}u</b>\n`;
 
-  await reply(msg);
+  await reply(chatId, msg);
 }
 
-async function handleUnidades(args = []) {
+// ---------- /unidades: rendimiento por unidades ----------
+// Detalle diario ("hoy" / "ayer" / fecha) recortado a los últimos N picks
+// liquidados por sección, para que siempre quepa en UN solo mensaje de
+// Telegram (límite 4096 chars) sin necesidad de trocear en partes.
+async function handleUnidades(args = [], chatId) {
   const esc = str => String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const fmtU = v => `${v >= 0 ? '+' : ''}${v.toFixed(2)}u`;
+  const LAST_N = 10;
+
+  // Renderiza hasta LAST_N picks (los más recientes) como bloque de texto.
+  // totalCount es el conteo real (antes de recortar), para anotar "de N".
+  function renderPickList(picks, totalCount) {
+    const shown = picks.slice(-LAST_N);
+    let out = '';
+    if (totalCount > shown.length) out += `<i>(últimos ${shown.length} de ${totalCount})</i>\n\n`;
+    for (const [idx, p] of shown.entries()) {
+      const icon = p.result === 'win' ? '✅' : '❌';
+      const sign = p.profit >= 0 ? '+' : '';
+      const hora = p.ts ? new Date(p.ts).toLocaleTimeString('es-MX', { timeZone: 'America/Mexico_City', hour: '2-digit', minute: '2-digit', hour12: false }) : '';
+      const timeTag = hora ? ` <i>[${hora}]</i>` : '';
+      const flag = getCountryFlag(p.champ, p.event, p.sport);
+      const lossMinTag = (p.result === 'loss' && p.loss_minute !== null && p.loss_minute !== undefined) ? ` <i>(Perdido min ${p.loss_minute}')</i>` : '';
+      out += `${icon} <b>${idx + 1}. ${flag} ${esc(p.event)}</b>${timeTag} <i>(${esc(p.sport)})</i>\n`;
+      out += `   ${esc(p.market)}: <b>${esc(p.selection)}</b> @ ${p.odd_decimal.toFixed(2)}\n`;
+      out += `   Stake: <b>${p.stake ? p.stake.toFixed(1) : '1.0'}u</b> | Marcador: ${esc(p.final_score || '—')} ➔ <b>${sign}${p.profit.toFixed(2)}u</b>${lossMinTag}\n\n`;
+    }
+    return out;
+  }
+
+  function renderSessionSummary(title, s) {
+    let out = `<b>${title}</b>\n`;
+    out += `• Picks: <b>${s.wins}/${s.n}</b> (${s.wr ? s.wr.toFixed(0) : 0}% acierto)\n`;
+    out += `• Apostado: <b>${s.staked.toFixed(2)}u</b> | Ganancia: <b>${fmtU(s.profit)}</b>`;
+    if (s.roi !== null) out += ` (ROI ${s.roi >= 0 ? '+' : ''}${s.roi.toFixed(1)}%)`;
+    return out + `\n`;
+  }
 
   if (args.length > 0) {
     const sub = norm(args[0]);
     if (sub === 'hoy' || sub === 'ayer' || /^\d{4}-\d{2}-\d{2}$/.test(sub)) {
       const res = stakePicksByDate(sub);
-      if (!res.n) {
-        return reply(`No hay picks liquidados para el día <b>${esc(res.date)}</b>.`);
-      }
+      if (!res.n) return reply(chatId, `No hay picks liquidados para el día <b>${esc(res.date)}</b>.`);
 
       if (res.isToday) {
         const postPicks = res.postSession.picks;
-        const CHUNK_SIZE = 10;
+
+        let msg = `<b>🌟 SESIÓN NUEVA (POST-AJUSTES DE ROI & CAP DINÁMICO)</b>\n<i>Picks emitidos desde las 6:02 PM CDMX</i>\n\n`;
 
         if (!postPicks.length) {
-          let msg = `<b>🌟 SESIÓN NUEVA (POST-AJUSTES DE ROI & CAP DINÁMICO)</b>\n<i>Picks emitidos desde las 6:02 PM CDMX</i>\n\n`;
           msg += `⏳ <i>Aún no se han liquidado picks emitidos tras los nuevos ajustes de Stake Cap Dinámico y Doble Capa. Esperando los primeros partidos.</i>\n\n`;
-          if (res.preSession.n > 0) {
-            msg += `<b>📜 Sesión Previa de Hoy (Pre-Ajustes - antes 6:02 PM):</b>\n`;
-            msg += `• Picks: <b>${res.preSession.wins}/${res.preSession.n}</b> (${res.preSession.wr ? res.preSession.wr.toFixed(0) : 0}% acierto)\n`;
-            msg += `• Apostado: <b>${res.preSession.staked.toFixed(2)}u</b> | Ganancia: <b>${fmtU(res.preSession.profit)}</b>`;
-            if (res.preSession.roi !== null) msg += ` (ROI ${res.preSession.roi >= 0 ? '+' : ''}${res.preSession.roi.toFixed(1)}%)\n`;
-            msg += `\n`;
-          }
-          msg += `<b>Total Acumulado del Día (${esc(res.date)}):</b>\n`;
-          msg += `• Picks: <b>${res.wins}/${res.n}</b> | Ganancia Total: <b>${fmtU(res.profit)}</b>`;
-          await reply(msg);
-          return;
+        } else {
+          msg += renderPickList(postPicks, postPicks.length);
+          msg += renderSessionSummary('Resumen Sesión Nueva (Post 6:02 PM)', res.postSession) + `\n`;
         }
 
-        const totalParts = Math.ceil(postPicks.length / CHUNK_SIZE);
-        for (let i = 0; i < postPicks.length; i += CHUNK_SIZE) {
-          const chunk = postPicks.slice(i, i + CHUNK_SIZE);
-          const partNum = Math.floor(i / CHUNK_SIZE) + 1;
-
-          let msg = `<b>🌟 SESIÓN NUEVA (POST-AJUSTES DE ROI & CAP DINÁMICO)</b>`;
-          if (totalParts > 1) msg += ` <i>(Parte ${partNum}/${totalParts})</i>`;
-          msg += `\n<i>Picks emitidos desde las 6:02 PM CDMX</i>\n\n`;
-
-          for (const [idx, p] of chunk.entries()) {
-            const globalIdx = i + idx + 1;
-            const icon = p.result === 'win' ? '✅' : '❌';
-            const sign = p.profit >= 0 ? '+' : '';
-            const hora = p.ts ? new Date(p.ts).toLocaleTimeString('es-MX', { timeZone: 'America/Mexico_City', hour: '2-digit', minute: '2-digit', hour12: false }) : '';
-            const timeTag = hora ? ` <i>[${hora}]</i>` : '';
-            const flag = getCountryFlag(p.champ, p.event, p.sport);
-            const lossMinTag = (p.result === 'loss' && p.loss_minute !== null && p.loss_minute !== undefined) ? ` <i>(Perdido min ${p.loss_minute}')</i>` : '';
-            msg += `${icon} <b>${globalIdx}. ${flag} ${esc(p.event)}</b>${timeTag} <i>(${esc(p.sport)})</i>\n`;
-            msg += `   ${esc(p.market)}: <b>${esc(p.selection)}</b> @ ${p.odd_decimal.toFixed(2)}\n`;
-            msg += `   Stake: <b>${p.stake ? p.stake.toFixed(1) : '1.0'}u</b> | Marcador: ${esc(p.final_score || '—')} ➔ <b>${sign}${p.profit.toFixed(2)}u</b>${lossMinTag}\n\n`;
-          }
-
-          if (i + CHUNK_SIZE >= postPicks.length) {
-            msg += `<b>Resumen Sesión Nueva (Post 6:02 PM):</b>\n`;
-            msg += `• Picks: <b>${res.postSession.wins}/${res.postSession.n}</b> (${res.postSession.wr ? res.postSession.wr.toFixed(0) : 0}% acierto)\n`;
-            msg += `• Apostado: <b>${res.postSession.staked.toFixed(2)}u</b>\n`;
-            msg += `• Ganancia: <b>${fmtU(res.postSession.profit)}</b>\n`;
-            if (res.postSession.roi !== null) msg += `• ROI: <b>${res.postSession.roi >= 0 ? '+' : ''}${res.postSession.roi.toFixed(1)}%</b>\n\n`;
-
-            if (res.preSession.n > 0) {
-              msg += `<b>📜 Sesión Previa de Hoy (Pre-Ajustes - antes 6:02 PM):</b>\n`;
-              msg += `• Picks: <b>${res.preSession.wins}/${res.preSession.n}</b> (${res.preSession.wr ? res.preSession.wr.toFixed(0) : 0}% acierto)\n`;
-              msg += `• Apostado: <b>${res.preSession.staked.toFixed(2)}u</b> | Ganancia: <b>${fmtU(res.preSession.profit)}</b>`;
-              if (res.preSession.roi !== null) msg += ` (ROI ${res.preSession.roi >= 0 ? '+' : ''}${res.preSession.roi.toFixed(1)}%)\n`;
-              msg += `\n`;
-            }
-
-            msg += `<b>Total Acumulado del Día (${esc(res.date)}):</b>\n`;
-            msg += `• Picks: <b>${res.wins}/${res.n}</b> | Ganancia Total: <b>${fmtU(res.profit)}</b>`;
-          }
-
-          await reply(msg);
+        if (res.preSession.n > 0) {
+          msg += renderSessionSummary('📜 Sesión Previa de Hoy (Pre-Ajustes - antes 6:02 PM)', res.preSession) + `\n`;
         }
-        return;
+
+        msg += `<b>Total Acumulado del Día (${esc(res.date)}):</b>\n`;
+        msg += `• Picks: <b>${res.wins}/${res.n}</b> | Ganancia Total: <b>${fmtU(res.profit)}</b>`;
+
+        return reply(chatId, msg);
       }
 
-      const CHUNK_SIZE = 10;
-      const totalPicks = res.picks;
+      // Rama: /unidades ayer, /unidades AAAA-MM-DD
+      let msg = `<b>📋 Picks liquidados del ${esc(res.date)}</b>\n\n`;
+      msg += renderPickList(res.picks, res.picks.length);
+      msg += `<b>Resumen del día (${esc(res.date)}):</b>\n`;
+      msg += `• Picks: <b>${res.wins}/${res.n}</b> (${res.wr ? res.wr.toFixed(0) : 0}% acierto)\n`;
+      msg += `• Apostado: <b>${res.staked.toFixed(2)}u</b>\n`;
+      msg += `• Ganancia: <b>${fmtU(res.profit)}</b>\n`;
+      if (res.roi !== null) msg += `• ROI: <b>${res.roi >= 0 ? '+' : ''}${res.roi.toFixed(1)}%</b>\n`;
 
-      for (let i = 0; i < totalPicks.length; i += CHUNK_SIZE) {
-        const chunk = totalPicks.slice(i, i + CHUNK_SIZE);
-        const partNum = Math.floor(i / CHUNK_SIZE) + 1;
-        const totalParts = Math.ceil(totalPicks.length / CHUNK_SIZE);
-
-        let msg = `<b>📋 Picks liquidados del ${esc(res.date)}</b>`;
-        if (totalParts > 1) msg += ` <i>(Parte ${partNum}/${totalParts})</i>`;
-        msg += `\n\n`;
-
-        for (const [idx, p] of chunk.entries()) {
-          const globalIdx = i + idx + 1;
-          const icon = p.result === 'win' ? '✅' : '❌';
-          const sign = p.profit >= 0 ? '+' : '';
-          const hora = p.ts ? new Date(p.ts).toLocaleTimeString('es-MX', { timeZone: 'America/Mexico_City', hour: '2-digit', minute: '2-digit', hour12: false }) : '';
-          const timeTag = hora ? ` <i>[${hora}]</i>` : '';
-          const flag = getCountryFlag(p.champ, p.event, p.sport);
-          const lossMinTag = (p.result === 'loss' && p.loss_minute !== null && p.loss_minute !== undefined) ? ` <i>(Perdido min ${p.loss_minute}')</i>` : '';
-          msg += `${icon} <b>${globalIdx}. ${flag} ${esc(p.event)}</b>${timeTag} <i>(${esc(p.sport)})</i>\n`;
-          msg += `   ${esc(p.market)}: <b>${esc(p.selection)}</b> @ ${p.odd_decimal.toFixed(2)}\n`;
-          msg += `   Stake: <b>${p.stake ? p.stake.toFixed(1) : '1.0'}u</b> | Marcador: ${esc(p.final_score || '—')} ➔ <b>${sign}${p.profit.toFixed(2)}u</b>${lossMinTag}\n\n`;
-        }
-
-        if (i + CHUNK_SIZE >= totalPicks.length) {
-          msg += `<b>Resumen del día (${esc(res.date)}):</b>\n`;
-          msg += `• Picks: <b>${res.wins}/${res.n}</b> (${res.wr ? res.wr.toFixed(0) : 0}% acierto)\n`;
-          msg += `• Apostado: <b>${res.staked.toFixed(2)}u</b>\n`;
-          msg += `• Ganancia: <b>${fmtU(res.profit)}</b>\n`;
-          if (res.roi !== null) msg += `• ROI: <b>${res.roi >= 0 ? '+' : ''}${res.roi.toFixed(1)}%</b>\n`;
-        }
-
-        await reply(msg);
-      }
-      return;
+      return reply(chatId, msg);
     }
   }
 
+  // ---------- Rama por defecto: /unidades (resumen general) ----------
   const s = stakeStats();
   if (!s.n && !s.pendingN) {
-    return reply('Aún no hay picks con unidad de apuesta asignada. Se asignan desde que se activó el dimensionamiento por unidades (2026-07-30).');
+    return reply(chatId, 'Aún no hay picks con unidad de apuesta asignada. Se asignan desde que se activó el dimensionamiento por unidades (2026-07-30).');
   }
   const modeName = { flat: 'plano (1u fija)', half_kelly: 'medio Kelly', kelly: 'Kelly completo' }[s.mode] || s.mode;
   let msg = `<b>💰 Rendimiento por unidades</b>\n`;
@@ -672,16 +643,16 @@ async function handleUnidades(args = []) {
     }
   }
   if (s.pendingN) msg += `\nPendientes de liquidar: ${s.pendingN} picks (${s.pendingUnits.toFixed(2)}u en juego)`;
-  await reply(msg);
+  await reply(chatId, msg);
 }
 
-async function handleDeportes() {
-  await reply('⏳ Consultando...');
+async function handleDeportes(chatId) {
+  await reply(chatId, '⏳ Consultando...');
   const { rows, sports } = await getFreshRows();
   const counts = {};
   for (const r of rows) counts[r.sport] = (counts[r.sport] || 0) + 1;
   const lines = sports.map(s => `• ${s.name}: ${s.count} eventos, ${counts[s.name] || 0} jugadas`);
-  await reply(`<b>Deportes en vivo:</b>\n${lines.join('\n')}`);
+  await reply(chatId, `<b>Deportes en vivo:</b>\n${lines.join('\n')}`);
 }
 
 // ---------- /vip: gestión de membresías y canal VIP ----------
@@ -815,11 +786,12 @@ const MAIN_KEYBOARD = {
   is_persistent: true,
 };
 
-let currentChatId = CHAT_ID;
-
-async function reply(text, showKeyboard = true, targetChatId = null) {
-  const dest = targetChatId || currentChatId || CHAT_ID;
-  await sendTelegram(TOKEN, dest, text, showKeyboard ? MAIN_KEYBOARD : null);
+// chatId se pasa explícito en cada llamada — antes dependía de una variable
+// global mutable (currentChatId) que un mensaje concurrente podía pisar
+// mientras un handler estaba en medio de un await, respondiendo al chat
+// equivocado. Cada handler ahora recibe su propio chatId por parámetro.
+async function reply(chatId, text, showKeyboard = true) {
+  await sendTelegram(TOKEN, chatId || CHAT_ID, text, showKeyboard ? MAIN_KEYBOARD : null);
 }
 
 async function handleStart(chatId, fromUser) {
@@ -841,8 +813,105 @@ async function handleStart(chatId, fromUser) {
   await sendTelegram(TOKEN, chatId, welcomeMsg, MAIN_KEYBOARD);
 }
 
+// ---------- Panel web (dashboard API, puerto 3001) ----------
+// No es solo la UI: ese proceso corre el setInterval que dispara las alertas de
+// Telegram, asi que poder levantarlo desde el chat evita depender del escritorio.
+// Se lanza como hijo de bot.js para heredar el auto-reinicio de run-bot.cmd en
+// lugar de necesitar su propia tarea programada.
+const DASHBOARD_PORT = Number(process.env.DASHBOARD_PORT || 3001);
+const DASHBOARD_ENTRY = path.join(__dirname, 'dist', 'server', 'dashboardApi.js');
+const DASHBOARD_LOG = path.join(__dirname, 'dashboard.log');
+let dashboardProc = null;
+
+function dashboardAlive() {
+  return dashboardProc !== null && dashboardProc.exitCode === null && !dashboardProc.signalCode;
+}
+
+// El puerto puede estar tomado por un dashboard que este bot NO lanzó (otra
+// cuenta de Windows, o un hijo huérfano de un bot anterior que murió por
+// taskkill /F sin ejecutar su limpieza). Comprobarlo evita responder "arrancado"
+// cuando en realidad el proceso nuevo murió al instante al no poder enlazar.
+//
+// Se sondea con listen(port) SIN host, exactamente como enlaza createDashboardServer:
+// el dashboard escucha en '::' (dual-stack), y un sondeo a '127.0.0.1' devolvía
+// "libre" con el puerto ocupado. Cualquier error cuenta como no disponible, no
+// solo EADDRINUSE: si el dueño del socket es otro usuario de Windows, el error
+// es EACCES, y da igual la causa — si este sondeo no puede enlazar, el dashboard
+// tampoco podrá.
+function portUnavailable(port) {
+  return new Promise(resolve => {
+    const s = net.createServer();
+    s.once('error', () => resolve(true));
+    s.once('listening', () => s.close(() => resolve(false)));
+    s.listen(port);
+  });
+}
+
+async function startDashboard() {
+  if (dashboardAlive()) {
+    return `ℹ️ El panel ya está corriendo (PID ${dashboardProc.pid}) en http://localhost:${DASHBOARD_PORT}`;
+  }
+  if (!fs.existsSync(DASHBOARD_ENTRY)) {
+    return `⚠️ No existe <code>dist/server/dashboardApi.js</code>. Compila con <code>npx tsc</code> y reintenta.`;
+  }
+  if (await portUnavailable(DASHBOARD_PORT)) {
+    return `⚠️ El puerto ${DASHBOARD_PORT} ya está ocupado por otro proceso ajeno a este bot.\n` +
+           `Puede ser un dashboard de otra sesión o un huérfano. Ciérralo antes de reintentar.`;
+  }
+
+  const out = fs.openSync(DASHBOARD_LOG, 'a');
+  const child = spawn(process.execPath, [DASHBOARD_ENTRY], {
+    cwd: __dirname, windowsHide: true, stdio: ['ignore', out, out],
+  });
+  dashboardProc = child;
+  child.on('exit', (code, signal) => {
+    console.log(`[dashboard] terminó (code=${code}, signal=${signal})`);
+    if (dashboardProc === child) dashboardProc = null;
+  });
+
+  // Dar un margen para que falle rápido (EADDRINUSE, error de require, etc.)
+  // en vez de anunciar un arranque que no ocurrió.
+  await new Promise(r => setTimeout(r, 1500));
+  if (!dashboardAlive()) {
+    return `⚠️ El panel murió al arrancar. Revisa <code>dashboard.log</code>.`;
+  }
+  return `✅ Panel arrancado (PID ${child.pid}) en http://localhost:${DASHBOARD_PORT}\n` +
+         `Las alertas automáticas vuelven a estar activas.`;
+}
+
+function stopDashboard() {
+  if (!dashboardAlive()) return 'ℹ️ El panel no está corriendo (o lo lanzó otro proceso).';
+  const pid = dashboardProc.pid;
+  dashboardProc.kill();
+  dashboardProc = null;
+  return `🛑 Panel detenido (PID ${pid}). Las alertas automáticas quedan suspendidas.`;
+}
+
+// Si bot.js se va, no dejar el dashboard huérfano ocupando el puerto: al
+// reiniciar el runner, el bot nuevo no podría levantarlo.
+process.on('exit', () => { try { if (dashboardAlive()) dashboardProc.kill(); } catch {} });
+for (const sig of ['SIGINT', 'SIGTERM']) {
+  process.on(sig, () => { try { if (dashboardAlive()) dashboardProc.kill(); } catch {} process.exit(0); });
+}
+
+async function handleDashboard(args, chatId) {
+  const sub = (args[0] || '').toLowerCase();
+  if (sub === 'off' || sub === 'stop' || sub === 'apagar') {
+    return reply(chatId, stopDashboard());
+  }
+  if (sub === 'status' || sub === 'estado') {
+    if (dashboardAlive()) return reply(chatId, `✅ Panel activo (PID ${dashboardProc.pid}) en http://localhost:${DASHBOARD_PORT}`);
+    const busy = await portUnavailable(DASHBOARD_PORT);
+    return reply(chatId, busy
+      ? `⚠️ El puerto ${DASHBOARD_PORT} está ocupado, pero no por este bot.`
+      : '🛑 Panel apagado. Manda /dashboard para levantarlo.');
+  }
+  await reply(chatId, '⏳ Levantando el panel...');
+  return reply(chatId, await startDashboard());
+}
+
 async function handleMessage(rawText, chatId = CHAT_ID, fromUser = null) {
-  currentChatId = chatId || CHAT_ID;
+  chatId = chatId || CHAT_ID;
   let text = rawText.trim();
   const normRaw = norm(text);
   const cleanLabel = norm(text.replace(/[\p{Extended_Pictographic}\p{Emoji_Presentation}\u{200d}\u{fe0f}\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1F600}-\u{1F64F}]/gu, '')).trim();
@@ -900,16 +969,24 @@ async function handleMessage(rawText, chatId = CHAT_ID, fromUser = null) {
     if (pickMatch && (cmd === '/pick' || cmd === '/ticket' || /^(?:#)?\d+$/.test(text.trim()))) {
       const { sendPickInspectorCard } = require('./src/telegram');
       await sendPickInspectorCard(TOKEN, chatId, parseInt(pickMatch[1], 10));
-    } else if (cmd === '/top') await handleTop(args);
-    else if (cmd === '/seguras') await handleSeguras(args);
-    else if (cmd === '/golden') await handleGolden(args);
-    else if (cmd === '/parlay') await handleParlay(args);
-    else if (cmd === '/stats') await handleStats();
-    else if (cmd === '/health') await handleHealth();
-    else if (cmd === '/unidades') await handleUnidades(args);
-    else if (cmd === '/validar') await handleValidar(args);
-    else if (cmd === '/train') await handleTrain();
-    else if (cmd === '/deportes') await handleDeportes();
+    } else if (cmd === '/top') await handleTop(args, chatId);
+    else if (cmd === '/seguras') await handleSeguras(args, chatId);
+    else if (cmd === '/golden') await handleGolden(args, chatId);
+    else if (cmd === '/parlay') await handleParlay(args, chatId);
+    else if (cmd === '/stats') await handleStats(chatId);
+    else if (cmd === '/health') await handleHealth(chatId);
+    else if (cmd === '/unidades') await handleUnidades(args, chatId);
+    else if (cmd === '/validar') await handleValidar(args, chatId);
+    // /train y /dashboard lanzan procesos en la máquina: solo el dueño.
+    else if (cmd === '/train') {
+      if (!isOwner(chatId)) await reply(chatId, '🔒 Comando reservado al administrador.');
+      else await handleTrain(chatId);
+    }
+    else if (cmd === '/dashboard' || cmd === '/panel') {
+      if (!isOwner(chatId)) await reply(chatId, '🔒 Comando reservado al administrador.');
+      else await handleDashboard(args, chatId);
+    }
+    else if (cmd === '/deportes') await handleDeportes(chatId);
     else if (cmd === '/vip') await handleVip(chatId, fromUser);
     else if (cmd === '/start') await handleStart(chatId, fromUser);
     else if (cmd === '/help') await sendTelegram(TOKEN, chatId, HELP, MAIN_KEYBOARD);
@@ -950,7 +1027,7 @@ async function registerCommands() {
 async function poll() {
   await registerCommands();
   try {
-    await reply('🤖 <b>Playdoit Monitor activo.</b> Sistema VIP y Botonera listos.', true);
+    await reply(CHAT_ID, '🤖 <b>Playdoit Monitor activo.</b> Sistema VIP y Botonera listos.', true);
   } catch (e) {
     console.error('[startup notify error]', e.message);
   }
@@ -1041,15 +1118,12 @@ function isModelStrong(p) {
 
 async function autoPicks(rows) {
   if (!AUTO_PICKS) return;
-  const hourAgo = new Date(Date.now() - 3600 * 1000).toISOString();
-  if (countPicksSince(hourAgo) >= AUTO_PICK_MAX_PER_HOUR) return;
 
   const candidates = safestPicks(rows.filter(r => !norm(r.sport).startsWith('e-')), 5)
     .filter(p => !isDuplicatePick(p.eventId, p.market, p.selection));
   if (!candidates.length) return;
 
-  const room = AUTO_PICK_MAX_PER_HOUR - countPicksSince(hourAgo);
-  const picks = candidates.slice(0, Math.max(0, room));
+  const picks = candidates;
   if (!picks.length) return;
 
   const ids = logPicks(picks.map(p => ({
@@ -1119,7 +1193,7 @@ async function driftCheck() {
     if (h.alert && Date.now() - lastDriftAlert > 30 * 24 * 3600 * 1000) {
       lastDriftAlert = Date.now();
       console.log(`[drift] ECE ${h.ece.toFixed(4)} > ${h.threshold} — recalibrar: correr train_weights.py`);
-      await reply(`⚠️ <b>Drift de calibración</b>: ECE ${h.ece.toFixed(4)} > ${h.threshold} en los últimos ${h.n} picks.\nRecalibrar: manda /train (o corre <code>python scripts/train_weights.py</code>).`);
+      await reply(CHAT_ID, `⚠️ <b>Drift de calibración</b>: ECE ${h.ece.toFixed(4)} > ${h.threshold} en los últimos ${h.n} picks.\nRecalibrar: manda /train (o corre <code>python scripts/train_weights.py</code>).`);
     }
   } catch (e) {
     console.error('[drift]', e.message);
