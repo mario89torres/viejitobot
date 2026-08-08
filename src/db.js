@@ -1,7 +1,7 @@
 const Database = require('better-sqlite3');
 const path = require('path');
 
-const db = new Database(path.join(__dirname, '..', 'snapshots.db'));
+const db = new Database(path.join(__dirname, '..', 'snapshots.db'), { timeout: 30000 });
 db.pragma('journal_mode = WAL');
 
 db.exec(`
@@ -40,6 +40,14 @@ db.exec(`
     invite_link TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_subscribers_status ON subscribers(status, expires_at);
+
+  -- Deduplicacion persistente de alertas ya enviadas a Telegram (sobrevive
+  -- reinicios). La usan globalDrawScanner y dashboardApi; existia solo en la BD
+  -- viva, creada a mano, asi que cualquier BD nueva reventaba al consultarla.
+  CREATE TABLE IF NOT EXISTS alerted_events (
+    key TEXT PRIMARY KEY,
+    ts TEXT NOT NULL
+  );
 `);
 
 // Columnas de Etapa 0 (idempotente: en BDs ya migradas no hace nada)
@@ -150,7 +158,7 @@ const activeEventPickStmt = db.prepare(`SELECT 1 FROM picks WHERE event_id = ? A
 const sameSelectionStmt = db.prepare(`
   SELECT 1 FROM picks WHERE event_id = ? AND market = ? AND selection = ? LIMIT 1
 `);
-const pickedTodayStmt = db.prepare(`SELECT COUNT(*) n FROM picks WHERE ts > ?`);
+const pickedTodayStmt = db.prepare(`SELECT COUNT(*) n FROM picks WHERE ts > ? AND source = 'auto'`);
 
 // --- Etapa 4: sharp odds ---
 const sharpEntryStmt = db.prepare(`
