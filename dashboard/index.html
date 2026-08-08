@@ -3,759 +3,1126 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>playdoit-monitor // dashboard</title>
+  <title>ViejitoBot // Mission Control</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
   <style>
-    :root {
-      --bg:         #000000;
-      --bg1:        #0d0d0d;
-      --bg2:        #111111;
-      --border:     #1e1e1e;
-      --border2:    #2a2a2a;
-      --fg:         #d4d4d4;
-      --fg-dim:     #555555;
-      --fg-muted:   #3a3a3a;
-      /* syntax colors */
-      --purple:     #c678dd;
-      --blue:       #61afef;
-      --green:      #98c379;
-      --orange:     #d19a66;
-      --red:        #e06c75;
-      --cyan:       #56b6c2;
-      --yellow:     #e5c07b;
-      --gray:       #5c6370;
+  :root {
+  --bg-deep: #040408;
+  --bg-base: #08080f;
+  --bg-card: rgba(12, 12, 20, 0.88);
+  --bg-card-solid: #0c0c14;
+  --bg-hover: rgba(255,255,255,0.05);
+  --border: rgba(255,255,255,0.08);
+  --border-hover: rgba(255,255,255,0.18);
+
+  /* colores más intensos */
+  --cyan: #00e5ff;
+  --green: #00ff9d;
+  --red: #ff2d55;
+  --orange: #ffb020;
+  --purple: #c084fc;
+  --yellow: #ffe066;
+  --blue: #4fc3ff;
+
+  --fg: #f2f4f7;
+  --fg2: #b0b8c4;
+  --fg3: #7a8494;
+  --fg4: #4b5563;
+
+  --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --mono: 'JetBrains Mono', 'Fira Code', monospace;
+  --radius: 12px;
+
+  /* glows más fuertes */
+  --glow-cyan: 0 0 28px rgba(0, 229, 255, 0.35);
+  --glow-green: 0 0 28px rgba(0, 255, 157, 0.35);
+  --glow-red: 0 0 28px rgba(255, 45, 85, 0.35);
+  --glow-orange: 0 0 24px rgba(255, 176, 32, 0.30);
+  --glow-purple: 0 0 24px rgba(192, 132, 252, 0.30);
+  --glow-yellow: 0 0 24px rgba(255, 224, 102, 0.30);
+}
+
+.card-win, .tag-win, .c-green {
+  color: var(--green) !important;
+  text-shadow: 0 0 12px rgba(0, 255, 157, 0.45);
+}
+
+.card-loss, .tag-loss, .c-red {
+  color: var(--red) !important;
+  text-shadow: 0 0 12px rgba(255, 45, 85, 0.45);
+}
+
+.matrix-card.card-win {
+  background: rgba(0, 255, 157, 0.12);
+  border-color: rgba(0, 255, 157, 0.55);
+  box-shadow: var(--glow-green);
+}
+
+.matrix-card.card-loss {
+  background: rgba(255, 45, 85, 0.12);
+  border-color: rgba(255, 45, 85, 0.55);
+  box-shadow: var(--glow-red);
+}
+
+.matrix-card.card-pending {
+  background: rgba(255, 224, 102, 0.10);
+  border-color: rgba(255, 224, 102, 0.45);
+  box-shadow: var(--glow-yellow);
+}
+
+.col-odd, .c-orange {
+  color: var(--orange) !important;
+  text-shadow: 0 0 10px rgba(255, 176, 32, 0.35);
+}
+
+.col-conf, .c-blue, .c-cyan {
+  color: var(--cyan) !important;
+  text-shadow: 0 0 10px rgba(0, 229, 255, 0.35);
+}
+
+.col-edge, .c-yellow {
+  color: var(--yellow) !important;
+  text-shadow: 0 0 10px rgba(255, 224, 102, 0.35);
+}
+
+.col-ml, .c-purple {
+  color: var(--purple) !important;
+  text-shadow: 0 0 10px rgba(192, 132, 252, 0.35);
+}
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
 
     body {
-      font-family: 'JetBrains Mono', monospace;
-      background: var(--bg);
+      font-family: var(--font);
+      background: var(--bg-deep);
       color: var(--fg);
-      font-size: 12px;
-      line-height: 1.6;
+      font-size: 13px;
+      line-height: 1.5;
       min-height: 100vh;
+      overflow-x: hidden;
     }
 
-    /* ── Top bar ─────────────────────────────────── */
-    .topbar {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 0 20px;
-      height: 36px;
-      background: var(--bg1);
+    /* ═══ STATUS BAR ═══ */
+    .status-bar {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 24px; height: 40px;
+      background: rgba(10,10,18,0.95);
       border-bottom: 1px solid var(--border);
-      font-size: 11px;
+      backdrop-filter: blur(20px);
+      position: sticky; top: 0; z-index: 100;
     }
-    .topbar-left { display: flex; align-items: center; gap: 16px; }
-    .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
-    .dot-r { background: #ff5f57; } .dot-y { background: #ffbd2e; } .dot-g { background: #28c941; }
-    .topbar-title { color: var(--fg-dim); letter-spacing: 0.5px; }
-    .topbar-title span { color: var(--fg); }
-    .topbar-right { color: var(--fg-dim); font-size: 10px; }
-    #statusBadge { color: var(--green); }
+    .status-left { display: flex; align-items: center; gap: 16px; }
+    .logo { font-weight: 800; font-size: 14px; letter-spacing: -0.5px; color: #fff; }
+    .logo span { color: var(--cyan); }
+    .status-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 8px rgba(0,255,136,0.6);
+      animation: pulse 2s ease-in-out infinite;
+    }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+    .status-text { font-size: 11px; color: var(--fg3); font-family: var(--mono); }
+    .status-text b { color: var(--green); font-weight: 500; }
+    .status-right { display: flex; align-items: center; gap: 20px; }
+    .status-clock { font-family: var(--mono); font-size: 12px; color: var(--fg2); }
 
-    /* ── Main layout ─────────────────────────────── */
-    .layout {
-      display: grid;
-      grid-template-columns: 220px 1fr;
-      min-height: calc(100vh - 36px);
-    }
-
-    /* ── Sidebar ─────────────────────────────────── */
-    .sidebar {
-      background: var(--bg1);
-      border-right: 1px solid var(--border);
-      padding: 16px 0;
-    }
-    .sidebar-section {
-      padding: 6px 16px 2px;
-      font-size: 10px;
-      color: var(--fg-dim);
-      text-transform: uppercase;
-      letter-spacing: 1px;
-      margin-top: 8px;
-    }
-    .kpi-item {
-      padding: 8px 16px;
-      border-left: 2px solid transparent;
-      cursor: default;
-      transition: border-color 0.15s, background 0.15s;
-    }
-    .kpi-item:hover { background: var(--bg2); border-left-color: var(--border2); }
-    .kpi-key { color: var(--purple); font-size: 10px; }
-    .kpi-val { font-size: 15px; font-weight: 600; margin-top: 1px; }
-    .kpi-sub { font-size: 10px; color: var(--gray); margin-top: 1px; }
-    .c-green  { color: var(--green); }
-    .c-blue   { color: var(--blue); }
-    .c-orange { color: var(--orange); }
-    .c-red    { color: var(--red); }
-    .c-cyan   { color: var(--cyan); }
-    .c-yellow { color: var(--yellow); }
-    .c-purple { color: var(--purple); }
-    .c-dim    { color: var(--gray); }
-
-    .sidebar-divider { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
-
-    /* ── Main content ────────────────────────────── */
-    .main {
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-    }
-
-    /* ── Tab bar ─────────────────────────────────── */
-    .tabbar {
-      display: flex;
-      align-items: center;
-      background: var(--bg1);
+    /* ═══ TAB NAV ═══ */
+    .tab-nav {
+      display: flex; align-items: center;
+      padding: 0 24px; height: 44px;
+      background: rgba(10,10,18,0.6);
       border-bottom: 1px solid var(--border);
-      height: 34px;
-      padding: 0 4px;
-      gap: 2px;
+      gap: 4px;
     }
-    .tab {
-      height: 34px;
-      padding: 0 16px;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 11px;
-      color: var(--fg-dim);
-      background: transparent;
-      border: none;
-      border-bottom: 2px solid transparent;
-      cursor: pointer;
+    .tab-btn {
+      height: 44px; padding: 0 18px;
+      display: flex; align-items: center; gap: 8px;
+      background: transparent; border: none;
+      color: var(--fg3); font-family: var(--font);
+      font-size: 12px; font-weight: 500;
+      cursor: pointer; border-bottom: 2px solid transparent;
+      transition: all 0.2s;
       white-space: nowrap;
-      transition: all 0.15s;
     }
-    .tab:hover { color: var(--fg); }
-    .tab.active {
-      color: var(--fg);
-      background: var(--bg);
-      border-bottom-color: var(--blue);
+    .tab-btn:hover { color: var(--fg); background: var(--bg-hover); }
+    .tab-btn.active { color: var(--cyan); border-bottom-color: var(--cyan); }
+    .tab-btn .badge {
+      font-size: 10px; font-weight: 700;
+      padding: 1px 6px; border-radius: 8px;
+      background: rgba(0,212,255,0.15); color: var(--cyan);
+      font-family: var(--mono);
     }
-    .tab .tab-icon { font-size: 10px; }
+    .tab-btn .badge-alert {
+      background: rgba(255,51,102,0.2); color: var(--red);
+      animation: pulse 1.5s ease-in-out infinite;
+    }
+    .tab-key {
+      font-size: 9px; font-family: var(--mono);
+      padding: 1px 4px; border-radius: 3px;
+      background: rgba(255,255,255,0.06);
+      color: var(--fg4);
+    }
 
-    /* ── Content panels ──────────────────────────── */
-    .panel { display: none; flex: 1; overflow: auto; padding: 20px; }
+    /* ═══ PANELS ═══ */
+    .panel { display: none; padding: 24px; animation: fadeIn 0.3s ease; }
     .panel.active { display: block; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
 
-    /* charts row */
-    .charts-row {
-      display: grid;
-      grid-template-columns: 1fr 280px;
-      gap: 16px;
-      margin-bottom: 20px;
-    }
-    @media (max-width: 1100px) { .charts-row { grid-template-columns: 1fr; } }
-
-    .chart-box {
-      background: var(--bg1);
+    /* ═══ GLASS CARD ═══ */
+    .glass {
+      background: var(--bg-card);
+      backdrop-filter: blur(16px);
       border: 1px solid var(--border);
+      border-radius: var(--radius);
+      transition: all 0.25s ease;
+    }
+    .glass:hover {
+      border-color: var(--border-hover);
+      transform: translateY(-2px);
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+    }
+    .glass-static { composes: glass; }
+    .glass-static:hover { transform: none; box-shadow: none; }
+
+    /* ═══ KPI CARDS ═══ */
+    .kpi-row { display: grid; gap: 16px; margin-bottom: 20px; }
+    .kpi-row-4 { grid-template-columns: repeat(4, 1fr); }
+    @media (max-width: 1000px) { .kpi-row-4 { grid-template-columns: repeat(2, 1fr); } }
+    @media (max-width: 600px) { .kpi-row-4 { grid-template-columns: 1fr; } }
+
+    .kpi-card {
+      background: var(--bg-card); backdrop-filter: blur(16px);
+      border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 20px; position: relative; overflow: hidden;
+      transition: all 0.25s;
+    }
+    .kpi-card:hover { border-color: var(--border-hover); transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,0.3); }
+    .kpi-card .kpi-label { font-size: 11px; color: var(--fg3); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; font-weight: 500; }
+    .kpi-card .kpi-value { font-family: var(--mono); font-size: 28px; font-weight: 700; line-height: 1; margin-bottom: 4px; }
+    .kpi-card .kpi-sub { font-size: 11px; color: var(--fg3); font-family: var(--mono); }
+    .kpi-card .kpi-icon { position: absolute; top: 16px; right: 16px; font-size: 20px; opacity: 0.3; }
+    .kpi-card .kpi-glow {
+      position: absolute; top: -40px; right: -40px;
+      width: 100px; height: 100px; border-radius: 50%;
+      filter: blur(40px); opacity: 0.1;
+    }
+
+    .kpi-sm { padding: 14px 16px; }
+    .kpi-sm .kpi-value { font-size: 18px; }
+    .kpi-sm .kpi-label { font-size: 10px; margin-bottom: 4px; }
+
+    /* ═══ CHARTS ═══ */
+    .charts-grid { display: grid; gap: 16px; margin-bottom: 20px; }
+    .charts-2col { grid-template-columns: 3fr 2fr; }
+    @media (max-width: 960px) { .charts-2col { grid-template-columns: 1fr; } }
+
+    .chart-card {
+      background: var(--bg-card); backdrop-filter: blur(16px);
+      border: 1px solid var(--border); border-radius: var(--radius);
+      overflow: hidden;
     }
     .chart-header {
-      padding: 8px 14px;
-      border-bottom: 1px solid var(--border);
-      font-size: 10px;
-      color: var(--gray);
-      display: flex;
-      align-items: center;
-      gap: 8px;
+      padding: 14px 18px; border-bottom: 1px solid var(--border);
+      display: flex; justify-content: space-between; align-items: center;
     }
-    .chart-header .ch-name { color: var(--blue); }
-    .chart-body { padding: 12px; }
-    canvas { display: block; width: 100% !important; }
+    .chart-title { font-size: 12px; font-weight: 600; color: var(--fg2); }
+    .chart-body { padding: 16px; }
 
-    /* ── Table panel ─────────────────────────────── */
-    .tbl-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 10px;
-      flex-wrap: wrap;
-      gap: 8px;
+    /* ═══ HEALTH BANNER ═══ */
+    .health-banner {
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 16px 20px;
+      display: flex; align-items: center; gap: 14px;
     }
-    .tbl-title { font-size: 11px; color: var(--gray); }
-    .tbl-title span { color: var(--yellow); }
+    .health-emoji { font-size: 24px; }
+    .health-status { font-size: 13px; font-weight: 600; }
+    .health-msg { font-size: 12px; color: var(--fg3); margin-top: 2px; }
+
+    /* ═══ LIVE CARDS ═══ */
+    .live-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }
+    @media (max-width: 700px) { .live-grid { grid-template-columns: 1fr; } }
+
+    .live-card {
+      background: var(--bg-card); backdrop-filter: blur(16px);
+      border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 16px; cursor: pointer;
+      transition: all 0.25s;
+    }
+    .live-card:hover { border-color: var(--border-hover); transform: translateY(-2px); box-shadow: 0 6px 24px rgba(0,0,0,0.35); }
+
+    .live-card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 6px; }
+    .live-event { font-size: 13px; font-weight: 600; color: #fff; flex: 1; margin-right: 8px; }
+    .live-sport { font-size: 10px; color: var(--cyan); font-weight: 500; }
+    .live-score-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+    .live-score {
+      font-family: var(--mono); font-size: 14px; font-weight: 800;
+      color: #fff; background: rgba(255,170,0,0.15); border: 1px solid rgba(255,170,0,0.35);
+      padding: 2px 10px; border-radius: 6px; letter-spacing: 1px;
+    }
+    .live-minute { font-family: var(--mono); font-size: 11px; color: var(--green); font-weight: 600; }
+    .live-minute::before { content: '⏱ '; }
+    .live-prematch { font-size: 10px; color: var(--fg4); font-style: italic; }
+    .live-market { font-size: 11px; color: var(--fg3); margin-bottom: 10px; }
+    .live-market b { color: var(--yellow); font-weight: 500; }
+
+    .live-odds-row { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+    .live-odd-box {
+      font-family: var(--mono); font-size: 15px; font-weight: 700;
+      padding: 6px 12px; border-radius: 6px;
+      background: rgba(255,255,255,0.04); border: 1px solid var(--border);
+    }
+    .live-arrow { font-size: 14px; color: var(--fg3); }
+    .live-arrow.up { color: var(--red); }
+    .live-arrow.down { color: var(--green); }
+
+    .live-stats { display: flex; flex-wrap: wrap; gap: 12px; font-size: 11px; color: var(--fg3); }
+    .live-stat b { color: var(--fg); font-weight: 600; font-family: var(--mono); }
+
+    .live-footer { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+    .live-sparkline-box { width: 80px; height: 24px; }
+
+    /* Alert badges */
+    .alert-tag {
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: 10px; font-weight: 700; padding: 3px 8px;
+      border-radius: 4px; letter-spacing: 0.3px;
+      text-transform: uppercase;
+    }
+    .alert-profit-lock {
+      background: rgba(255,170,0,0.15); color: var(--orange);
+      border: 1px solid rgba(255,170,0,0.3);
+      animation: glowOrange 2s ease-in-out infinite;
+    }
+    @keyframes glowOrange { 0%,100% { box-shadow: 0 0 6px rgba(255,170,0,0.2); } 50% { box-shadow: 0 0 16px rgba(255,170,0,0.4); } }
+    .alert-structural-draw {
+      background: rgba(0,212,255,0.15); color: var(--cyan);
+      border: 1px solid rgba(0,212,255,0.3);
+      animation: glowCyan 2s ease-in-out infinite;
+    }
+    @keyframes glowCyan { 0%,100% { box-shadow: 0 0 6px rgba(0,212,255,0.2); } 50% { box-shadow: 0 0 16px rgba(0,212,255,0.4); } }
+    .alert-sniper {
+      background: rgba(168,85,247,0.15); color: var(--purple);
+      border: 1px solid rgba(168,85,247,0.3);
+      animation: glowPurple 2s ease-in-out infinite;
+    }
+    @keyframes glowPurple { 0%,100% { box-shadow: 0 0 6px rgba(168,85,247,0.2); } 50% { box-shadow: 0 0 16px rgba(168,85,247,0.4); } }
+    .alert-line-against { background: rgba(255,51,102,0.12); color: var(--red); border: 1px solid rgba(255,51,102,0.25); }
+    .alert-line-for { background: rgba(0,255,136,0.12); color: var(--green); border: 1px solid rgba(0,255,136,0.25); }
+    .alert-suspended { background: rgba(255,255,255,0.06); color: var(--fg3); border: 1px solid var(--border); }
+
+    /* ═══ SCANNER TABLE ═══ */
+    .scanner-stats { display: flex; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
+    .scanner-stat {
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: 8px; padding: 10px 16px;
+      font-family: var(--mono); font-size: 12px;
+    }
+    .scanner-stat .val { font-size: 20px; font-weight: 700; color: var(--cyan); }
 
     .tbl-wrap {
-      background: var(--bg1);
-      border: 1px solid var(--border);
-      overflow-x: auto;
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: var(--radius); overflow-x: auto;
     }
-    table { width: 100%; border-collapse: collapse; font-size: 11px; white-space: nowrap; }
-    thead tr { border-bottom: 1px solid var(--border); }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    thead { position: sticky; top: 0; z-index: 2; }
     th {
-      padding: 7px 12px;
-      text-align: left;
-      color: var(--gray);
-      font-size: 10px;
-      font-weight: 500;
-      background: var(--bg1);
-      position: sticky;
-      top: 0;
-      z-index: 1;
+      padding: 10px 14px; text-align: left;
+      font-size: 10px; font-weight: 600; color: var(--fg3);
+      text-transform: uppercase; letter-spacing: 0.5px;
+      background: var(--bg-card-solid); border-bottom: 1px solid var(--border);
     }
-    td { padding: 7px 12px; border-bottom: 1px solid var(--border); color: var(--fg); }
+    td {
+      padding: 10px 14px; border-bottom: 1px solid var(--border);
+      font-family: var(--mono); font-size: 11px; white-space: nowrap;
+    }
     tr:last-child td { border-bottom: none; }
-    tr:hover td { background: var(--bg2); }
+    tr:hover td { background: rgba(255,255,255,0.02); }
 
-    /* column color semantics */
-    .col-id    { color: var(--gray); }
-    .col-ts    { color: var(--gray); }
-    .col-event { color: var(--fg); max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
-    .col-sport { color: var(--cyan); }
-    .col-mkt   { color: var(--yellow); max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
-    .col-odd   { color: var(--orange); }
-    .col-conf  { color: var(--blue); }
-    .col-ml    { color: var(--purple); }
-    .col-edge  { color: var(--yellow); }
-    .col-stake { color: var(--fg); font-weight: 600; }
+    .col-event { font-family: var(--font); color: #fff; font-weight: 500; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+    .col-score { color: var(--orange); font-weight: 600; }
+    .col-var { font-weight: 600; }
+    .var-low { color: var(--green); } .var-mid { color: var(--yellow); } .var-high { color: var(--red); }
 
-    /* result tags */
-    .tag-win  { color: var(--green); }
-    .tag-loss { color: var(--red); }
-    .tag-push { color: var(--gray); }
-
-    /* engine badge */
-    .eng { font-size: 9px; padding: 1px 5px; border-radius: 2px; font-weight: 700; }
-    .eng-ml { background: rgba(198,120,221,0.15); color: var(--purple); border: 1px solid rgba(198,120,221,0.3); }
-    .eng-h  { background: rgba(97,175,239,0.1);  color: var(--blue);   border: 1px solid rgba(97,175,239,0.25); }
-
-    /* mini bar */
-    .mbar { display: inline-flex; align-items: center; gap: 5px; }
-    .mbar-track { width: 40px; height: 3px; background: var(--border2); border-radius: 2px; }
-    .mbar-fill  { height: 3px; border-radius: 2px; }
-    .mbar-num   { color: var(--gray); font-size: 10px; min-width: 26px; }
-
-    /* loss minute badge */
-    .min-badge { font-size: 9px; color: var(--red); border: 1px solid rgba(224,108,117,0.35); padding: 1px 4px; border-radius: 2px; margin-left: 4px; }
-
-    /* CLV */
-    .clv-pos { color: var(--green); }
-    .clv-neg { color: var(--red); }
-
-    /* reason */
-    .reason { color: var(--orange); }
-
-    /* empty state */
-    .empty-row td { color: var(--fg-dim); text-align: center; padding: 30px; font-style: italic; }
-
-    /* prompt line */
-    .prompt { color: var(--gray); }
-    .prompt::before { content: '$ '; color: var(--green); }
-
-    /* ── Live tracking ── */
-    .dir-up   { color: var(--red);    font-size: 11px; } /* cuota sube = valor baja para nosotros */
-    .dir-down { color: var(--green);  font-size: 11px; } /* cuota baja = valor sube */
-    .dir-stbl { color: var(--gray);   font-size: 11px; }
-
-    .live-clv-pos { color: var(--green); font-weight: 600; }
-    .live-clv-neg { color: var(--red);   font-weight: 600; }
-
-    .alert-badge {
-      font-size: 9px; padding: 2px 5px; border-radius: 2px; font-weight: 700;
-      letter-spacing: 0.3px;
-    }
-    .alert-suspended { background: rgba(229,192,123,0.15); color: var(--yellow); border: 1px solid rgba(229,192,123,0.4); }
-    .alert-against   { background: rgba(224,108,117,0.15); color: var(--red);    border: 1px solid rgba(224,108,117,0.4); }
-    .alert-for       { background: rgba(152,195,121,0.15); color: var(--green);  border: 1px solid rgba(152,195,121,0.4); }
-    .alert-ok        { color: var(--gray); font-size: 9px; }
-
-    .live-dot {
-      display: inline-block; width: 7px; height: 7px; border-radius: 50%;
-      background: var(--red); margin-right: 4px;
-      animation: livepulse 1.4s ease-in-out infinite;
-    }
-    @keyframes livepulse {
-      0%,100% { opacity: 1; } 50% { opacity: 0.3; }
-    }
-
-    .snap-count { color: var(--gray); font-size: 10px; }
-    canvas.sparkline { display: inline-block !important; width: 70px !important; height: 22px !important; vertical-align: middle; }
-
-    /* ── Matrix 10x5 Grid ── */
-    .matrix-container {
-      padding: 10px 0;
-    }
-    .matrix-legend {
-      display: flex; gap: 16px; align-items: center; margin-bottom: 14px; font-size: 10px; color: var(--gray);
-    }
-    .matrix-legend-item { display: flex; align-items: center; gap: 6px; }
-    .matrix-legend-box { width: 12px; height: 12px; border-radius: 2px; }
-
-    .matrix-grid {
-      display: grid;
-      grid-template-columns: repeat(10, 1fr);
-      gap: 8px;
-    }
-    @media (max-width: 1400px) { .matrix-grid { grid-template-columns: repeat(5, 1fr); } }
-    @media (max-width: 800px)  { .matrix-grid { grid-template-columns: repeat(2, 1fr); } }
+    /* ═══ MATRIX GRID ═══ */
+    .matrix-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
 
     .matrix-card {
-      background: var(--bg1);
-      border: 1px solid var(--border);
-      border-radius: 4px;
-      padding: 10px 8px;
-      cursor: pointer;
-      display: flex;
-      flex-direction: column;
-      justify-content: space-between;
-      min-height: 90px;
-      transition: all 0.2s ease;
-      position: relative;
-      overflow: hidden;
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: 8px; padding: 10px; cursor: pointer;
+      transition: all 0.2s; min-height: 80px;
     }
-    .matrix-card:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 4px 16px rgba(0,0,0,0.6);
+    .matrix-card:hover { transform: translateY(-2px); box-shadow: 0 4px 16px rgba(0,0,0,0.4); }
+    .matrix-card.m-win { border-left: 3px solid var(--green); background: rgba(0,255,136,0.04); }
+    .matrix-card.m-loss { border-left: 3px solid var(--red); background: rgba(255,51,102,0.04); }
+    .matrix-card.m-push { border-left: 3px solid var(--fg4); }
+    .m-id { font-family: var(--mono); font-size: 10px; color: var(--fg3); }
+    .m-event { font-size: 11px; font-weight: 600; color: var(--fg); margin: 4px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .m-bottom { display: flex; justify-content: space-between; font-size: 10px; }
+    .m-odd { font-family: var(--mono); color: var(--orange); font-weight: 600; }
+    .m-result { font-weight: 700; font-size: 10px; }
+
+    /* ═══ FIREWALL ═══ */
+    .fw-hero { display: flex; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
+    .fw-stat {
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 16px 24px; flex: 1; min-width: 150px;
+    }
+    .fw-stat .fw-val { font-family: var(--mono); font-size: 32px; font-weight: 800; }
+    .fw-stat .fw-label { font-size: 11px; color: var(--fg3); margin-top: 4px; }
+    .reason-tag {
+      font-size: 10px; padding: 2px 6px; border-radius: 4px;
+      background: rgba(255,170,0,0.1); color: var(--orange);
+      border: 1px solid rgba(255,170,0,0.2);
     }
 
-    .matrix-card.card-win {
-      background: rgba(152,195,121,0.08);
-      border-color: rgba(152,195,121,0.35);
-    }
-    .matrix-card.card-win:hover {
-      border-color: var(--green);
-      box-shadow: 0 0 12px rgba(152,195,121,0.3);
-    }
-
-    .matrix-card.card-loss {
-      background: rgba(224,108,117,0.08);
-      border-color: rgba(224,108,117,0.35);
-    }
-    .matrix-card.card-loss:hover {
-      border-color: var(--red);
-      box-shadow: 0 0 12px rgba(224,108,117,0.3);
-    }
-
-    .matrix-card.card-push {
-      background: rgba(255,255,255,0.02);
-      border-color: var(--border);
-    }
-
-    .matrix-card.card-pending {
-      background: rgba(229,192,123,0.08);
-      border-color: rgba(229,192,123,0.35);
-    }
-
-    .mcard-top { display: flex; justify-content: space-between; font-size: 10px; color: var(--gray); margin-bottom: 4px; }
-    .mcard-id  { font-family: 'JetBrains Mono', monospace; font-weight: 600; }
-    .mcard-sport { color: var(--cyan); font-size: 9px; }
-    .mcard-event { font-size: 10px; font-weight: 600; color: var(--fg); line-height: 1.2; margin-bottom: 6px; max-height: 26px; overflow: hidden; }
-    .mcard-mkt   { font-size: 9px; color: var(--yellow); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .mcard-bottom { display: flex; justify-content: space-between; align-items: flex-end; margin-top: 6px; pt: 4px; border-top: 1px solid rgba(255,255,255,0.04); }
-    .mcard-odd  { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--orange); font-weight: 600; }
-    .mcard-badge { font-size: 9px; font-weight: 700; padding: 1px 4px; border-radius: 2px; }
-
-    /* ── Fullscreen Pick Inspector Modal ── */
+    /* ═══ MODAL ═══ */
     .modal-overlay {
-      position: fixed;
-      top: 0; left: 0; right: 0; bottom: 0;
-      background: rgba(0, 0, 0, 0.94);
-      backdrop-filter: blur(10px);
-      z-index: 9999;
-      display: none;
-      padding: 24px;
-      overflow-y: auto;
+      position: fixed; inset: 0; background: rgba(0,0,0,0.92);
+      backdrop-filter: blur(12px); z-index: 1000;
+      display: none; padding: 32px; overflow-y: auto;
     }
-    .modal-overlay.active { display: block; }
-
+    .modal-overlay.open { display: block; animation: fadeIn 0.25s ease; }
     .modal-box {
-      max-width: 1200px;
-      margin: 0 auto;
-      background: #09090b;
-      border: 1px solid var(--border2);
-      border-radius: 8px;
-      padding: 24px;
-      box-shadow: 0 10px 40px rgba(0,0,0,0.8);
-      position: relative;
+      max-width: 1100px; margin: 0 auto;
+      background: #09090f; border: 1px solid var(--border-hover);
+      border-radius: 16px; padding: 28px;
+      box-shadow: 0 16px 64px rgba(0,0,0,0.8);
     }
-    .modal-close-btn {
-      position: absolute;
-      top: 16px; right: 20px;
-      background: var(--bg2);
-      border: 1px solid var(--border2);
-      color: var(--fg);
-      padding: 6px 14px;
-      border-radius: 4px;
-      cursor: pointer;
-      font-family: inherit;
-      font-size: 11px;
+    .modal-close {
+      position: absolute; top: 20px; right: 24px;
+      background: rgba(255,255,255,0.06); border: 1px solid var(--border);
+      color: var(--fg); padding: 6px 14px; border-radius: 6px;
+      cursor: pointer; font-family: var(--font); font-size: 12px;
       transition: all 0.15s;
     }
-    .modal-close-btn:hover { background: var(--red); color: #fff; border-color: var(--red); }
+    .modal-close:hover { background: var(--red); color: #fff; border-color: var(--red); }
+    .modal-title { font-size: 18px; font-weight: 700; color: #fff; margin-bottom: 4px; }
+    .modal-sub { font-size: 12px; color: var(--fg3); margin-bottom: 16px; }
 
-    .modal-head-title { font-size: 16px; font-weight: 700; color: #fff; margin-bottom: 4px; display: flex; align-items: center; gap: 10px; }
-    .modal-head-sub   { font-size: 11px; color: var(--gray); margin-bottom: 16px; }
+    .rec-banner {
+      padding: 14px 18px; border-radius: 10px;
+      margin-bottom: 20px; font-size: 13px; font-weight: 600;
+      display: flex; align-items: center; gap: 12px;
+    }
+    .modal-grid { display: grid; grid-template-columns: 1fr 360px; gap: 20px; margin-bottom: 20px; }
+    @media (max-width: 900px) { .modal-grid { grid-template-columns: 1fr; } }
+    .modal-panel {
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: 10px; padding: 18px;
+    }
+    .modal-panel-title { font-size: 10px; color: var(--fg3); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px; font-weight: 600; }
+    .modal-stat { display: flex; justify-content: space-between; padding: 7px 0; border-bottom: 1px solid rgba(255,255,255,0.04); font-size: 12px; }
+    .modal-stat:last-child { border-bottom: none; }
+    .modal-stat-k { color: var(--fg3); }
+    .modal-stat-v { font-weight: 600; font-family: var(--mono); }
 
-    .banner-recommendation {
-      padding: 12px 16px;
+    /* ═══ SECTION TITLES ═══ */
+    .section-title { font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 16px; display: flex; align-items: center; gap: 10px; }
+    .section-title .st-badge { font-size: 11px; font-family: var(--mono); color: var(--cyan); }
+
+    /* ═══ VIEW TOGGLE ═══ */
+    .view-toggle { display: flex; gap: 4px; margin-bottom: 16px; }
+    .vt-btn {
+      padding: 6px 14px; border-radius: 6px; border: 1px solid var(--border);
+      background: transparent; color: var(--fg3); font-family: var(--font);
+      font-size: 11px; cursor: pointer; transition: all 0.15s;
+    }
+    .vt-btn.active { background: rgba(0,212,255,0.1); color: var(--cyan); border-color: rgba(0,212,255,0.3); }
+
+    /* ═══ LOADING ═══ */
+    .skeleton {
+      background: linear-gradient(90deg, var(--bg-card) 25%, rgba(255,255,255,0.04) 50%, var(--bg-card) 75%);
+      background-size: 200% 100%;
+      animation: shimmer 1.5s infinite;
       border-radius: 6px;
-      margin-bottom: 20px;
-      font-size: 12px;
-      font-weight: 600;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
     }
+    @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 
-    .modal-grid-2col {
-      display: grid;
-      grid-template-columns: 1fr 340px;
-      gap: 20px;
-      margin-bottom: 20px;
-    }
-    @media (max-width: 960px) { .modal-grid-2col { grid-template-columns: 1fr; } }
+    .empty-state { text-align: center; padding: 60px 20px; color: var(--fg3); font-size: 13px; }
+    .empty-state .empty-icon { font-size: 40px; margin-bottom: 12px; opacity: 0.4; }
 
-    .modal-panel-box {
-      background: var(--bg1);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 16px;
-    }
-    .modal-panel-title {
-      font-size: 10px; color: var(--gray); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px;
-    }
+    /* scrollbar */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.15); }
 
-    .modal-stat-row {
-      display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.04); font-size: 11px;
-    }
-    .modal-stat-label { color: var(--gray); }
-    .modal-stat-value { font-weight: 600; font-family: 'JetBrains Mono', monospace; }
+    /* summary alert row */
+    .alert-summary { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
   </style>
 </head>
 <body>
 
-  <!-- Top bar -->
-  <div class="topbar">
-    <div class="topbar-left">
+  <!-- STATUS BAR -->
+  <div class="status-bar">
+    <div class="status-left">
+      <div class="logo">Viejito<span>Bot</span></div>
+      <div class="status-dot"></div>
+      <div class="status-text"><b>ONLINE</b> · Sampling</div>
+    </div>
+    <div class="status-right">
+      <div class="status-text" id="samplerInfo">—</div>
+      <div class="status-clock" id="clock">--:--:--</div>
+    </div>
+  </div>
+
+  <!-- TAB NAV -->
+  <nav class="tab-nav">
+    <button class="tab-btn active" data-tab="command" onclick="switchTab('command')">
+      🏠 Command Center <span class="tab-key">1</span>
+    </button>
+    <button class="tab-btn" data-tab="live" onclick="switchTab('live')">
+      📡 Live Radar <span class="badge" id="liveBadge">0</span> <span class="tab-key">2</span>
+    </button>
+    <button class="tab-btn" data-tab="scanner" onclick="switchTab('scanner')">
+      ⚡ Global Scanner <span class="badge" id="scannerBadge">0</span> <span class="tab-key">3</span>
+    </button>
+    <button class="tab-btn" data-tab="history" onclick="switchTab('history')">
+      📊 Historial <span class="tab-key">4</span>
+    </button>
+    <button class="tab-btn" data-tab="firewall" onclick="switchTab('firewall')">
+      🛡️ Firewall <span class="tab-key">5</span>
+    </button>
+  </nav>
+
+  <!-- ═══════════ TAB 1: COMMAND CENTER ═══════════ -->
+  <div class="panel active" id="panel-command">
+    <div class="kpi-row kpi-row-4" id="heroKpis">
+      <div class="kpi-card"><div class="kpi-icon">📈</div><div class="kpi-glow" style="background:var(--green)"></div>
+        <div class="kpi-label">ROI</div><div class="kpi-value" id="kROI" style="color:var(--green)">—</div><div class="kpi-sub" id="kROIsub">—</div></div>
+      <div class="kpi-card"><div class="kpi-icon">🎯</div><div class="kpi-glow" style="background:var(--cyan)"></div>
+        <div class="kpi-label">Win Rate</div><div class="kpi-value" id="kWR" style="color:var(--cyan)">—</div><div class="kpi-sub" id="kWRsub">—</div></div>
+      <div class="kpi-card"><div class="kpi-icon">💰</div><div class="kpi-glow" style="background:var(--yellow)"></div>
+        <div class="kpi-label">P/L (Unidades)</div><div class="kpi-value" id="kPL" style="color:var(--yellow)">—</div><div class="kpi-sub" id="kPLsub">—</div></div>
+      <div class="kpi-card"><div class="kpi-icon">📦</div><div class="kpi-glow" style="background:var(--purple)"></div>
+        <div class="kpi-label">Total Picks</div><div class="kpi-value" id="kN" style="color:var(--purple)">—</div><div class="kpi-sub" id="kNsub">—</div></div>
+    </div>
+
+    <div class="kpi-row kpi-row-4" id="healthKpis">
+      <div class="kpi-card kpi-sm"><div class="kpi-label">Brier Score</div><div class="kpi-value" id="kBrier" style="color:var(--cyan)">—</div><div class="kpi-sub">↓ mejor</div></div>
+      <div class="kpi-card kpi-sm"><div class="kpi-label">ECE</div><div class="kpi-value" id="kECE">—</div><div class="kpi-sub">target &lt; 5%</div></div>
+      <div class="kpi-card kpi-sm"><div class="kpi-label">Sharpe Ratio</div><div class="kpi-value" id="kSharpe" style="color:var(--purple)">—</div><div class="kpi-sub">anualizado</div></div>
+      <div class="kpi-card kpi-sm"><div class="kpi-label">Max Drawdown</div><div class="kpi-value" id="kDD" style="color:var(--red)">—</div><div class="kpi-sub">unidades</div></div>
+    </div>
+
+    <div class="charts-grid charts-2col">
+      <div class="chart-card">
+        <div class="chart-header"><span class="chart-title">📈 P/L Acumulado (Unidades)</span></div>
+        <div class="chart-body"><canvas id="chartPL" height="200"></canvas></div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-header"><span class="chart-title">🏆 Rendimiento por Deporte</span></div>
+        <div class="chart-body"><canvas id="chartSport" height="200"></canvas></div>
+      </div>
+    </div>
+
+    <div class="health-banner" id="healthBanner">
+      <span class="health-emoji" id="healthEmoji">⚪</span>
       <div>
-        <span class="dot dot-r"></span>&nbsp;
-        <span class="dot dot-y"></span>&nbsp;
-        <span class="dot dot-g"></span>
+        <div class="health-status" id="healthStatus">Cargando...</div>
+        <div class="health-msg" id="healthMsg">—</div>
       </div>
-      <div class="topbar-title">
-        <span>playdoit-monitor</span> // dashboard v3.0
-      </div>
-    </div>
-    <div class="topbar-right">
-      <span id="statusBadge">● connecting...</span>
-      &nbsp;&nbsp;
-      <span id="lastUpdate" style="color:var(--gray)"></span>
     </div>
   </div>
 
-  <div class="layout">
-
-    <!-- Sidebar: KPIs as variables -->
-    <aside class="sidebar">
-      <div class="sidebar-section">// performance</div>
-
-      <div class="kpi-item">
-        <div class="kpi-key">roi</div>
-        <div class="kpi-val c-green" id="kpiRoi">—</div>
-        <div class="kpi-sub" id="kpiProfit">—</div>
-      </div>
-
-      <div class="kpi-item">
-        <div class="kpi-key">win_rate</div>
-        <div class="kpi-val c-blue" id="kpiWr">—</div>
-        <div class="kpi-sub" id="kpiWins">—</div>
-      </div>
-
-      <div class="kpi-item">
-        <div class="kpi-key">total_picks</div>
-        <div class="kpi-val c-orange" id="kpiN">—</div>
-        <div class="kpi-sub">resueltos</div>
-      </div>
-
-      <hr class="sidebar-divider">
-      <div class="sidebar-section">// model health</div>
-
-      <div class="kpi-item">
-        <div class="kpi-key">brier_score</div>
-        <div class="kpi-val c-cyan" id="kpiBrier">—</div>
-        <div class="kpi-sub">↓ mejor calibración</div>
-      </div>
-
-      <div class="kpi-item">
-        <div class="kpi-key">ece</div>
-        <div class="kpi-val" id="kpiEce">—</div>
-        <div class="kpi-sub">target &lt; 5%</div>
-      </div>
-
-      <div class="kpi-item">
-        <div class="kpi-key">log_loss</div>
-        <div class="kpi-val c-purple" id="kpiLogLoss">—</div>
-        <div class="kpi-sub">—</div>
-      </div>
-
-      <hr class="sidebar-divider">
-      <div class="sidebar-section">// filter layer</div>
-
-      <div class="kpi-item">
-        <div class="kpi-key">units_saved</div>
-        <div class="kpi-val c-green" id="kpiSaved">—</div>
-        <div class="kpi-sub" id="kpiLossesAvoided">—</div>
-      </div>
-    </aside>
-
-    <!-- Main -->
-    <main class="main">
-
-      <!-- Tab bar -->
-      <div class="tabbar">
-        <button class="tab active" id="btnCharts"  onclick="openTab('charts')">
-          <span class="tab-icon">◈</span> charts
-        </button>
-        <button class="tab" id="btnPicks"   onclick="openTab('picks')">
-          <span class="tab-icon">⚡</span> emitidos <span style="color:var(--gray)" id="cntAccepted"></span>
-        </button>
-        <button class="tab" id="btnRejected" onclick="openTab('rejected')">
-          <span class="tab-icon">🛡</span> descartados <span style="color:var(--gray)" id="cntRejected"></span>
-        </button>
-        <button class="tab" id="btnLive" onclick="openTab('live')">
-          <span class="tab-icon" style="color:var(--red)">●</span> live tracking <span style="color:var(--gray)" id="cntLive"></span>
-        </button>
-        <button class="tab" id="btnMatrix" onclick="openTab('matrix')">
-          <span class="tab-icon" style="color:var(--green)">⊞</span> matriz 50 picks <span style="color:var(--gray)" id="cntMatrix"></span>
-        </button>
-      </div>
-
-      <!-- Panel: Charts -->
-      <div class="panel active" id="panelCharts">
-        <div class="charts-row">
-          <div class="chart-box">
-            <div class="chart-header">
-              <span class="ch-name">equity_curve</span>
-              <span>// unidades acumuladas por día</span>
-            </div>
-            <div class="chart-body">
-              <canvas id="chartEquity" height="160"></canvas>
-            </div>
-          </div>
-          <div class="chart-box">
-            <div class="chart-header">
-              <span class="ch-name">by_sport</span>
-              <span>// profit (u)</span>
-            </div>
-            <div class="chart-body">
-              <canvas id="chartSports" height="160"></canvas>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Panel: Accepted picks -->
-      <div class="panel" id="panelPicks">
-        <div class="tbl-header">
-          <div class="tbl-title">
-            <span>picks.accepted</span>
-            // últimos 50 · todos los features
-          </div>
-        </div>
-        <div class="tbl-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>id</th>
-                <th>fecha</th>
-                <th>evento</th>
-                <th>deporte</th>
-                <th>mercado · selección</th>
-                <th>eng</th>
-                <th>momio</th>
-                <th>apertura</th>
-                <th>clv</th>
-                <th>conf</th>
-                <th>heur</th>
-                <th>ml</th>
-                <th>edge</th>
-                <th>f_prob</th>
-                <th>f_av</th>
-                <th>f_sit</th>
-                <th>f_lin</th>
-                <th>f_ap</th>
-                <th>stake</th>
-                <th>modo</th>
-                <th>resultado</th>
-              </tr>
-            </thead>
-            <tbody id="tbodyPicks">
-              <tr class="empty-row"><td colspan="21">cargando...</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <!-- Panel: Rejected picks -->
-      <div class="panel" id="panelRejected">
-        <div class="tbl-header">
-          <div class="tbl-title">
-            <span>picks.rejected</span>
-            // bloqueados por la doble capa
-          </div>
-        </div>
-        <div class="tbl-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>id</th>
-                <th>fecha</th>
-                <th>evento</th>
-                <th>deporte</th>
-                <th>mercado · selección</th>
-                <th>momio</th>
-                <th>stake</th>
-                <th>motivo</th>
-                <th>resolución</th>
-              </tr>
-            </thead>
-            <tbody id="tbodyRejected">
-              <tr class="empty-row"><td colspan="9">cargando...</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <!-- Panel: Live Tracking -->
-      <div class="panel" id="panelLive">
-        <div class="tbl-header">
-          <div class="tbl-title">
-            <span style="color:var(--red)">picks.live</span>
-            // pendientes · odds en tiempo real · auto-refresh 30s
-          </div>
-          <div style="display:flex;align-items:center;gap:12px;font-size:10px;color:var(--gray)">
-            <span>última sync: <span id="liveLastSync">—</span></span>
-            <button onclick="refreshLive()" style="background:var(--bg2);border:1px solid var(--border2);color:var(--fg);padding:3px 10px;border-radius:2px;cursor:pointer;font-family:inherit;font-size:10px">↻ refresh</button>
-          </div>
-        </div>
-
-        <div style="padding: 10px 0;">
-          <div class="matrix-grid" id="liveMatrixGrid" style="margin-bottom: 20px;">
-            <!-- Tarjetas de picks en vivo generadas dinámicamente -->
-          </div>
-        </div>
-
-        <div class="tbl-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>id</th>
-                <th>emitido hace</th>
-                <th>evento</th>
-                <th>deporte</th>
-                <th>mercado · selección</th>
-                <th>entry odd</th>
-                <th>cuota actual</th>
-                <th>Δ mvmt</th>
-                <th>live clv</th>
-                <th>drift total</th>
-                <th>sparkline</th>
-                <th>snaps</th>
-                <th>conf</th>
-                <th>edge</th>
-                <th>stake</th>
-                <th>estado</th>
-              </tr>
-            </thead>
-            <tbody id="tbodyLive">
-              <tr class="empty-row"><td colspan="16">cargando picks pendientes...</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <!-- Panel: Matrix 10x5 -->
-      <div class="panel" id="panelMatrix">
-        <div class="tbl-header">
-          <div class="tbl-title">
-            <span style="color:var(--green)">picks.matrix</span>
-            // cuadrícula 10×5 · últimos 50 picks emitidos · click para ficha completa y evaluación de cashout
-          </div>
-        </div>
-
-        <div class="matrix-container">
-          <div class="matrix-legend">
-            <div class="matrix-legend-item"><div class="matrix-legend-box" style="background:rgba(152,195,121,0.2);border:1px solid var(--green)"></div> <span>Ganado (Win)</span></div>
-            <div class="matrix-legend-item"><div class="matrix-legend-box" style="background:rgba(224,108,117,0.2);border:1px solid var(--red)"></div> <span>Perdido (Loss)</span></div>
-            <div class="matrix-legend-item"><div class="matrix-legend-box" style="background:rgba(229,192,123,0.2);border:1px solid var(--yellow)"></div> <span>Pendiente (Live)</span></div>
-            <div class="matrix-legend-item"><div class="matrix-legend-box" style="background:rgba(255,255,255,0.05);border:1px solid var(--border)"></div> <span>Nulo (Push)</span></div>
-          </div>
-
-          <div class="matrix-grid" id="matrixGrid">
-            <!-- 50 Tarjetas generadas dinámicamente -->
-            <div class="c-dim" style="grid-column: 1 / -1; text-align: center; padding: 40px;">cargando matriz de 50 picks...</div>
-          </div>
-        </div>
-      </div>
-
-    </main>
-  </div>
-
-  <!-- Fullscreen Pick Inspector Modal -->
-  <div class="modal-overlay" id="modalPickInspector" onclick="if(event.target===this)closePickModal()">
-    <div class="modal-box">
-      <button class="modal-close-btn" onclick="closePickModal()">✕ Cerrar (Esc)</button>
-
-      <div class="modal-head-title" id="mModalTitle">
-        <span>#---</span> <span style="color:var(--gray)">|</span> <span>Cargando pick...</span>
-      </div>
-      <div class="modal-head-sub" id="mModalSub">—</div>
-
-      <!-- Recommendation / Cashout Banner -->
-      <div class="banner-recommendation" id="mModalBanner" style="background:rgba(152,195,121,0.12);border:1px solid var(--green);color:var(--green)">
-        <div id="mModalRecText">Cargando diagnóstico...</div>
-        <div id="mModalRecBadge" class="eng" style="font-size:11px;padding:3px 8px">ESTABLE</div>
-      </div>
-
-      <div class="modal-grid-2col">
-        <!-- Chart Panel -->
-        <div class="modal-panel-box">
-          <div class="modal-panel-title">// evolución de cuota & snapshots</div>
-          <canvas id="chartModalSnapshot" height="220" style="width:100%!important;display:block"></canvas>
-        </div>
-
-        <!-- Breakdown Panel -->
-        <div class="modal-panel-box">
-          <div class="modal-panel-title">// deslose de features & stake</div>
-          <div id="mModalStats">
-            <!-- Rellenado dinámicamente -->
-          </div>
-        </div>
-      </div>
-
-      <!-- Snapshots History Table -->
-      <div class="modal-panel-box">
-        <div class="modal-panel-title">// historial de snapshots capturados (<span id="mModalSnapCount">0</span>)</div>
-        <div class="tbl-wrap" style="max-height:240px;overflow-y:auto">
-          <table>
-            <thead>
-              <tr>
-                <th>id</th>
-                <th>timestamp</th>
-                <th>minuto live</th>
-                <th>marcador</th>
-                <th>cuota decimal</th>
-                <th>cuota americana</th>
-                <th>estado mercado</th>
-              </tr>
-            </thead>
-            <tbody id="mModalSnapBody">
-              <tr><td colspan="7" class="c-dim" style="text-align:center">cargando historial...</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
+  <!-- ═══════════ TAB 2: LIVE RADAR ═══════════ -->
+  <div class="panel" id="panel-live">
+    <div class="section-title">📡 Live Radar <span class="st-badge" id="liveCount">0 picks activos</span></div>
+    <div class="alert-summary" id="alertSummary"></div>
+    <div class="live-grid" id="liveGrid">
+      <div class="empty-state"><div class="empty-icon">📡</div>Sin picks activos en este momento</div>
     </div>
   </div>
 
-  <script src="app.js?v=7.0"></script>
+  <!-- ═══════════ TAB 3: GLOBAL SCANNER ═══════════ -->
+  <div class="panel" id="panel-scanner">
+    <div class="section-title">⚡ Scanner Global de Empates Estructurales (Min 75+)</div>
+    <div class="scanner-stats" id="scannerStats"></div>
+    <div class="tbl-wrap">
+      <table id="scannerTable">
+        <thead><tr>
+          <th>Evento</th><th>Marcador</th><th>Minuto</th><th>Mercado</th><th>Selección</th>
+          <th>Varianza σ²</th><th>Cuota Media</th><th>Cuota Actual</th><th>Muestras</th>
+        </tr></thead>
+        <tbody id="scannerBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ═══════════ TAB 4: PICK HISTORY ═══════════ -->
+  <div class="panel" id="panel-history">
+    <div class="section-title">📊 Historial de Picks Emitidos</div>
+    <div class="view-toggle">
+      <button class="vt-btn active" onclick="setHistoryView('matrix')">⊞ Matrix</button>
+      <button class="vt-btn" onclick="setHistoryView('table')">☰ Tabla</button>
+    </div>
+    <div id="historyMatrix" class="matrix-grid"></div>
+    <div id="historyTable" style="display:none">
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr>
+            <th>#</th><th>Fecha</th><th>Evento</th><th>Deporte</th><th>Mercado</th>
+            <th>Selección</th><th>Cuota</th><th>Conf</th><th>Edge</th>
+            <th>Stake</th><th>Resultado</th><th>P/L</th>
+          </tr></thead>
+          <tbody id="historyBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════ TAB 5: FIREWALL ═══════════ -->
+  <div class="panel" id="panel-firewall">
+    <div class="section-title">🛡️ Firewall — Picks Bloqueados</div>
+    <div class="fw-hero" id="fwHero"></div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr>
+          <th>#</th><th>Evento</th><th>Deporte</th><th>Mercado</th><th>Selección</th>
+          <th>Cuota</th><th>Razón</th><th>Resultado Real</th>
+        </tr></thead>
+        <tbody id="fwBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ═══════════ MODAL: PICK INSPECTOR ═══════════ -->
+  <div class="modal-overlay" id="modalOverlay">
+    <div class="modal-box" style="position:relative;">
+      <button class="modal-close" onclick="closeModal()">✕ Cerrar <span style="font-size:9px;opacity:0.5;margin-left:4px">ESC</span></button>
+      <div class="modal-title" id="modalTitle">—</div>
+      <div class="modal-sub" id="modalSub">—</div>
+      <div class="rec-banner" id="modalRec">—</div>
+      <div class="modal-grid">
+        <div class="modal-panel">
+          <div class="modal-panel-title">📈 Evolución de Cuota</div>
+          <canvas id="modalChart" height="220"></canvas>
+        </div>
+        <div class="modal-panel">
+          <div class="modal-panel-title">📋 Datos del Pick</div>
+          <div id="modalStats"></div>
+        </div>
+      </div>
+      <div class="modal-panel" style="max-height:300px;overflow-y:auto">
+        <div class="modal-panel-title">📊 Timeline de Snapshots (<span id="modalSnapCount">0</span>)</div>
+        <table style="font-size:11px">
+          <thead><tr><th>Hora</th><th>Marcador</th><th>Minuto</th><th>Cuota</th><th>Estado</th></tr></thead>
+          <tbody id="modalTimeline"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+<script>
+// ═══════════════════════════════════════════════════════════
+// VIEJITOBOT MISSION CONTROL — DASHBOARD ENGINE
+// ═══════════════════════════════════════════════════════════
+
+const API = '';
+let chartPL, chartSport, modalChartInstance;
+let historyView = 'matrix';
+
+// ── Clock ──
+function updateClock() {
+  const now = new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+  document.getElementById('clock').textContent = now + ' CDMX';
+}
+setInterval(updateClock, 1000); updateClock();
+
+// ── Tabs ──
+function switchTab(name) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('panel-' + name).classList.add('active');
+  document.querySelector(`[data-tab="${name}"]`).classList.add('active');
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeModal();
+  if (document.getElementById('modalOverlay').classList.contains('open')) return;
+  if (e.key >= '1' && e.key <= '5') {
+    const tabs = ['command', 'live', 'scanner', 'history', 'firewall'];
+    switchTab(tabs[parseInt(e.key) - 1]);
+  }
+});
+
+// ── Helpers ──
+function fmt(n, d = 1) { return n != null ? Number(n).toFixed(d) : '—'; }
+function fmtPct(n) { return n != null ? Number(n).toFixed(1) + '%' : '—'; }
+function fmtDate(ts) {
+  if (!ts) return '—';
+  const d = new Date(ts);
+  return d.toLocaleDateString('es-MX', { timeZone: 'America/Mexico_City', day: '2-digit', month: '2-digit' }) + ' ' +
+         d.toLocaleTimeString('es-MX', { timeZone: 'America/Mexico_City', hour: '2-digit', minute: '2-digit', hour12: false });
+}
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+function alertClass(alert) {
+  switch(alert) {
+    case 'PROFIT_LOCK': return 'alert-profit-lock';
+    case 'STRUCTURAL_DRAW': return 'alert-structural-draw';
+    case 'SNIPER_VALUE': return 'alert-sniper';
+    case 'LINE_MOVED_AGAINST_US': return 'alert-line-against';
+    case 'LINE_MOVED_FOR_US': return 'alert-line-for';
+    case 'SUSPENDED': return 'alert-suspended';
+    default: return '';
+  }
+}
+function alertLabel(alert) {
+  switch(alert) {
+    case 'PROFIT_LOCK': return '⚡ PROFIT LOCK';
+    case 'STRUCTURAL_DRAW': return '🎯 EMPATE ESTRUCTURAL';
+    case 'SNIPER_VALUE': return '🔫 SNIPER VALUE';
+    case 'LINE_MOVED_AGAINST_US': return '📉 LÍNEA EN CONTRA';
+    case 'LINE_MOVED_FOR_US': return '📈 LÍNEA A FAVOR';
+    case 'SUSPENDED': return '⏸ SUSPENDIDO';
+    default: return '';
+  }
+}
+
+// ═══════════ COMMAND CENTER DATA ═══════════
+async function loadCommand() {
+  try {
+    const res = await fetch(API + '/api/summary');
+    const { health: h, stats: s } = await res.json();
+
+    // Hero KPIs
+    const roiColor = s.roi >= 0 ? 'var(--green)' : 'var(--red)';
+    document.getElementById('kROI').textContent = fmtPct(s.roi);
+    document.getElementById('kROI').style.color = roiColor;
+    document.getElementById('kROIsub').textContent = `${fmt(s.profit)} u profit / ${fmt(s.staked)} u apostadas`;
+
+    document.getElementById('kWR').textContent = fmtPct(s.wr);
+    document.getElementById('kWRsub').textContent = `${h.wins} W / ${h.n - h.wins} L`;
+
+    document.getElementById('kPL').textContent = (s.profit >= 0 ? '+' : '') + fmt(s.profit, 2);
+    document.getElementById('kPL').style.color = s.profit >= 0 ? 'var(--green)' : 'var(--red)';
+    document.getElementById('kPLsub').textContent = `${s.pendingN} pendientes (${fmt(s.pendingUnits)}u)`;
+
+    document.getElementById('kN').textContent = h.n;
+    document.getElementById('kNsub').textContent = `desde ${s.since ? s.since.slice(0, 10) : '—'}`;
+
+    // Health KPIs
+    document.getElementById('kBrier').textContent = fmt(h.brierScore, 4);
+    const eceVal = h.ece * 100;
+    document.getElementById('kECE').textContent = fmtPct(eceVal);
+    document.getElementById('kECE').style.color = eceVal < 5 ? 'var(--green)' : eceVal < 8 ? 'var(--yellow)' : 'var(--red)';
+    document.getElementById('kSharpe').textContent = fmt(h.sharpeRatio, 2);
+    document.getElementById('kDD').textContent = fmt(h.maxDrawdown, 2) + 'u';
+
+    // Health Banner
+    document.getElementById('healthEmoji').textContent = h.color;
+    document.getElementById('healthStatus').textContent = h.status;
+    document.getElementById('healthMsg').textContent = h.message;
+
+    // Sampler info
+    document.getElementById('samplerInfo').innerHTML = `<b>${h.n}</b> picks · ROI <b style="color:${roiColor}">${fmtPct(s.roi)}</b>`;
+
+    // P/L Chart
+    if (s.byDay && s.byDay.length) {
+      const labels = s.byDay.map(d => d.dia.slice(5));
+      const data = s.byDay.map(d => d.acumulado);
+      if (chartPL) chartPL.destroy();
+      chartPL = new Chart(document.getElementById('chartPL'), {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [{
+            data,
+            borderColor: '#00d4ff',
+            backgroundColor: (ctx) => {
+              const g = ctx.chart.ctx.createLinearGradient(0, 0, 0, 200);
+              g.addColorStop(0, 'rgba(0,212,255,0.2)');
+              g.addColorStop(1, 'rgba(0,212,255,0)');
+              return g;
+            },
+            fill: true, tension: 0.4, pointRadius: 0, borderWidth: 2,
+          }]
+        },
+        options: {
+          responsive: true, plugins: { legend: { display: false } },
+          scales: {
+            x: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#6b7280', font: { size: 10, family: "'JetBrains Mono'" } } },
+            y: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#6b7280', font: { size: 10, family: "'JetBrains Mono'" } } }
+          }
+        }
+      });
+    }
+
+    // Sport Chart
+    if (s.bySport && s.bySport.length) {
+      const sports = s.bySport.slice(0, 8);
+      if (chartSport) chartSport.destroy();
+      chartSport = new Chart(document.getElementById('chartSport'), {
+        type: 'bar',
+        data: {
+          labels: sports.map(s => s.sport || 'Otro'),
+          datasets: [{
+            data: sports.map(s => s.profit),
+            backgroundColor: sports.map(s => s.profit >= 0 ? 'rgba(0,255,136,0.5)' : 'rgba(255,51,102,0.5)'),
+            borderColor: sports.map(s => s.profit >= 0 ? '#00ff88' : '#ff3366'),
+            borderWidth: 1, borderRadius: 4,
+          }]
+        },
+        options: {
+          indexAxis: 'y', responsive: true, plugins: { legend: { display: false } },
+          scales: {
+            x: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#6b7280', font: { size: 10, family: "'JetBrains Mono'" } } },
+            y: { grid: { display: false }, ticks: { color: '#9ca3af', font: { size: 10 } } }
+          }
+        }
+      });
+    }
+  } catch (e) { console.error('Command load error:', e); }
+}
+
+// ═══════════ LIVE RADAR ═══════════
+async function loadLive() {
+  try {
+    const res = await fetch(API + '/api/live');
+    const { count, live } = await res.json();
+    document.getElementById('liveBadge').textContent = count;
+    document.getElementById('liveCount').textContent = `${count} picks activos`;
+
+    // Alert summary
+    const alertCounts = {};
+    live.forEach(p => { if (p.alert) alertCounts[p.alert] = (alertCounts[p.alert] || 0) + 1; });
+    const summaryEl = document.getElementById('alertSummary');
+    summaryEl.innerHTML = Object.entries(alertCounts).map(([k, v]) =>
+      `<span class="alert-tag ${alertClass(k)}">${alertLabel(k)} ×${v}</span>`
+    ).join('');
+
+    // Cards
+    const grid = document.getElementById('liveGrid');
+    if (!live.length) {
+      grid.innerHTML = '<div class="empty-state"><div class="empty-icon">📡</div>Sin picks activos en este momento</div>';
+      return;
+    }
+    grid.innerHTML = live.map(p => {
+      const dir = p.direction === 'up' ? '↑' : p.direction === 'down' ? '↓' : '→';
+      const dirClass = p.direction === 'up' ? 'up' : p.direction === 'down' ? 'down' : '';
+      const clvColor = (p.live_clv || 0) > 0 ? 'var(--green)' : (p.live_clv || 0) < -5 ? 'var(--red)' : 'var(--fg3)';
+      const alertHtml = p.alert ? `<span class="alert-tag ${alertClass(p.alert)}">${alertLabel(p.alert)}</span>` : '';
+
+      const scoreHtml = p.score
+        ? `<div class="live-score-row"><span class="live-score">${esc(p.score)}</span>${p.live_time ? `<span class="live-minute">${esc(p.live_time)}</span>` : ''}<span class="live-sport">${esc(p.sport || 'Fútbol')}</span></div>`
+        : `<div class="live-score-row"><span class="live-prematch">Pre-match</span><span class="live-sport">${esc(p.sport || 'Fútbol')}</span></div>`;
+
+      return `<div class="live-card" onclick="openPick(${p.id})">
+        <div class="live-card-header">
+          <div class="live-event">${esc(p.event)}</div>
+        </div>
+        ${scoreHtml}
+        <div class="live-market"><b>${esc(p.market)}</b> · ${esc(p.selection)}</div>
+        <div class="live-odds-row">
+          <div class="live-odd-box" style="color:var(--fg3)">@ ${fmt(p.entry_odd, 3)}</div>
+          <div class="live-arrow ${dirClass}">${dir}</div>
+          <div class="live-odd-box" style="color:var(--orange)">@ ${p.current_odd != null ? fmt(p.current_odd, 3) : '—'}</div>
+          <div style="font-family:var(--mono);font-weight:700;color:${clvColor};font-size:12px">${p.live_clv != null ? (p.live_clv > 0 ? '+' : '') + fmt(p.live_clv) + '%' : ''} CLV</div>
+        </div>
+        <div class="live-stats">
+          <div>Conf: <b>${fmtPct(p.conf * 100)}</b></div>
+          <div>Stake: <b>${fmt(p.stake)}u</b></div>
+          <div>Snaps: <b>${p.snapshot_count}</b></div>
+          <div>Elapsed: <b>${p.elapsed_min}m</b></div>
+        </div>
+        <div class="live-footer">
+          ${alertHtml}
+          <div class="live-sparkline-box"><canvas id="spark-${p.id}" width="80" height="24"></canvas></div>
+        </div>
+      </div>`;
+    }).join('');
+
+    // Draw sparklines
+    live.forEach(p => {
+      if (!p.sparkline || !p.sparkline.length) return;
+      const canvas = document.getElementById('spark-' + p.id);
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      const w = 80, h = 24;
+      canvas.width = w; canvas.height = h;
+      const data = Array.isArray(p.sparkline) ? p.sparkline : [];
+      if (!data.length) return;
+      const min = Math.min(...data), max = Math.max(...data);
+      const range = max - min || 1;
+      ctx.strokeStyle = '#00d4ff'; ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      data.forEach((v, i) => {
+        const x = (i / (data.length - 1)) * w;
+        const y = h - ((v - min) / range) * (h - 4) - 2;
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+    });
+  } catch (e) { console.error('Live load error:', e); }
+}
+
+// ═══════════ GLOBAL SCANNER ═══════════
+async function loadScanner() {
+  try {
+    const res = await fetch(API + '/api/global-draws');
+    const { count, draws } = await res.json();
+    document.getElementById('scannerBadge').textContent = count;
+    if (count > 0) document.getElementById('scannerBadge').classList.add('badge-alert');
+
+    // Stats
+    const avgVar = draws.length ? (draws.reduce((s, d) => s + (d.variance || 0), 0) / draws.length) : 0;
+    document.getElementById('scannerStats').innerHTML = `
+      <div class="scanner-stat"><div class="val">${count}</div><div style="color:var(--fg3);font-size:11px">Candidatos</div></div>
+      <div class="scanner-stat"><div class="val">${fmt(avgVar, 4)}</div><div style="color:var(--fg3);font-size:11px">Varianza promedio</div></div>
+    `;
+
+    // Sort by variance ascending
+    draws.sort((a, b) => (a.variance || 0) - (b.variance || 0));
+
+    const bodyEl = document.getElementById('scannerBody');
+    if (!draws.length) {
+      bodyEl.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:48px 20px;color:var(--fg3)">
+        <div style="font-size:36px;margin-bottom:10px">⚡</div>
+        <div style="font-weight:700;font-size:15px;color:var(--fg)">Scanner Global de Empates Activo (Minuto 75+)</div>
+        <div style="font-size:12px;color:var(--fg3);max-width:500px;margin:6px auto 0">Monitoreando partidos de fútbol en tiempo real. Cuando una cuota de empate en marcador empatado entre en meseta estabilizada (σ ≤ 0.035), aparecerá aquí automáticamente.</div>
+      </td></tr>`;
+      return;
+    }
+
+    bodyEl.innerHTML = draws.map(d => {
+      const vClass = d.variance < 0.01 ? 'var-low' : d.variance < 0.02 ? 'var-mid' : 'var-high';
+      const timeStr = typeof d.elapsed_min === 'number' ? `${d.elapsed_min}'` : (d.live_time || '—');
+      return `<tr>
+        <td class="col-event" style="font-family:var(--font)">${esc(d.event)}</td>
+        <td class="col-score">${esc(d.score || '—')}</td>
+        <td>${esc(timeStr)}</td>
+        <td style="color:var(--fg3)">${esc(d.market || '—')}</td>
+        <td style="color:var(--yellow)">${esc(d.selection || '—')}</td>
+        <td class="col-var" style="color:${vClass}">${fmt(d.variance, 4)}</td>
+        <td>@ ${fmt(d.mean_odd, 3)}</td>
+        <td style="color:var(--orange);font-weight:600">@ ${fmt(d.current_odd, 3)}</td>
+        <td>${d.sample_count || '—'}</td>
+      </tr>`;
+    }).join('');
+  } catch (e) { console.error('Scanner load error:', e); }
+}
+
+// ═══════════ PICK HISTORY ═══════════
+let acceptedData = [];
+async function loadHistory() {
+  try {
+    const res = await fetch(API + '/api/accepted');
+    const { accepted } = await res.json();
+    acceptedData = accepted;
+    renderHistory();
+  } catch (e) { console.error('History load error:', e); }
+}
+
+function renderHistory() {
+  // Matrix
+  document.getElementById('historyMatrix').innerHTML = acceptedData.map(p => {
+    const isPending = !p.result || p.result === 'pending';
+    const cls = p.result === 'win' ? 'm-win' : p.result === 'loss' ? 'm-loss' : isPending ? 'm-pending' : 'm-push';
+    const resColor = p.result === 'win' ? 'var(--green)' : p.result === 'loss' ? 'var(--red)' : isPending ? 'var(--cyan)' : 'var(--fg3)';
+    const plStr = isPending ? '⏳ En Juego' : (p.profit >= 0 ? `+${fmt(p.profit, 2)}u` : `${fmt(p.profit, 2)}u`);
+    return `<div class="matrix-card ${cls}" onclick="openPick(${p.id})">
+      <div class="m-id">#${p.id}</div>
+      <div class="m-event">${esc(p.event)}</div>
+      <div class="m-bottom">
+        <span class="m-odd">@ ${fmt(p.odd_decimal, 2)}</span>
+        <span class="m-result" style="color:${resColor}">${plStr}</span>
+      </div>
+    </div>`;
+  }).join('');
+
+  // Table
+  document.getElementById('historyBody').innerHTML = acceptedData.map(p => {
+    const isPending = !p.result || p.result === 'pending';
+    const resColor = p.result === 'win' ? 'var(--green)' : p.result === 'loss' ? 'var(--red)' : isPending ? 'var(--cyan)' : 'var(--fg3)';
+    const resText = isPending ? 'EN JUEGO' : String(p.result).toUpperCase();
+    const plStr = isPending ? '⏳' : (p.profit >= 0 ? `+${fmt(p.profit, 2)}` : fmt(p.profit, 2));
+    return `<tr onclick="openPick(${p.id})" style="cursor:pointer">
+      <td style="color:var(--fg3)">${p.id}</td>
+      <td style="color:var(--fg3)">${fmtDate(p.ts)}</td>
+      <td class="col-event" style="font-family:var(--font)">${esc(p.event)}</td>
+      <td style="color:var(--cyan)">${esc(p.sport || '')}</td>
+      <td style="color:var(--fg3);max-width:140px;overflow:hidden;text-overflow:ellipsis">${esc(p.market)}</td>
+      <td style="color:var(--yellow)">${esc(p.selection)}</td>
+      <td style="color:var(--orange);font-weight:600">@ ${fmt(p.odd_decimal, 2)}</td>
+      <td style="color:var(--cyan)">${p.confPct || fmtPct(p.conf * 100)}</td>
+      <td>${p.edge != null ? fmtPct(p.edge * 100) : '—'}</td>
+      <td style="font-weight:600">${fmt(p.stake)}u</td>
+      <td style="color:${resColor};font-weight:700;text-transform:uppercase">${resText}</td>
+      <td style="color:${resColor};font-weight:700">${plStr}u</td>
+    </tr>`;
+  }).join('');
+}
+
+function setHistoryView(view) {
+  historyView = view;
+  document.querySelectorAll('.vt-btn').forEach(b => b.classList.remove('active'));
+  document.querySelector(`.vt-btn[onclick="setHistoryView('${view}')"]`).classList.add('active');
+  document.getElementById('historyMatrix').style.display = view === 'matrix' ? 'grid' : 'none';
+  document.getElementById('historyTable').style.display = view === 'table' ? 'block' : 'none';
+}
+
+// ═══════════ FIREWALL ═══════════
+async function loadFirewall() {
+  try {
+    const res = await fetch(API + '/api/rejected');
+    const { rejectedCount, totalLossesAvoided, savedUnits, rejected } = await res.json();
+
+    document.getElementById('fwHero').innerHTML = `
+      <div class="fw-stat"><div class="fw-val" style="color:var(--red)">${rejectedCount}</div><div class="fw-label">Picks Bloqueados</div></div>
+      <div class="fw-stat"><div class="fw-val" style="color:var(--green)">${totalLossesAvoided}</div><div class="fw-label">Pérdidas Evitadas</div></div>
+      <div class="fw-stat"><div class="fw-val" style="color:var(--green)">+${fmt(savedUnits, 2)}</div><div class="fw-label">Unidades Salvadas</div></div>
+    `;
+
+    document.getElementById('fwBody').innerHTML = (rejected || []).slice(0, 100).map(r => {
+      const resColor = r.result === 'win' ? 'var(--green)' : r.result === 'loss' ? 'var(--red)' : 'var(--fg3)';
+      return `<tr>
+        <td style="color:var(--fg3)">${r.id}</td>
+        <td class="col-event" style="font-family:var(--font)">${esc(r.event)}</td>
+        <td style="color:var(--cyan)">${esc(r.sport || '')}</td>
+        <td style="color:var(--fg3)">${esc(r.market || '')}</td>
+        <td style="color:var(--yellow)">${esc(r.selection || '')}</td>
+        <td style="color:var(--orange)">@ ${fmt(r.odd_decimal, 2)}</td>
+        <td><span class="reason-tag">${esc(r.reason || '—')}</span></td>
+        <td style="color:${resColor};font-weight:700">${r.statusTag || r.result || '—'}</td>
+      </tr>`;
+    }).join('');
+  } catch (e) { console.error('Firewall load error:', e); }
+}
+
+// ═══════════ PICK INSPECTOR MODAL ═══════════
+async function openPick(id) {
+  const overlay = document.getElementById('modalOverlay');
+  overlay.classList.add('open');
+
+  document.getElementById('modalTitle').textContent = `Pick #${id} — Cargando...`;
+  document.getElementById('modalSub').textContent = '';
+  document.getElementById('modalRec').textContent = 'Cargando análisis...';
+  document.getElementById('modalStats').innerHTML = '';
+  document.getElementById('modalTimeline').innerHTML = '';
+  document.getElementById('modalSnapCount').textContent = '0';
+
+  try {
+    const res = await fetch(API + `/api/pick-timeline?id=${id}`);
+    const { pick: p, analytics: a, timeline: t } = await res.json();
+
+    document.getElementById('modalTitle').textContent = `Pick #${p.id} — ${p.event}`;
+    document.getElementById('modalSub').textContent = `${p.sport || 'Fútbol'} · ${p.market} · ${p.selection} · ${fmtDate(p.ts)}`;
+
+    const rec = document.getElementById('modalRec');
+    rec.textContent = a.recommendation;
+    rec.style.background = a.recColor + '15';
+    rec.style.color = a.recColor;
+    rec.style.border = `1px solid ${a.recColor}40`;
+
+    // Stats
+    document.getElementById('modalStats').innerHTML = [
+      ['Trayectoria', a.trajectory],
+      ['Cuota Entrada', `@ ${fmt(a.initialOdd, 3)}`],
+      ['Cuota Actual', `@ ${fmt(a.lastOdd, 3)}`],
+      ['Cuota Mínima', `@ ${fmt(a.minOdd, 3)}`],
+      ['Cuota Máxima', `@ ${fmt(a.maxOdd, 3)}`],
+      ['MFE Peak ROI', `+${fmt(a.mfePeakRoi)}%`],
+      ['Snapshots', a.snapshotCount],
+      ['Confianza', p.confPct || fmtPct(p.conf * 100)],
+      ['Stake', `${fmt(p.stake)}u (${p.stake_mode || '—'})`],
+      ['Resultado', p.result || 'PENDIENTE'],
+    ].map(([k, v]) => `<div class="modal-stat"><span class="modal-stat-k">${k}</span><span class="modal-stat-v">${v}</span></div>`).join('');
+
+    // Chart
+    if (modalChartInstance) modalChartInstance.destroy();
+    const odds = t.filter(s => !s.suspended && s.odd_decimal > 0);
+    if (odds.length) {
+      const labels = odds.map(s => {
+        const d = new Date(s.ts);
+        return d.toLocaleTimeString('es-MX', { timeZone: 'America/Mexico_City', hour: '2-digit', minute: '2-digit', hour12: false });
+      });
+      modalChartInstance = new Chart(document.getElementById('modalChart'), {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [{
+            data: odds.map(s => s.odd_decimal),
+            borderColor: '#00d4ff', borderWidth: 2, pointRadius: 0, tension: 0.3,
+            backgroundColor: (ctx) => {
+              const g = ctx.chart.ctx.createLinearGradient(0, 0, 0, 220);
+              g.addColorStop(0, 'rgba(0,212,255,0.15)');
+              g.addColorStop(1, 'rgba(0,212,255,0)');
+              return g;
+            },
+            fill: true,
+          }, {
+            data: odds.map(() => a.initialOdd),
+            borderColor: 'rgba(255,170,0,0.4)', borderWidth: 1, borderDash: [4, 4],
+            pointRadius: 0, fill: false,
+          }]
+        },
+        options: {
+          responsive: true, plugins: { legend: { display: false } },
+          scales: {
+            x: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#6b7280', font: { size: 9 }, maxTicksLimit: 12 } },
+            y: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#6b7280', font: { size: 10, family: "'JetBrains Mono'" } } }
+          }
+        }
+      });
+    }
+
+    // Timeline table
+    document.getElementById('modalSnapCount').textContent = t.length;
+    document.getElementById('modalTimeline').innerHTML = t.slice(-50).reverse().map(s => `<tr>
+      <td style="color:var(--fg3)">${fmtDate(s.ts)}</td>
+      <td style="color:var(--orange)">${esc(s.score || '—')}</td>
+      <td>${esc(s.live_time || '—')}</td>
+      <td style="color:${s.suspended ? 'var(--red)' : 'var(--cyan)'};font-weight:600">@ ${fmt(s.odd_decimal, 3)}</td>
+      <td>${s.suspended ? '<span style="color:var(--red)">SUSPENDIDO</span>' : '<span style="color:var(--green)">ACTIVO</span>'}</td>
+    </tr>`).join('');
+
+  } catch (e) {
+    document.getElementById('modalTitle').textContent = `Error al cargar Pick #${id}`;
+    console.error('Modal load error:', e);
+  }
+}
+
+function closeModal() {
+  document.getElementById('modalOverlay').classList.remove('open');
+}
+
+// ═══════════ INIT & AUTO-REFRESH ═══════════
+async function init() {
+  loadCommand();
+  loadLive();
+  loadScanner();
+  loadHistory();
+  loadFirewall();
+}
+
+init();
+
+// Auto-refresh every 15 seconds for ALL tabs (user preference)
+setInterval(() => {
+  loadCommand();
+  loadLive();
+  loadScanner();
+  loadHistory();
+  loadFirewall();
+}, 15000);
+
+// Keep dashboard alive when tab is hidden/restored
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    console.log('[Dashboard] Tab visible — refreshing all data');
+    init();
+  }
+});
+
+// Prevent browser from throttling this tab (keep-alive ping)
+if (navigator.locks) {
+  navigator.locks.request('dashboard-keepalive', { mode: 'shared' }, () => new Promise(() => {}));
+}
+
+</script>
 </body>
 </html>

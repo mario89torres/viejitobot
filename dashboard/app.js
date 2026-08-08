@@ -8,12 +8,12 @@ async function openTab(name) {
   TABS.forEach(t => {
     const cap = t.charAt(0).toUpperCase() + t.slice(1);
     document.getElementById('panel' + cap)?.classList.remove('active');
-    document.getElementById('btn'   + cap)?.classList.remove('active');
+    document.getElementById('btn' + cap)?.classList.remove('active');
   });
   const cap = name.charAt(0).toUpperCase() + name.slice(1);
   document.getElementById('panel' + cap)?.classList.add('active');
-  document.getElementById('btn'   + cap)?.classList.add('active');
-  
+  document.getElementById('btn' + cap)?.classList.add('active');
+
   if (name === 'live') refreshLive();
   if (name === 'matrix') {
     if (!cachedAcceptedPicks || !cachedAcceptedPicks.length) {
@@ -62,11 +62,11 @@ function miniBar(val, color) {
 }
 
 const COLORS = {
-  f_prob:  '#56b6c2',
-  f_av:    '#98c379',
-  f_sit:   '#e5c07b',
-  f_lin:   '#c678dd',
-  f_ap:    '#e06c75',
+  f_prob: '#56b6c2',
+  f_av:   '#98c379',
+  f_sit:  '#e5c07b',
+  f_lin:  '#c678dd',
+  f_ap:   '#e06c75',
 };
 
 const modeLabel = m => ({ half_kelly: '½K', full_kelly: 'K', flat: 'F' }[m] || (m || '—'));
@@ -91,7 +91,6 @@ function drawEquity(byDay) {
     const pL = 46, pR = 12, pT = 12, pB = 24;
     const gW = W - pL - pR, gH = H - pT - pB;
 
-    // grid lines
     ctx.strokeStyle = '#1a1a1a'; ctx.lineWidth = 1;
     ctx.font = '9px JetBrains Mono, monospace'; ctx.fillStyle = '#3a3a3a';
     for (let i = 0; i <= 4; i++) {
@@ -106,7 +105,6 @@ function drawEquity(byDay) {
       y: pT + gH - ((v - minV) / range) * gH,
     }));
 
-    // area fill
     const grad = ctx.createLinearGradient(0, pT, 0, pT + gH);
     grad.addColorStop(0, 'rgba(152,195,121,0.12)');
     grad.addColorStop(1, 'rgba(152,195,121,0)');
@@ -115,12 +113,10 @@ function drawEquity(byDay) {
     ctx.lineTo(pts.at(-1).x, pT + gH); ctx.closePath();
     ctx.fillStyle = grad; ctx.fill();
 
-    // line
     ctx.beginPath();
     pts.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
     ctx.strokeStyle = '#98c379'; ctx.lineWidth = 1.5; ctx.stroke();
 
-    // dots + labels
     const step = Math.ceil(pts.length / 7);
     pts.forEach((p, i) => {
       ctx.beginPath(); ctx.arc(p.x, p.y, 2.5, 0, Math.PI * 2);
@@ -270,7 +266,6 @@ async function loadData() {
       fetch(`${API_URL}/rejected`).then(r => r.json()).catch(() => null),
     ]);
 
-    // KPIs
     if (resSummary?.health) {
       const { health, stats } = resSummary;
       const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
@@ -303,7 +298,6 @@ async function loadData() {
       if (stats?.bySport) drawSports(stats.bySport);
     }
 
-    // Accepted
     if (resAccepted?.accepted) {
       cachedAcceptedPicks = resAccepted.accepted;
       renderPicks(cachedAcceptedPicks);
@@ -314,7 +308,6 @@ async function loadData() {
       }
     }
 
-    // Rejected
     if (resRejected) {
       const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
       set('kpiSaved', `+${resRejected.savedUnits || 0}u`);
@@ -344,7 +337,6 @@ function drawSparkline(canvasEl, data, entryOdd) {
     y: H - 4 - ((v - minV) / range) * (H - 8),
   }));
 
-  // entry odd line
   if (entryOdd != null) {
     const ey = H - 4 - ((entryOdd - minV) / range) * (H - 8);
     ctx.setLineDash([2, 2]);
@@ -353,14 +345,12 @@ function drawSparkline(canvasEl, data, entryOdd) {
     ctx.setLineDash([]);
   }
 
-  // line
   const last = data.at(-1), first = data[0];
-  const col = last <= first ? '#98c379' : '#e06c75'; // cuota bajó = verde para nosotros
+  const col = last <= first ? '#98c379' : '#e06c75';
   ctx.beginPath();
   pts.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
   ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.stroke();
 
-  // last dot
   const lp = pts.at(-1);
   ctx.beginPath(); ctx.arc(lp.x, lp.y, 2, 0, Math.PI * 2);
   ctx.fillStyle = col; ctx.fill();
@@ -369,13 +359,12 @@ function drawSparkline(canvasEl, data, entryOdd) {
 // ── Render Live table ─────────────────────────────────────────
 function renderLive(liveData) {
   const tbody = document.getElementById('tbodyLive');
-  const cnt   = document.getElementById('cntLive');
-  const sync  = document.getElementById('liveLastSync');
+  const cnt = document.getElementById('cntLive');
+  const sync = document.getElementById('liveLastSync');
   const liveGrid = document.getElementById('liveMatrixGrid');
 
   if (sync) sync.textContent = new Date().toLocaleTimeString('es-MX', { hour12: false });
 
-  // Render live matrix cards
   if (liveGrid) {
     if (!liveData?.length) {
       liveGrid.innerHTML = `<div class="c-dim" style="grid-column:1/-1;text-align:center;padding:20px">no hay picks pendientes de resolución en desarrollo</div>`;
@@ -414,9 +403,9 @@ function renderLive(liveData) {
         const elapsed = p.elapsed_min < 60 ? `${p.elapsed_min}m` : `${Math.floor(p.elapsed_min / 60)}h ${p.elapsed_min % 60}m`;
         const shortSport = (p.sport || 'Fútbol').slice(0, 8);
         const shortEvent = (p.event || '—').slice(0, 24);
-        const shortMkt   = (p.selection || p.market || '—').slice(0, 18);
-        const entryStr   = p.entry_odd != null ? `@ ${p.entry_odd.toFixed(2)}` : '—';
-        const currStr    = p.current_odd != null ? `➜ ${p.current_odd.toFixed(2)}` : '';
+        const shortMkt = (p.selection || p.market || '—').slice(0, 18);
+        const entryStr = p.entry_odd != null ? `@ ${p.entry_odd.toFixed(2)}` : '—';
+        const currStr = p.current_odd != null ? `➜ ${p.current_odd.toFixed(2)}` : '';
 
         return `<div class="matrix-card ${cardClass}" onclick="openPickModal(${p.id})">
           <div>
@@ -438,6 +427,7 @@ function renderLive(liveData) {
   }
 
   if (!tbody) return;
+
   if (!liveData?.length) {
     tbody.innerHTML = `<tr class="empty-row"><td colspan="16">no hay picks pendientes de resolución en este momento</td></tr>`;
     if (cnt) cnt.textContent = '';
@@ -447,41 +437,34 @@ function renderLive(liveData) {
   if (cnt) cnt.textContent = `(${liveData.length})`;
 
   tbody.innerHTML = liveData.map((p, rowIdx) => {
-    // Dirección del movimiento
-    const dirArrow = p.direction === 'up'   ? '<span class="dir-up">↑</span>'
+    const dirArrow = p.direction === 'up' ? '<span class="dir-up">↑</span>'
                    : p.direction === 'down' ? '<span class="dir-down">↓</span>'
                    : '<span class="dir-stbl">—</span>';
 
-    // Δ entre entry y actual
     const delta = (p.current_odd != null && p.entry_odd != null)
       ? (p.current_odd - p.entry_odd).toFixed(3)
       : null;
     const deltaTag = delta == null ? '—'
       : `<span class="${parseFloat(delta) < 0 ? 'live-clv-pos' : parseFloat(delta) > 0 ? 'live-clv-neg' : 'c-dim'}">${parseFloat(delta) > 0 ? '+' : ''}${delta}</span>`;
 
-    // Live CLV
-    const clvTag = p.live_clv == null ? '<span class="c-dim">—</span>'
+    const clvLiveTag = p.live_clv == null ? '<span class="c-dim">—</span>'
       : `<span class="${p.live_clv > 0 ? 'live-clv-pos' : p.live_clv < 0 ? 'live-clv-neg' : 'c-dim'}">${p.live_clv > 0 ? '+' : ''}${p.live_clv}%</span>`;
 
-    // Drift total
     const driftTag = p.total_drift == null ? '<span class="c-dim">—</span>'
       : `<span class="c-dim">${p.total_drift > 0 ? '+' : ''}${p.total_drift}%</span>`;
 
-    // Alert badge
     let alertTag = '<span class="alert-ok">ok</span>';
-    if (p.alert === 'PROFIT_LOCK')                alertTag = `<span class="alert-badge" style="background:rgba(229,192,123,0.3);color:#ffd700;border:1px solid #ffd700">⚡ LOCK +${p.locked_profit_pct || 30}%</span>`;
-    else if (p.alert === 'SNIPER_VALUE')          alertTag = `<span class="alert-badge" style="background:rgba(97,175,239,0.25);color:var(--cyan);border:1px solid var(--cyan)">🎯 SNIPER @${p.current_odd ? p.current_odd.toFixed(2) : ''}</span>`;
-    else if (p.alert === 'STRUCTURAL_DRAW')       alertTag = `<span class="alert-badge" style="background:rgba(86,182,194,0.25);color:#56b6c2;border:1px solid #56b6c2">🎯 EMPATE FLATLINE</span>`;
-    else if (p.alert === 'SUSPENDED')             alertTag = '<span class="alert-badge alert-suspended">⏸ SUSPENDIDA</span>';
+    if (p.alert === 'PROFIT_LOCK') alertTag = `<span class="alert-badge" style="background:rgba(229,192,123,0.3);color:#ffd700;border:1px solid #ffd700">⚡ LOCK +${p.locked_profit_pct || 30}%</span>`;
+    else if (p.alert === 'SNIPER_VALUE') alertTag = `<span class="alert-badge" style="background:rgba(97,175,239,0.25);color:var(--cyan);border:1px solid var(--cyan)">🎯 SNIPER @${p.current_odd ? p.current_odd.toFixed(2) : ''}</span>`;
+    else if (p.alert === 'STRUCTURAL_DRAW') alertTag = `<span class="alert-badge" style="background:rgba(86,182,194,0.25);color:#56b6c2;border:1px solid #56b6c2">🎯 EMPATE FLATLINE</span>`;
+    else if (p.alert === 'SUSPENDED') alertTag = '<span class="alert-badge alert-suspended">⏸ SUSPENDIDA</span>';
     else if (p.alert === 'LINE_MOVED_AGAINST_US') alertTag = '<span class="alert-badge alert-against">⚠ LÍNEA vs</span>';
-    else if (p.alert === 'LINE_MOVED_FOR_US')     alertTag = '<span class="alert-badge alert-for">✓ LÍNEA a favor</span>';
+    else if (p.alert === 'LINE_MOVED_FOR_US') alertTag = '<span class="alert-badge alert-for">✓ LÍNEA a favor</span>';
 
-    // Tiempo transcurrido
     const elapsed = p.elapsed_min < 60
       ? `${p.elapsed_min}m`
       : `${Math.floor(p.elapsed_min / 60)}h ${p.elapsed_min % 60}m`;
 
-    // Canvas ID único para sparkline
     const sparkId = `spark-${rowIdx}-${p.id}`;
 
     return `<tr>
@@ -493,7 +476,7 @@ function renderLive(liveData) {
       <td class="col-odd">${p.entry_odd != null ? p.entry_odd.toFixed(3) : '—'}</td>
       <td class="col-odd" style="color:${p.current_odd != null && p.current_odd < p.entry_odd ? '#98c379' : p.current_odd != null && p.current_odd > p.entry_odd ? '#e06c75' : '#d4d4d4'}">${p.current_odd != null ? p.current_odd.toFixed(3) : '<span class="c-dim">sin datos</span>'}</td>
       <td>${dirArrow} ${deltaTag}</td>
-      <td>${clvTag}</td>
+      <td>${clvLiveTag}</td>
       <td>${driftTag}</td>
       <td><canvas class="sparkline" id="${sparkId}"></canvas></td>
       <td class="snap-count">${p.snapshot_count || 0}</td>
@@ -504,7 +487,6 @@ function renderLive(liveData) {
     </tr>`;
   }).join('');
 
-  // Dibujar sparklines después del render
   requestAnimationFrame(() => {
     liveData.forEach((p, rowIdx) => {
       const canvas = document.getElementById(`spark-${rowIdx}-${p.id}`);
@@ -523,12 +505,6 @@ async function refreshLive() {
   }
 }
 
-// ── Auto-refresh live cada 30s ────────────────────────────────
-setInterval(() => {
-  const livePanel = document.getElementById('panelLive');
-  if (livePanel?.classList.contains('active')) refreshLive();
-}, 30000);
-
 // ── Render Matrix 10x5 ─────────────────────────────────────────
 function renderMatrix(picks) {
   const grid = document.getElementById('matrixGrid');
@@ -539,10 +515,8 @@ function renderMatrix(picks) {
     return;
   }
 
-  // Tomar los últimos 50 picks
   const list = picks.slice(0, 50);
-
-  grid.innerHTML = list.map((p, idx) => {
+  grid.innerHTML = list.map((p) => {
     let cardClass = 'card-pending';
     let badgeText = '● LIVE';
     let badgeStyle = 'background:rgba(229,192,123,0.15);color:var(--yellow)';
@@ -563,8 +537,8 @@ function renderMatrix(picks) {
 
     const shortSport = (p.sport || 'Fútbol').slice(0, 8);
     const shortEvent = (p.event || '—').slice(0, 24);
-    const shortMkt   = (p.selection || p.market || '—').slice(0, 18);
-    const oddVal     = p.odd_decimal ? `@ ${p.odd_decimal.toFixed(2)}` : '—';
+    const shortMkt = (p.selection || p.market || '—').slice(0, 18);
+    const oddVal = p.odd_decimal ? `@ ${p.odd_decimal.toFixed(2)}` : '—';
 
     return `<div class="matrix-card ${cardClass}" onclick="openPickModal(${p.id})">
       <div>
@@ -587,9 +561,8 @@ function renderMatrix(picks) {
 async function openPickModal(pickId) {
   const modal = document.getElementById('modalPickInspector');
   if (!modal) return;
-  modal.classList.add('active');
 
-  // Reset modal fields
+  modal.classList.add('active');
   document.getElementById('mModalTitle').innerHTML = `<span>#${pickId}</span> <span style="color:var(--gray)">|</span> <span>Cargando datos de snapshots...</span>`;
   document.getElementById('mModalSub').textContent = 'Consultando base de datos cuantitativa...';
   document.getElementById('mModalRecText').textContent = 'Analizando trayectoria de cuotas...';
@@ -604,7 +577,6 @@ async function openPickModal(pickId) {
 
     const { pick, analytics, timeline } = res;
 
-    // Header
     const titleEl = document.getElementById('mModalTitle');
     const playLink = playdoitLink(pick.event_id, pick.sport_id, pick.event);
     titleEl.innerHTML = `<span>#${pick.id}</span> <span style="color:var(--gray)">|</span> <span>${playLink}</span> <span class="c-cyan" style="font-size:12px">(${pick.sport})</span>`;
@@ -612,11 +584,9 @@ async function openPickModal(pickId) {
     const subEl = document.getElementById('mModalSub');
     subEl.innerHTML = `Mercado: <b>${pick.market}</b> · Selección: <b style="color:var(--yellow)">${pick.selection}</b> · Emitido: ${fmtTs(pick.ts)}`;
 
-    // Banner recommendation
     const banner = document.getElementById('mModalBanner');
     const recText = document.getElementById('mModalRecText');
     const recBadge = document.getElementById('mModalRecBadge');
-
     recText.textContent = analytics.recommendation;
     recBadge.textContent = analytics.trajectory;
     recBadge.style.background = analytics.recColor;
@@ -625,7 +595,6 @@ async function openPickModal(pickId) {
     banner.style.borderColor = analytics.recColor + '66';
     banner.style.color = analytics.recColor;
 
-    // Stats breakdown
     const statsEl = document.getElementById('mModalStats');
     if (statsEl) {
       statsEl.innerHTML = `
@@ -640,14 +609,11 @@ async function openPickModal(pickId) {
       `;
     }
 
-    // Canvas Chart
     drawModalSnapshotChart('chartModalSnapshot', timeline, pick.odd_decimal);
 
-    // Timeline Table
     const snapBody = document.getElementById('mModalSnapBody');
     const snapCount = document.getElementById('mModalSnapCount');
     if (snapCount) snapCount.textContent = timeline.length;
-
     if (snapBody) {
       if (!timeline.length) {
         snapBody.innerHTML = `<tr><td colspan="7" class="c-dim" style="text-align:center">sin snapshots registrados para este evento</td></tr>`;
@@ -666,7 +632,6 @@ async function openPickModal(pickId) {
         }).join('');
       }
     }
-
   } catch (e) {
     console.error('openPickModal error:', e);
   }
@@ -677,7 +642,6 @@ function closePickModal() {
   if (modal) modal.classList.remove('active');
 }
 
-// Esc key listener to close modal
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') closePickModal();
 });
@@ -713,7 +677,6 @@ function drawModalSnapshotChart(canvasId, timeline, entryOdd) {
   const pL = 50, pR = 20, pT = 20, pB = 30;
   const gW = W - pL - pR, gH = H - pT - pB;
 
-  // Grid
   ctx.strokeStyle = '#1a1a1a'; ctx.lineWidth = 1;
   ctx.font = '10px JetBrains Mono, monospace'; ctx.fillStyle = '#3a3a3a';
   for (let i = 0; i <= 4; i++) {
@@ -723,7 +686,6 @@ function drawModalSnapshotChart(canvasId, timeline, entryOdd) {
     ctx.fillText(`@${yV.toFixed(2)}`, 5, yP + 3);
   }
 
-  // Entry Odd Baseline
   if (entryOdd) {
     const ey = pT + gH - ((entryOdd - minV) / range) * gH;
     ctx.setLineDash([4, 4]);
@@ -736,26 +698,34 @@ function drawModalSnapshotChart(canvasId, timeline, entryOdd) {
   const pts = activeSnaps.map((s, i) => ({
     x: pL + (activeSnaps.length < 2 ? gW / 2 : i / (activeSnaps.length - 1) * gW),
     y: pT + gH - ((s.odd_decimal - minV) / range) * gH,
-    score: s.score,
-    time: s.live_time || fmtTs(s.ts).slice(6),
   }));
 
-  // Line
-  const first = data[0], last = data.at(-1);
+  const last = data.at(-1);
   const col = last <= entryOdd ? '#98c379' : '#e06c75';
 
   ctx.beginPath();
   pts.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
   ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.stroke();
 
-  // Dots
-  pts.forEach((p, i) => {
+  pts.forEach((p) => {
     ctx.beginPath(); ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
     ctx.fillStyle = col; ctx.fill();
     ctx.strokeStyle = '#09090b'; ctx.lineWidth = 1; ctx.stroke();
   });
 }
 
-// Init
-if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', loadData);
-else loadData();
+// ── Init + Auto-refresh cada 30s ──────────────────────────────
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', loadData);
+} else {
+  loadData();
+}
+
+// Refresca Charts, Picks, Rejected, Matrix y Live cada 30 segundos
+setInterval(() => {
+  loadData();
+  const livePanel = document.getElementById('panelLive');
+  if (livePanel?.classList.contains('active')) {
+    refreshLive();
+  }
+}, 30000);
