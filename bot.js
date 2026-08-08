@@ -1123,7 +1123,20 @@ async function autoPicks(rows) {
     .filter(p => !isDuplicatePick(p.eventId, p.market, p.selection));
   if (!candidates.length) return;
 
-  const picks = candidates;
+  // AUTO_PICK_MAX_PER_HOUR estaba declarado y documentado (ver comentario de
+  // arriba) pero nunca se aplicaba: countPicksSince se importaba y no se
+  // llamaba. Medido el 2026-08-08: 453 picks/auto en 24h, con un pico de 52 en
+  // una sola hora — casi 9x el tope pretendido de 6, con exposición de stake
+  // real de por medio, no solo ruido en la BD.
+  const hourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const alreadyThisHour = countPicksSince(hourAgo);
+  const remaining = AUTO_PICK_MAX_PER_HOUR - alreadyThisHour;
+  if (remaining <= 0) {
+    console.log(`[auto-pick] tope horario alcanzado (${alreadyThisHour}/${AUTO_PICK_MAX_PER_HOUR}), se omite este ciclo`);
+    return;
+  }
+
+  const picks = candidates.slice(0, remaining);
   if (!picks.length) return;
 
   const ids = logPicks(picks.map(p => ({

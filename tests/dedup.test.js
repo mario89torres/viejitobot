@@ -30,11 +30,18 @@ test('tras liquidar, otro mercado del evento se permite pero la misma selección
   assert.strictEqual(isDuplicatePick(EID, base.market, base.selection), true);
 });
 
-test('countPicksSince cuenta el tope horario', () => {
+test('countPicksSince cuenta solo picks source=auto (el tope horario de autoPicks)', () => {
   const hourAgo = new Date(Date.now() - 3600 * 1000).toISOString();
   const before = countPicksSince(hourAgo);
-  logPicks([{ ...base, selection: 'Otra', market: 'Otro mercado' }]);
+  // Sin source: 'auto' no cuenta — countPicksSince filtra por source='auto'
+  // porque solo autoPicks() en bot.js respeta AUTO_PICK_MAX_PER_HOUR; /seguras
+  // y /golden son manuales y no deben chocar contra ese tope.
+  logPicks([{ ...base, selection: 'Manual', market: 'Otro mercado' }]);
+  assert.strictEqual(countPicksSince(hourAgo), before, 'un pick sin source=auto no debe sumar al tope horario');
+
+  logPicks([{ ...base, selection: 'Auto', market: 'Otro mercado', source: 'auto' }]);
   assert.strictEqual(countPicksSince(hourAgo), before + 1);
+
   // ventana futura: no cuenta nada
   assert.strictEqual(countPicksSince(new Date(Date.now() + 60000).toISOString()), 0);
 });
