@@ -116,24 +116,34 @@ function lineTrend(row) {
  * tras un periodo de volatilidad o avance del partido (>50% de duración).
  * Indica equilibrio táctico entre equipos (alta probabilidad de Empate / Under).
  */
-function computeStructuralDrawSignal(oddsList, scoreStr = '') {
-  if (!oddsList || oddsList.length < 5) return { isStructuralDraw: false, variance: null };
+// Los umbrales son parámetros para poder barrerlos desde el backtest
+// (scripts/backtest_draw_thresholds.js) sin duplicar la lógica. Los valores por
+// defecto son los de producción: llamarla sin opts no cambia nada.
+const DRAW_SIGNAL_DEFAULTS = {
+  maxVariance: 0.035,   // techo de desviación típica para considerar la línea plana
+  minSamples: 5,        // muestras mínimas para siquiera evaluar
+  minSamplesNoTie: 8,   // muestras exigidas cuando el marcador NO está empatado
+};
+
+function computeStructuralDrawSignal(oddsList, scoreStr = '', opts = {}) {
+  const { maxVariance, minSamples, minSamplesNoTie } = { ...DRAW_SIGNAL_DEFAULTS, ...opts };
+  if (!oddsList || oddsList.length < minSamples) return { isStructuralDraw: false, variance: null };
   const lastOdds = oddsList.slice(0, 20);
   const mean = lastOdds.reduce((a, b) => a + b, 0) / lastOdds.length;
   const variance = Math.sqrt(lastOdds.reduce((sq, n) => sq + Math.pow(n - mean, 2), 0) / lastOdds.length);
 
-  // Varianza ultrabaja (≤ 0.035) = Línea plana y estabilizada
-  const isFlatline = variance <= 0.035;
+  // Varianza ultrabaja = línea plana y estabilizada
+  const isFlatline = variance <= maxVariance;
   let isTiedScore = false;
   if (scoreStr) {
-    const parts = scoreStr.split('-').map(Number);
+    const parts = String(scoreStr).split('-').map(Number);
     if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
       isTiedScore = parts[0] === parts[1];
     }
   }
 
   return {
-    isStructuralDraw: isFlatline && (isTiedScore || lastOdds.length >= 8),
+    isStructuralDraw: isFlatline && (isTiedScore || lastOdds.length >= minSamplesNoTie),
     variance: Number(variance.toFixed(4)),
     mean: Number(mean.toFixed(3)),
     sampleCount: lastOdds.length
@@ -652,7 +662,7 @@ function parlayCombos(rows, {
 module.exports = {
   scoreRow, safestPicks, rankPicks, goldenPick, parlayCombos, aperturaFactor, lineTrend, SCORE_VERSION,
   isExcluded, excludedSports, baseballProgress, isOverPick, isBlockedOver, isBlockedMarket, isUncertain, isFootballUnder, edgeThresholdFor,
-  isSuspensionOrInstabilityInWindow, isRejectedBy5Guards, computeStructuralDrawSignal,
+  isSuspensionOrInstabilityInWindow, isRejectedBy5Guards, computeStructuralDrawSignal, DRAW_SIGNAL_DEFAULTS,
   computeStake, kellyFraction, STAKE_MODE,
 };
 
