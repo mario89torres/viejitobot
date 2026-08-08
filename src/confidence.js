@@ -117,13 +117,13 @@ function lineTrend(row) {
  * Indica equilibrio táctico entre equipos (alta probabilidad de Empate / Under).
  */
 function computeStructuralDrawSignal(oddsList, scoreStr = '') {
-  if (!oddsList || oddsList.length < 10) return { isStructuralDraw: false, variance: null };
+  if (!oddsList || oddsList.length < 5) return { isStructuralDraw: false, variance: null };
   const lastOdds = oddsList.slice(0, 20);
   const mean = lastOdds.reduce((a, b) => a + b, 0) / lastOdds.length;
   const variance = Math.sqrt(lastOdds.reduce((sq, n) => sq + Math.pow(n - mean, 2), 0) / lastOdds.length);
 
-  // Varianza ultrabaja (< 0.025) = Línea completamente plana y estabilizada
-  const isFlatline = variance <= 0.025;
+  // Varianza ultrabaja (≤ 0.035) = Línea plana y estabilizada
+  const isFlatline = variance <= 0.035;
   let isTiedScore = false;
   if (scoreStr) {
     const parts = scoreStr.split('-').map(Number);
@@ -133,7 +133,7 @@ function computeStructuralDrawSignal(oddsList, scoreStr = '') {
   }
 
   return {
-    isStructuralDraw: isFlatline && (isTiedScore || lastOdds.length >= 15),
+    isStructuralDraw: isFlatline && (isTiedScore || lastOdds.length >= 8),
     variance: Number(variance.toFixed(4)),
     mean: Number(mean.toFixed(3)),
     sampleCount: lastOdds.length
