@@ -437,6 +437,16 @@ export function createDashboardServer(port = 3001) {
       const { sendProfitLockAlert, sendStructuralDrawAlert, sendSniperAlert } = require(path.join(__dirname, '..', '..', 'src', 'telegram'));
       const { checkAndBroadcastGlobalDraws } = require(path.join(__dirname, '..', 'globalDrawScanner'));
 
+      // Un Empate Estructural solo se anuncia con el marcador empatado de verdad.
+      const isScoreTie = (score: string | null): boolean => {
+        if (!score) return false;
+        const parts = String(score).split('-');
+        if (parts.length !== 2) return false;
+        const left = Number(parts[0].trim());
+        const right = Number(parts[1].trim());
+        return !isNaN(left) && !isNaN(right) && left === right;
+      };
+
       setInterval(async () => {
         try {
           // 1. Escanear todo el universo de partidos de fútbol en min 75+ (Global Draw Scanner)
@@ -449,9 +459,6 @@ export function createDashboardServer(port = 3001) {
           for (const p of liveRes.live) {
             if (!p.alert) continue;
             const alertKey = `${p.id}:${p.alert}`;
-            if (isPickAlerted(alertKey)) continue;
-
-            markPickAlerted(alertKey);
 
             const sendToBoth = async (fn: Function) => {
               if (vipChannelId) {
@@ -462,23 +469,34 @@ export function createDashboardServer(port = 3001) {
               }
             };
 
-            // Only enviar alertas para Empates Estructurales cuando el marcador actual es empate
-            const isScoreTie = (score: string | null): boolean => {
-              if (!score) return false;
-              const parts = score.split('-');
-              if (parts.length !== 2) return false;
-              const left = Number(parts[0].trim());
-              const right = Number(parts[1].trim());
-              return !isNaN(left) && !isNaN(right) && left === right;
-            };
-
-            if (p.alert === 'STRUCTURAL_DRAW' && isScoreTie(p.score)) {
-              await sendToBoth(sendStructuralDrawAlert);
-              console.log(`[telegram] 🎯 Alerta Empate Estructural enviada para Pick #${p.id}`);
+            // Se decide PRIMERO y se marca DESPUES. Antes se marcaba nada mas
+            // entrar al bucle, asi que toda alerta que no superara su condicion
+            // quemaba la clave y quedaba muda para siempre: un STRUCTURAL_DRAW
+            // visto con marcador desigual no volvia a dispararse aunque el
+            // partido se empatara un minuto despues.
+            let sender: Function | null = null;
+            let label = '';
+            if (p.alert === 'PROFIT_LOCK') {
+              sender = sendProfitLockAlert; label = '⚡ Profit Lock';
+            } else if (p.alert === 'SNIPER_VALUE') {
+              sender = sendSniperAlert; label = '🎯 Sniper Value';
+            } else if (p.alert === 'STRUCTURAL_DRAW' && isScoreTie(p.score)) {
+              sender = sendStructuralDrawAlert; label = '🎯 Empate Estructural';
             }
+            if (!sender) continue;
+
+            if (isPickAlerted(alertKey)) continue;
+            // Marcar justo antes de enviar: ante un crash es preferible perder
+            // una alerta que repetirla en el canal.
+            markPickAlerted(alertKey);
+            await sendToBoth(sender);
+            console.log(`[telegram] ${label} enviada para Pick #${p.id}`);
           }
         } catch (e: any) {
-          // Ignorar errores temporales de conexión
+          // Los fallos de red contra el propio localhost son transitorios, pero
+          // tragarse TODO dejaba invisible cualquier bug del pipeline de alertas
+          // — que es justo como la caida de Profit Lock y Sniper paso inadvertida.
+          console.error(`[alertas] ciclo fallido: ${e && e.message ? e.message : e}`);
         }
       }, 30000);
     }
