@@ -52,7 +52,23 @@ HEUR_WEIGHTS = np.array([0.35, 0.30, 0.20, 0.15])
 FEATURES = HEUR_FEATURES + ["f_apertura"]
 MIN_SAMPLES = 80          # mínimo absoluto para intentar entrenar
 SPORT_MIN = 50            # picks mínimos para dummy propia de deporte
-ISOTONIC_MIN = 300        # train >= 300 -> isotonic; si no, sigmoid (Platt)
+# train >= ISOTONIC_MIN -> isotonic; si no, sigmoid (Platt).
+#
+# 2026-08-09: subido de 300 a 2000 (= sigmoid en todos los tamaños actuales)
+# tras medirlo con n=1576. La isotónica tiene un problema de VARIANZA, no de
+# sesgo: en el fold de 630 muestras se descalabra (log loss 0.7236 frente a
+# 0.5878 de sigmoid, y 0.5963 sin calibrar — o sea que calibrar hacía daño),
+# y ese único fold hunde el agregado. Reproducido en los dos datasets probados.
+#
+# Matiz honesto: en los folds grandes (945 y 1260) la isotónica gana por poco
+# (~0.002 de Brier). Es decir, no es peor en todas partes — es menos estable, y
+# su fallo puntual cuesta ~0.018, muy por encima de lo que gana. Con solo 4
+# folds NO se ajusta un umbral intermedio: sería fitear ruido. Revisar cuando
+# haya bastantes más muestras.
+#
+# Barrido sin editar el script:
+#   ISOTONIC_MIN=300 python scripts/train_weights.py   # vuelve al comportamiento previo
+ISOTONIC_MIN = int(os.environ.get("ISOTONIC_MIN", 2000))
 RETENTION_MIN = 0.60      # retención mínima de la mejora in-sample
 CAL_TABLE_POINTS = 200
 CLIP = (0.001, 0.999)
