@@ -7,6 +7,48 @@
   <link rel="stylesheet" href="design-system/tokens.css">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
   <style>
+/* ══════════════════════════════════════════════════════════════════════════
+   CAPA DE COMPATIBILIDAD — nombres del sistema ANTERIOR
+   --------------------------------------------------------------------------
+   El JS que pinta las tablas (app.js y el <script> de abajo) escribe estilos
+   en línea con los nombres viejos: `<td style="color:var(--cyan)">`. Al
+   sustituir la paleta por los tokens --c-*, esos nombres dejaron de existir;
+   una var() sin definir invalida la declaración, así que el color caía al
+   heredado y TODA la tabla del historial se veía en blanco.
+
+   Son 69 referencias repartidas por el JS. Se remapean aquí de una vez en vez
+   de tocarlas una a una: el arreglo es el mismo y no hay riesgo de olvidar una.
+   Deuda pendiente: migrar el JS a los tokens --c-* y borrar este bloque.
+
+   El mapeo NO es literal, es semántico. El acento (teal) es estructural y
+   nunca significa "ganó" o "perdió" — eso vive en --c-good/--c-bad, que es
+   justo la separación que busca el sistema.
+   ══════════════════════════════════════════════════════════════════════════ */
+:root {
+  --cyan: var(--c-accent);
+  --blue: var(--c-accent);
+  --purple: var(--c-accent-strong);
+  --green: var(--c-good-strong);
+  --red: var(--c-bad-strong);
+  --yellow: var(--c-warn-strong);
+  --orange: var(--c-warn);
+
+  --fg: var(--c-text);
+  --fg2: var(--c-text-secondary);
+  --fg3: var(--c-text-muted);
+  --fg4: var(--c-text-faint);
+
+  --border: var(--c-border);
+  --border-hover: var(--c-border-strong);
+  --bg-card: var(--c-surface-raised);
+  --bg-card-solid: var(--c-surface-raised);
+  --bg-hover: var(--c-surface-hover);
+
+  --font: var(--pd-font-body);
+  --mono: var(--pd-font-mono);
+  --radius: var(--pd-radius-md);
+}
+
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html { scroll-behavior: smooth; }
 body {

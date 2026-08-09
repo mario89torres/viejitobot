@@ -165,4 +165,47 @@ function gradePick(row, finalScore) {
   return null;
 }
 
-module.exports = { parsePick, situationFactor, gradePick };
+/**
+ * Resultado ya DECIDIDO con el partido aún en curso, o null si todavía puede
+ * cambiar. Es deliberadamente mucho más estricto que gradePick: aquí no basta
+ * con que el marcador actual apunte a un lado, tiene que ser IRREVERSIBLE.
+ *
+ * Para qué: cuando una selección desaparece del feed en vivo suele ser porque
+ * su mercado se cerró al quedar decidido (un "Menos de 2.5" desaparece en
+ * cuanto cae el tercer gol). Eso permite liquidar sin esperar al final del
+ * partido — pero solo si el desenlace no puede darse la vuelta.
+ *
+ * Qué SÍ es irreversible: los goles solo suben, así que en un total, en cuanto
+ * se supera la línea, el Over está ganado y el Under perdido para siempre.
+ * Igual con "ambos marcan" una vez ambos han marcado.
+ *
+ * Qué NO: ganador, empate no acción, doble oportunidad, hándicap. Un 1-0 al
+ * minuto 80 no decide nada — el rival puede empatar. Devolver un resultado ahí
+ * sería inventarse la liquidación, así que se devuelve null y se espera al
+ * final del partido como siempre.
+ */
+function decidedResult(row, liveScore) {
+  const m = String(liveScore || '').match(/^(\d+)-(\d+)$/);
+  const parsed = parsePick(row);
+  if (!m || !parsed) return null;
+  // El marcador de tenis viene en SETS y no es acumulativo como los goles:
+  // la lógica monótona de abajo no aplica.
+  if (isTennisSport(row.sport)) return null;
+  const a = Number(m[1]), b = Number(m[2]), total = a + b;
+
+  switch (parsed.type) {
+    case 'total':
+      if (parsed.line === null) return null;
+      // Solo cuando la línea YA se superó. Por debajo aún pueden caer goles.
+      if (total > parsed.line) return parsed.over ? 'win' : 'loss';
+      return null;
+    case 'btts':
+      // Ambos marcaron: irreversible. Que aún no lo hayan hecho no decide nada.
+      if (a > 0 && b > 0) return parsed.yes ? 'win' : 'loss';
+      return null;
+    default:
+      return null;
+  }
+}
+
+module.exports = { parsePick, situationFactor, gradePick, decidedResult };

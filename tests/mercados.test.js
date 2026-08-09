@@ -153,3 +153,39 @@ test('experimento: rankPicks deja pasar el under de bajo edge y nada más', () =
     delete require.cache[require.resolve('../src/confidence')];
   }
 });
+
+// --- decidedResult: liquidación anticipada solo si es IRREVERSIBLE ---
+// Se usa cuando la selección desaparece del feed en vivo (su mercado se cerró
+// al quedar decidido). La guarda crítica es no anticipar nada que aún pueda
+// darse la vuelta: liquidar un "ganador" por ir 3-0 al 70' sería inventarse el
+// resultado.
+const { decidedResult } = require('../src/markets');
+const F = (market, selection) => ({ market, selection, event: 'A vs. B', sport: 'Fútbol' });
+
+test('decidedResult: totales solo cuando la línea YA se superó', () => {
+  // Los goles solo suben, así que pasada la línea el desenlace es definitivo.
+  assert.strictEqual(decidedResult(F('Total 2.5', 'Menos de 2.5'), '2-1'), 'loss');
+  assert.strictEqual(decidedResult(F('Total 2.5', 'Mas de 2.5'), '2-1'), 'win');
+  // Por debajo de la línea aún pueden caer goles: no se decide nada.
+  assert.strictEqual(decidedResult(F('Total 2.5', 'Menos de 2.5'), '1-1'), null);
+  assert.strictEqual(decidedResult(F('Total 2.5', 'Mas de 2.5'), '1-1'), null);
+});
+
+test('decidedResult: ambos marcan, solo cuando ya marcaron los dos', () => {
+  assert.strictEqual(decidedResult(F('Ambos equipos marcan', 'Si'), '1-1'), 'win');
+  assert.strictEqual(decidedResult(F('Ambos equipos marcan', 'No'), '1-1'), 'loss');
+  assert.strictEqual(decidedResult(F('Ambos equipos marcan', 'No'), '1-0'), null);
+});
+
+test('decidedResult: NUNCA anticipa mercados reversibles', () => {
+  // Un 3-0 no impide una remontada; estos esperan al final del partido.
+  assert.strictEqual(decidedResult(F('Ganador del partido', 'A'), '3-0'), null);
+  assert.strictEqual(decidedResult(F('Empate No Accion', 'A'), '2-0'), null);
+  assert.strictEqual(decidedResult(F('Doble oportunidad', 'A o empate'), '2-0'), null);
+});
+
+test('decidedResult: en tenis no aplica (el marcador es de sets)', () => {
+  // Los sets no se acumulan como goles, así que la lógica monótona no vale.
+  const t = { market: 'Total 2.5', selection: 'Mas de 2.5', event: 'A vs. B', sport: 'Tenis' };
+  assert.strictEqual(decidedResult(t, '2-1'), null);
+});

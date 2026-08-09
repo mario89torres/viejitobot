@@ -1280,7 +1280,7 @@ async function sample() {
     console.log(`[sampler ${new Date().toISOString()}] ${rows.length} jugadas guardadas`);
     // processSettlements captura también el cierre sharp bajo demanda (1 sola
     // consulta por pick, al desaparecer el evento del feed)
-    await processSettlements(new Set(rows.map(r => r.eventId)));
+    await processSettlements(rows);
     computeFocusSports(sportResults, rows);
     await autoPicks(rows);
     await checkExpiredSubscribers();
