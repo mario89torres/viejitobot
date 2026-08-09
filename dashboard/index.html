@@ -329,7 +329,9 @@ tbody tr.r-pending td:first-child { box-shadow: inset 3px 0 0 var(--c-warn); }
 }
 .alert-profit-lock { color: var(--c-warn); background: color-mix(in srgb, var(--c-warn) 15%, transparent); }
 .alert-structural-draw { color: var(--c-accent); background: color-mix(in srgb, var(--c-accent) 15%, transparent); }
-.alert-sniper { color: var(--c-good); background: color-mix(in srgb, var(--c-good) 15%, transparent); }
+/* Deteriorada: ROJA, no verde. Antes era 'sniper value' y se pintaba como
+   oportunidad; los datos dicen que gana <5%. El color debe decir la verdad. */
+.alert-dying { color: var(--c-bad); background: color-mix(in srgb, var(--c-bad) 15%, transparent); }
 
 /* ═══ MODAL ═══ */
 .modal-overlay {
@@ -814,7 +816,7 @@ function alertClass(alert) {
   switch(alert) {
     case 'PROFIT_LOCK': return 'alert-profit-lock';
     case 'STRUCTURAL_DRAW': return 'alert-structural-draw';
-    case 'SNIPER_VALUE': return 'alert-sniper';
+    case 'POSITION_DYING': return 'alert-dying';
     case 'LINE_MOVED_AGAINST_US': return 'alert-line-against';
     case 'LINE_MOVED_FOR_US': return 'alert-line-for';
     case 'SUSPENDED': return 'alert-suspended';
@@ -825,7 +827,7 @@ function alertLabel(alert) {
   switch(alert) {
     case 'PROFIT_LOCK': return '⚡ PROFIT LOCK';
     case 'STRUCTURAL_DRAW': return '🎯 EMPATE ESTRUCTURAL';
-    case 'SNIPER_VALUE': return '🔫 SNIPER VALUE';
+    case 'POSITION_DYING': return '⚠️ POSICIÓN DETERIORADA';
     case 'LINE_MOVED_AGAINST_US': return '📉 LÍNEA EN CONTRA';
     case 'LINE_MOVED_FOR_US': return '📈 LÍNEA A FAVOR';
     case 'SUSPENDED': return '⏸ SUSPENDIDO';

@@ -189,3 +189,50 @@ test('decidedResult: en tenis no aplica (el marcador es de sets)', () => {
   const t = { market: 'Total 2.5', selection: 'Mas de 2.5', event: 'A vs. B', sport: 'Tenis' };
   assert.strictEqual(decidedResult(t, '2-1'), null);
 });
+
+// --- Alertas: los tres agujeros de EMPATE FLATLINE ---
+// Medido el 2026-08-09 sobre 145 disparos reales: el 100% cayeron fuera del
+// mercado de empate y el 76% con marcador no empatado. La señal no detectaba
+// empates estructurales, detectaba "línea plana" y la etiquetaba mal.
+const { computeStructuralDrawSignal, recentScoreChange, isDrawSelection, readSpike } = require('../src/confidence');
+const PLANA = [2.10, 2.10, 2.11, 2.10, 2.10, 2.11];
+
+test('empate estructural: solo en el mercado de EMPATE', () => {
+  assert.strictEqual(
+    computeStructuralDrawSignal(PLANA, '1-1', { selection: 'Menos de 2.5' }).reason, 'no_es_empate');
+  assert.ok(isDrawSelection('Empate') && isDrawSelection('draw') && isDrawSelection('X'));
+  assert.ok(!isDrawSelection('Local o empate')); // doble oportunidad NO es el empate
+});
+
+test('empate estructural: el marcador empatado es obligatorio', () => {
+  // Antes bastaba con acumular muestras: por ahí entraba el 76% de los falsos.
+  assert.strictEqual(
+    computeStructuralDrawSignal(PLANA, '2-0', { selection: 'Empate' }).reason, 'marcador_no_empatado');
+});
+
+test('empate estructural: se calla si acaba de haber gol', () => {
+  // Con el marcador recién cambiado la línea aún no reprecia; su planitud no
+  // significa "estabilizado" sino "todavía no ha reaccionado".
+  assert.strictEqual(
+    computeStructuralDrawSignal(PLANA, '1-1', { selection: 'Empate', scores: ['1-1', '1-0', '1-0'] }).reason,
+    'gol_reciente');
+  // Sin cambio de marcador sí dispara: es el único caso legítimo.
+  assert.strictEqual(
+    computeStructuralDrawSignal(PLANA, '1-1', { selection: 'Empate', scores: ['1-1', '1-1', '1-1'] }).isStructuralDraw,
+    true);
+});
+
+test('recentScoreChange detecta el gol dentro de la ventana', () => {
+  assert.strictEqual(recentScoreChange(['2-1', '1-1', '1-1'], 10), true);
+  assert.strictEqual(recentScoreChange(['1-1', '1-1', '1-1'], 10), false);
+  // Fuera de la ventana ya no cuenta como reciente.
+  assert.strictEqual(recentScoreChange(['1-1', '1-1', '1-0'], 2), false);
+});
+
+test('readSpike: la subida de cuota es AVISO, no valor', () => {
+  // WR real medido: spike <1.05 -> 81.7%; >=1.60 -> 2.8%. Subir = ir perdiendo.
+  assert.strictEqual(readSpike(1.60, 1.62).level, null);
+  assert.strictEqual(readSpike(1.60, 1.90).level, 'aviso');
+  assert.strictEqual(readSpike(1.60, 2.30).level, 'grave');
+  assert.strictEqual(readSpike(0, 2).level, null); // entrada inválida no revienta
+});

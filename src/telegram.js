@@ -94,13 +94,24 @@ async function sendSniperAlert(token, chatId, p) {
   const entryOdd = p.entry_odd != null ? p.entry_odd.toFixed(2) : '—';
   const currentOdd = p.current_odd != null ? p.current_odd.toFixed(2) : '—';
 
-  const msg = `🎯 <b>ALERTA SNIPER VALUE (SOBRE-REACCIÓN)</b>\n` +
+  // OJO con el texto: esta alerta decía "Sobre-reacción del mercado — Gran
+  // Oportunidad de Entrada" e incluía enlace para apostar. Medido el 2026-08-09
+  // sobre 700 picks liquidados, era justo al revés: cuanto más sube la cuota
+  // desde la entrada, PEOR va el pick (spike <1.05 -> WR 81.7%; >=1.60 -> 2.8%),
+  // y sus 94 disparos históricos acertaron el 3.2%. El mercado no sobre-reacciona
+  // al subir la cuota: reprecia porque la posición va perdiendo.
+  // Así que ahora es un AVISO y NO lleva enlace de apuesta — invitar a entrar
+  // en algo que gana el 4% de las veces era el peor efecto del bug.
+  const pctPeor = p.spike_ratio ? ` (+${Math.round((p.spike_ratio - 1) * 100)}%)` : '';
+  const msg = `⚠️ <b>POSICIÓN DETERIORADA</b>\n` +
     `<i>${new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City' })}</i>\n\n` +
     `<b>Pick #${p.id}</b> — ${eventName} <i>(${sport})</i>\n` +
     `Mercado: ${market} · <b>${selection}</b>\n\n` +
-    `🚀 Momio Inflado: <b>@ ${currentOdd}</b> (vs Entrada original @ ${entryOdd})\n` +
-    `🔥 Sobre-reacción del mercado por evento rival — Gran Oportunidad de Entrada\n\n` +
-    `👉 <a href="${link}">Apostar en Playdoit</a>`;
+    `📉 El momio subió a <b>@ ${currentOdd}</b> desde @ ${entryOdd}${pctPeor}\n` +
+    `El mercado está repreciando EN CONTRA de esta posición. Históricamente, ` +
+    `los picks en esta situación ganan menos del 5%.\n\n` +
+    `<i>Aviso informativo: no es una sugerencia de entrada.</i>\n` +
+    `<a href="${link}">Ver el evento</a>`;
 
   await sendTelegram(token, chatId, msg);
 }
@@ -128,7 +139,7 @@ async function formatMessage(picks) {
 
     let alertBadge = '';
     if (p.alert === 'PROFIT_LOCK') alertBadge = ` ⚡ <b>[LOCK +${p.locked_profit_pct || 30}%]</b>`;
-    else if (p.alert === 'SNIPER_VALUE') alertBadge = ` 🎯 <b>[SNIPER VALUE]</b>`;
+    else if (p.alert === 'POSITION_DYING') alertBadge = ` ⚠️ <b>[POSICIÓN DETERIORADA]</b>`;
     else if (p.alert === 'STRUCTURAL_DRAW') alertBadge = ` 🎯 <b>[EMPATE FLATLINE]</b>`;
 
     msg += `<b>${i + 1}.</b> ${esc(p.event)} <i>(${esc(p.sport)})</i>${alertBadge}\n`;

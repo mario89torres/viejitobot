@@ -158,8 +158,51 @@ const DRAW_SIGNAL_DEFAULTS = {
   minSamplesNoTie: 8,   // muestras exigidas cuando el marcador NO está empatado
 };
 
+/** true si el marcador cambió dentro de las últimas `within` muestras.
+ *  `scores` viene de los snapshots MÁS NUEVO PRIMERO. */
+function recentScoreChange(scores, within = 10) {
+  const list = (scores || []).filter(Boolean).slice(0, within);
+  return list.length > 1 && list.some(s => s !== list[0]);
+}
+
+/** true si la selección es literalmente el empate (no "doble oportunidad"). */
+function isDrawSelection(selection) {
+  return /^(empate|draw|x)$/i.test(String(selection || '').trim());
+}
+
+/**
+ * Señal de "empate estructural": la línea del EMPATE lleva plana con el
+ * marcador igualado, o sea que el mercado ya no espera que nadie desempate.
+ *
+ * Tenía tres agujeros, medidos el 2026-08-09 sobre 145 disparos reales:
+ *
+ *   1. Se aplicaba a CUALQUIER pick, no solo a los de empate: el 100% de los
+ *      disparos fueron en mercados que no eran el de empate. La señal no
+ *      detectaba empates, detectaba "línea plana" y le ponía la etiqueta
+ *      equivocada. Ahora exige que la selección SEA el empate.
+ *   2. `isFlatline && (isTiedScore || muestras >= minSamplesNoTie)` dejaba
+ *      pasar marcadores NO empatados con solo tener suficientes muestras — el
+ *      76% de los disparos. Un "empate estructural" con 2-0 es un contrasentido:
+ *      ahora el marcador empatado es obligatorio.
+ *   3. No miraba si acababa de haber gol. Si el marcador cambió hace un momento,
+ *      la ventana de cuotas todavía mezcla precios de antes y después del gol, y
+ *      esa varianza baja no significa "estabilizado" sino "aún sin repreciar".
+ *
+ * `scores` es opcional para no romper llamadas antiguas; sin él no se puede
+ * comprobar el gol reciente y se avisa en el retorno.
+ */
 function computeStructuralDrawSignal(oddsList, scoreStr = '', opts = {}) {
   const { maxVariance, minSamples, minSamplesNoTie } = { ...DRAW_SIGNAL_DEFAULTS, ...opts };
+  const { selection, scores, goalWindow = 10 } = opts;
+
+  // Solo el mercado de empate. Sin esto la señal miente sobre lo que detecta.
+  if (opts.requireDrawSelection !== false && !isDrawSelection(selection)) {
+    return { isStructuralDraw: false, variance: null, reason: 'no_es_empate' };
+  }
+  // Gol reciente: la línea aún no ha repreciado, su planitud no significa nada.
+  if (scores && recentScoreChange(scores, goalWindow)) {
+    return { isStructuralDraw: false, variance: null, reason: 'gol_reciente' };
+  }
   if (!oddsList || oddsList.length < minSamples) return { isStructuralDraw: false, variance: null };
   const lastOdds = oddsList.slice(0, 20);
   const mean = lastOdds.reduce((a, b) => a + b, 0) / lastOdds.length;
@@ -175,12 +218,51 @@ function computeStructuralDrawSignal(oddsList, scoreStr = '', opts = {}) {
     }
   }
 
+  // El marcador empatado es OBLIGATORIO. Antes bastaba con acumular
+  // minSamplesNoTie muestras, y por ahí se colaba el 76% de los falsos
+  // positivos: un 2-0 con la línea plana no es un empate estructural, es un
+  // mercado muerto. minSamplesNoTie se conserva solo por compatibilidad de la
+  // firma; ya no relaja nada.
   return {
-    isStructuralDraw: isFlatline && (isTiedScore || lastOdds.length >= minSamplesNoTie),
+    isStructuralDraw: isFlatline && isTiedScore && lastOdds.length >= minSamples,
     variance: Number(variance.toFixed(4)),
     mean: Number(mean.toFixed(3)),
-    sampleCount: lastOdds.length
+    sampleCount: lastOdds.length,
+    reason: !isFlatline ? 'linea_no_plana' : !isTiedScore ? 'marcador_no_empatado' : null,
   };
+}
+
+/**
+ * Lectura del spike de cuota respecto a la entrada.
+ *
+ * IMPORTANTE — esto estaba al revés. La alerta se llamaba SNIPER_VALUE y se
+ * presentaba como oportunidad ("el mercado sobre-reaccionó, hay valor"). Los
+ * datos dicen lo contrario: medido el 2026-08-09 sobre 700 picks liquidados, el
+ * WR real cae de forma monótona conforme sube la cuota desde la entrada:
+ *
+ *   spike <1.05   N=502  WR 81.7%     <- la cuota se mantuvo o bajó
+ *   spike 1.05-1.15  N= 32  WR 31.3%
+ *   spike 1.15-1.35  N= 34  WR 41.2%
+ *   spike 1.35-1.60  N= 23  WR 17.4%
+ *   spike >=1.60  N=107  WR  2.8%     <- aquí disparaba "SNIPER VALUE"
+ *
+ * O sea que el mercado no se equivoca al subir la cuota: repreciar contra
+ * nuestra posición es exactamente lo que corresponde cuando va perdiendo. Los
+ * 94 disparos históricos de SNIPER_VALUE acertaron el 3.2%. La señal es buena,
+ * lo que estaba mal era el signo: no marca valor, marca deterioro.
+ *
+ * Se mantiene como AVISO, que es información útil de verdad ("esto pinta mal"),
+ * y ya no como sugerencia de entrada.
+ */
+const SPIKE_DEFAULTS = { aviso: 1.15, grave: 1.35 };
+
+function readSpike(entryOdd, currentOdd, opts = {}) {
+  const { aviso, grave } = { ...SPIKE_DEFAULTS, ...opts };
+  if (!entryOdd || !currentOdd || entryOdd <= 0) return { level: null, ratio: null };
+  const ratio = currentOdd / entryOdd;
+  if (ratio >= grave) return { level: 'grave', ratio: Number(ratio.toFixed(2)) };
+  if (ratio >= aviso) return { level: 'aviso', ratio: Number(ratio.toFixed(2)) };
+  return { level: null, ratio: Number(ratio.toFixed(2)) };
 }
 
 // Dimensionamiento de la apuesta en unidades (1 unidad = 5% del bankroll).
@@ -737,6 +819,7 @@ module.exports = {
   scoreRow, safestPicks, rankPicks, auditRejections, goldenPick, parlayCombos, aperturaFactor, lineTrend, avanceForModel, SCORE_VERSION,
   isExcluded, excludedSports, baseballProgress, isOverPick, isBlockedOver, isBlockedMarket, isUncertain, isFootballUnder, edgeThresholdFor,
   isSuspensionOrInstabilityInWindow, isRejectedBy5Guards, computeStructuralDrawSignal, DRAW_SIGNAL_DEFAULTS,
+  recentScoreChange, isDrawSelection, readSpike, SPIKE_DEFAULTS,
   computeStake, kellyFraction, STAKE_MODE,
 };
 

@@ -8,13 +8,17 @@ const healthPath = path.join(__dirname, '..', '..', 'src', 'health');
 const metricsPath = path.join(__dirname, '..', '..', 'src', 'metrics');
 const dbPath = path.join(__dirname, '..', '..', 'src', 'db');
 const confPath = path.join(__dirname, '..', '..', 'src', 'confidence');
+const marketsPath = path.join(__dirname, '..', '..', 'src', 'markets');
 
 const dashboardDir = path.join(__dirname, '..', '..', 'dashboard');
 
 const { calculateQuantitativeHealth } = require(healthPath);
 const { stakeStats } = require(metricsPath);
 const { db } = require(dbPath);
-const { excludedSports, isBlockedMarket, isBlockedOver, isSuspensionOrInstabilityInWindow, computeStructuralDrawSignal } = require(confPath);
+const { excludedSports, isBlockedMarket, isBlockedOver, isSuspensionOrInstabilityInWindow, computeStructuralDrawSignal, recentScoreChange } = require(confPath);
+// decidedResult: solo devuelve resultado cuando ya es IRREVERSIBLE. Se usa para
+// callar alertas sobre picks que en la practica ya terminaron.
+const { decidedResult } = require(marketsPath);
 
 const normSport = (s: string) => (s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
 
@@ -228,16 +232,31 @@ export function createDashboardServer(port = 3001) {
               alertSignal = 'PROFIT_LOCK';
               lockedProfitPct = Number(((p.entry_odd - currentOdd) / currentOdd * 100).toFixed(1));
             }
-            // SNIPER VALUE: Cuota subió 35%+ por sobre-reacción del mercado (ej: 1.70 -> 3.40)
+            // POSICIÓN DETERIORADA (antes "SNIPER VALUE", y estaba invertida).
+            // Se presentaba como oportunidad —"el mercado sobre-reaccionó, hay
+            // valor"— pero los datos dicen lo contrario: medido sobre 700 picks
+            // liquidados, el WR cae de forma monótona conforme sube la cuota
+            // desde la entrada (spike <1.05 -> 81.7%; >=1.60 -> 2.8%). Los 94
+            // disparos históricos de SNIPER_VALUE acertaron el 3.2%.
+            // El mercado no se equivoca al repreciar en contra: lo hace porque
+            // la posición va perdiendo. La señal servía, el signo estaba mal.
             else if (spikeRatio >= 1.35 && (p.f_avance || 0.5) >= 0.40) {
-              alertSignal = 'SNIPER_VALUE';
+              alertSignal = 'POSITION_DYING';
               sniperSpikeRatio = Number(spikeRatio.toFixed(2));
             }
           }
 
-          // SEÑAL DE EMPATE ESTRUCTURAL (Flatline) - Alta prioridad sobre movimientos genéricos
+          // EMPATE ESTRUCTURAL. Ahora se le pasan `selection` y el historial de
+          // marcadores: sin eso disparaba en CUALQUIER mercado (el 100% de sus
+          // 145 disparos fueron fuera del mercado de empate), con marcador no
+          // empatado (76%) y sin mirar si acababa de haber gol — con la línea
+          // aún sin repreciar, su planitud no significa nada.
           const oddsArray = activeHistory.map((s: any) => s.odd_decimal);
-          const drawSignal = computeStructuralDrawSignal(oddsArray, p.score);
+          const scoreHistory = history.map((s: any) => s.score).filter(Boolean);
+          const drawSignal = computeStructuralDrawSignal(oddsArray, latestScore || p.score, {
+            selection: p.selection,
+            scores: scoreHistory,
+          });
           if (drawSignal.isStructuralDraw && !alertSignal) {
             alertSignal = 'STRUCTURAL_DRAW';
           }
@@ -264,6 +283,8 @@ export function createDashboardServer(port = 3001) {
             sniper_spike_ratio: sniperSpikeRatio,
             structural_draw: drawSignal,
             score: latestScore,
+            // Necesario para poder verificar 'gol reciente' al decidir el envio.
+            score_history: scoreHistory,
             live_time: latestLiveTime,
             // Mini-historial de cuotas para sparkline (últimos 20)
             sparkline: activeHistory.slice(0, 20).reverse().map((s: any) => s.odd_decimal),
@@ -340,7 +361,11 @@ export function createDashboardServer(port = 3001) {
           ? Number(((initialOdd - minOdd) / minOdd * 100).toFixed(1))
           : 0;
 
-        const drawSignal = computeStructuralDrawSignal(activeOdds, pick.final_score || (timeline.length > 0 ? timeline.at(-1).score : ''));
+        const drawSignal = computeStructuralDrawSignal(
+          activeOdds,
+          pick.final_score || (timeline.length > 0 ? timeline.at(-1).score : ''),
+          { selection: pick.selection, scores: timeline.map((t: any) => t.score).filter(Boolean).reverse() }
+        );
 
         let trajectory = 'ESTABLE';
         let recommendation = 'MANTENER: Posición sin desviaciones extremas.';
@@ -493,12 +518,34 @@ export function createDashboardServer(port = 3001) {
             // quemaba la clave y quedaba muda para siempre: un STRUCTURAL_DRAW
             // visto con marcador desigual no volvia a dispararse aunque el
             // partido se empatara un minuto despues.
+            // VERIFICAR EL RESULTADO ANTES DE ENVIAR. Si el marcador actual ya
+            // decide el pick de forma irreversible (un "Menos de 2.5" con 3
+            // goles ya está perdido, pase lo que pase), cualquier alerta sobre
+            // él es ruido: informa de un movimiento de mercado en algo que ya
+            // terminó. Se calla y se deja para la liquidación.
+            const yaDecidido = decidedResult(
+              { market: p.market, selection: p.selection, event: p.event, sport: p.sport },
+              p.score
+            );
+            if (yaDecidido) {
+              console.log(`[telegram] alerta omitida en Pick #${p.id}: ya decidido (${yaDecidido})`);
+              continue;
+            }
+
+            // Gol reciente: el mercado aún está repreciando y cualquier lectura
+            // del movimiento es prematura. Es el falso positivo que más ensucia
+            // las alertas de spike.
+            if (recentScoreChange(p.score_history || [], 10)) {
+              console.log(`[telegram] alerta omitida en Pick #${p.id}: gol reciente, mercado sin repreciar`);
+              continue;
+            }
+
             let sender: Function | null = null;
             let label = '';
             if (p.alert === 'PROFIT_LOCK') {
               sender = sendProfitLockAlert; label = '⚡ Profit Lock';
-            } else if (p.alert === 'SNIPER_VALUE') {
-              sender = sendSniperAlert; label = '🎯 Sniper Value';
+            } else if (p.alert === 'POSITION_DYING') {
+              sender = sendSniperAlert; label = '⚠️ Posición deteriorada';
             } else if (p.alert === 'STRUCTURAL_DRAW' && isScoreTie(p.score)) {
               sender = sendStructuralDrawAlert; label = '🎯 Empate Estructural';
             }
