@@ -43,3 +43,8 @@ pmbtc/
 
 # Cache del backtest de umbrales (regenerable, pesado)
 draw_universe_*.json
+
+# Respaldos locales: snapshots_pre_vacuum_*.db pesa ~17 GB y model_pre_*.json
+# son copias de seguridad antes de reentrenar. Nunca deben entrar al repo.
+snapshots_pre_vacuum_*
+model_pre_*.json
