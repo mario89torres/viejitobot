@@ -455,9 +455,37 @@ td.sel { font-size: 12px; color: var(--c-text-muted); }
   justify-content: space-between;
 }
 .matrix-card:hover { transform: translateY(-2px); border-color: var(--c-border-strong); }
-.matrix-card.m-win { border-left: 3px solid var(--c-good); }
-.matrix-card.m-loss { border-left: 3px solid var(--c-bad); }
+
+/* Resultado por SOMBRA además del borde. La sombra se lee de un vistazo en la
+   cuadrícula entera, que es justo lo que hace falta para escanear el historial;
+   el borde solo se ve si ya estás mirando la tarjeta.
+   Ganada verde, perdida roja, y el resto SIN color — anulada y en juego no son
+   resultados, así que teñirlas competiría con las que sí lo son.
+   El color sale de los tokens semánticos vía color-mix, no de hex sueltos, así
+   que sigue el tema claro/oscuro y nunca se confunde con el acento estructural. */
+.matrix-card.m-win {
+  border-left: 3px solid var(--c-good);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--c-good) 25%, transparent),
+              0 2px 14px color-mix(in srgb, var(--c-good) 22%, transparent);
+}
+.matrix-card.m-win:hover {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--c-good) 45%, transparent),
+              0 4px 20px color-mix(in srgb, var(--c-good) 38%, transparent);
+}
+.matrix-card.m-loss {
+  border-left: 3px solid var(--c-bad);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--c-bad) 25%, transparent),
+              0 2px 14px color-mix(in srgb, var(--c-bad) 22%, transparent);
+}
+.matrix-card.m-loss:hover {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--c-bad) 45%, transparent),
+              0 4px 20px color-mix(in srgb, var(--c-bad) 38%, transparent);
+}
+/* Anulada (push) y en juego: sin sombra de color, solo un borde que las
+   distingue. m-pending no tenía NINGUNA regla — el JS emitía la clase y el CSS
+   la ignoraba, así que un pick en juego se veía idéntico a uno sin resultado. */
 .matrix-card.m-push { border-left: 3px solid var(--c-text-faint); }
+.matrix-card.m-pending { border-left: 3px solid var(--c-warn); }
 .m-id { font-family: var(--pd-font-mono); font-size: 10px; color: var(--c-text-muted); }
 .m-event { font-size: 11px; font-weight: 600; color: var(--c-text); margin: 4px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .m-bottom { display: flex; justify-content: space-between; font-size: 10px; }
