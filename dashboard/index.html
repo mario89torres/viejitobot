@@ -257,6 +257,27 @@ tbody tr:hover td { background: var(--c-surface-hover); }
 td.event { color: var(--c-text); }
 td.sel { font-size: 12px; color: var(--c-text-muted); }
 
+/* Resultado en la vista de TABLA, misma señal que en la cuadrícula: ganada
+   verde, perdida roja, el resto sin color.
+   Aquí no se usa box-shadow sobre la fila porque la tabla es
+   `border-collapse: collapse` y los navegadores no la pintan en <tr>. Se
+   resuelve con tinte de fondo en las celdas + una franja `inset` en la primera,
+   que sí funciona con las celdas colapsadas.
+   Van DESPUÉS de `tbody tr:hover td` a propósito: misma especificidad, así que
+   declaradas antes el hover genérico las borraría al pasar el ratón. Por eso
+   cada estado trae también su propio hover, un punto más intenso. */
+tbody tr.r-win td { background: color-mix(in srgb, var(--c-good) 8%, transparent); }
+tbody tr.r-win:hover td { background: color-mix(in srgb, var(--c-good) 16%, transparent); }
+tbody tr.r-win td:first-child { box-shadow: inset 3px 0 0 var(--c-good); }
+
+tbody tr.r-loss td { background: color-mix(in srgb, var(--c-bad) 8%, transparent); }
+tbody tr.r-loss:hover td { background: color-mix(in srgb, var(--c-bad) 16%, transparent); }
+tbody tr.r-loss td:first-child { box-shadow: inset 3px 0 0 var(--c-bad); }
+
+/* Anulada y en juego: sin tinte, solo la franja que las identifica. */
+tbody tr.r-push td:first-child { box-shadow: inset 3px 0 0 var(--c-text-faint); }
+tbody tr.r-pending td:first-child { box-shadow: inset 3px 0 0 var(--c-warn); }
+
 .pill {
   display: inline-flex;
   align-items: center;
@@ -1069,7 +1090,9 @@ function renderHistory() {
     const resColor = p.result === 'win' ? 'var(--green)' : p.result === 'loss' ? 'var(--red)' : isPending ? 'var(--cyan)' : 'var(--fg3)';
     const resText = isPending ? 'EN JUEGO' : String(p.result).toUpperCase();
     const plStr = isPending ? '⏳' : (p.profit >= 0 ? `+${fmt(p.profit, 2)}` : fmt(p.profit, 2));
-    return `<tr onclick="openPick(${p.id})" style="cursor:pointer">
+    // Misma señal que la cuadrícula: la fila entera se tiñe según el resultado.
+    const rowCls = p.result === 'win' ? 'r-win' : p.result === 'loss' ? 'r-loss' : isPending ? 'r-pending' : 'r-push';
+    return `<tr class="${rowCls}" onclick="openPick(${p.id})" style="cursor:pointer">
       <td style="color:var(--fg3)">${p.id}</td>
       <td style="color:var(--fg3)">${fmtDate(p.ts)}</td>
       <td class="col-event" style="font-family:var(--font)">${esc(p.event)}</td>
