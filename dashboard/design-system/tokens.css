@@ -1,0 +1,215 @@
+/* ==========================================================================
+   SISTEMA REGISTRO — Design Tokens (Playdoit Monitor)
+   v1.0.0 · panel de instrumento para el monitoreo de picks en vivo
+   --------------------------------------------------------------------------
+   Convención heredada de curso-basquet-tizayuca/design-system/tokens.css:
+     Capa 1: primitivos  (--pd-*)   valores crudos, no usar directo en componentes
+     Capa 2: semánticos  (--c-*)    lo que SÍ se usa al construir UI
+     Capa 3: componente  (--cmp-*)  overrides locales por componente
+
+   Regla de oro: los componentes consumen SOLO capa 2 y 3.
+   Cambiar de tema = re-mapear capa 2. Nunca tocar capa 1.
+
+   Por qué "Registro": el panel muestra picks que suben y bajan de valor en
+   tiempo real, con reglas de firewall que aceptan o rechazan cada uno — el
+   referente es el instrumento de registro (osciloscopio, tira de teletipo),
+   no el letrero de neón. Superficies con temperatura fría, un solo acento
+   estructural (teal), y estado semántico separado del acento a propósito:
+   el acento nunca debe confundirse con "esto ganó" o "esto se bloqueó".
+   ========================================================================== */
+
+/* ==========================================================================
+   CAPA 1 — PRIMITIVOS
+   ========================================================================== */
+:root {
+  /* --- Ink (superficie fría, no negro puro) -------------------------------
+     Deliberadamente con matiz azul-verdoso, no negro neutro: un negro puro
+     no fue elegido, fue heredado. Este sí se eligió. */
+  --pd-ink-950: #0a0d11;
+  --pd-ink-900: #0e1216;
+  --pd-ink-800: #12161d;
+  --pd-ink-700: #1a2028;
+  --pd-ink-600: #232a35;
+  --pd-ink-500: #313a48;
+  --pd-ink-400: #4c5566;
+  --pd-ink-300: #707c8f;
+  --pd-ink-200: #a4aebd;
+  --pd-ink-100: #ced5de;
+  --pd-ink-50:  #eceff3;
+
+  /* --- Paper (tema claro: crema fría, no blanco puro) --------------------- */
+  --pd-paper-100: #f4f2ec;
+  --pd-paper-200: #e9e6dc;
+  --pd-paper-300: #d9d5c7;
+
+  /* --- Teal (acento único — "trazo de osciloscopio") ----------------------
+     Estructural: pestaña activa, indicador en vivo, foco de teclado. NUNCA
+     usado para "esto ganó/perdió/se bloqueó" — eso es semántico, capa aparte. */
+  --pd-teal-700: #1d5f5c;
+  --pd-teal-600: #257774; /* texto sobre paper-100: 4.6:1 */
+  --pd-teal-500: #2f8f8a; /* teal de marca */
+  --pd-teal-400: #4bb0aa;
+  --pd-teal-300: #7ccbc6;
+  --pd-teal-200: #b3e2df;
+
+  /* --- Verde (win / positivo) ---------------------------------------------
+     Apagado a propósito: un verde neón compite con el teal por atención;
+     este cede protagonismo y aun así se lee inequívocamente como "bien". */
+  --pd-green-700: #2f5c37;
+  --pd-green-600: #3f7a4a;
+  --pd-green-500: #5a9a5e; /* verde de marca */
+  --pd-green-300: #a8cfab;
+
+  /* --- Rojo (loss / negativo) ----------------------------------------------
+     Ladrillo apagado, no rojo de alarma: convive con verde y ámbar en la
+     misma tabla sin gritar más que ellos. */
+  --pd-red-700: #7c332e;
+  --pd-red-600: #9c4640;
+  --pd-red-500: #c15750; /* rojo de marca */
+  --pd-red-300: #e0a8a3;
+
+  /* --- Ámbar (pendiente / cautela / bloqueado por firewall) ---------------
+     Distinto del teal a propósito: si compartieran matiz, "en vivo" y
+     "cuidado" se confundirían de reojo, que es como se lee un instrumento. */
+  --pd-amber-700: #7a5a1e;
+  --pd-amber-600: #9c7a2c;
+  --pd-amber-500: #c99a3a; /* ámbar de marca */
+  --pd-amber-300: #e6c98a;
+
+  /* --- Tipografía -----------------------------------------------------
+     Sin webfonts externos: pilas de sistema robustas. Para un instrumento
+     denso, la fiabilidad (nunca cae a un fallback silencioso) pesa más que
+     una tipografía de autor. El tratamiento "condensado" de las etiquetas
+     se logra con font-stretch + tracking sobre la misma pila, no con una
+     familia aparte. */
+  --pd-font-body: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --pd-font-label: "Segoe UI Semibold", -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --pd-font-mono: ui-monospace, "Cascadia Mono", "Segoe UI Mono", Consolas, "SFMono-Regular", Menlo, monospace;
+
+  --pd-radius-sm: 3px;
+  --pd-radius-md: 6px;
+}
+
+/* ==========================================================================
+   CAPA 2 — SEMÁNTICOS (tema oscuro = default; es el look primario del panel)
+   ========================================================================== */
+:root {
+  --c-bg: var(--pd-ink-950);
+  --c-surface: var(--pd-ink-900);
+  --c-surface-raised: var(--pd-ink-800);
+  --c-surface-hover: var(--pd-ink-700);
+  --c-border: var(--pd-ink-600);
+  --c-border-strong: var(--pd-ink-500);
+
+  --c-text: var(--pd-ink-50);
+  --c-text-secondary: var(--pd-ink-200);
+  --c-text-muted: var(--pd-ink-300);
+  --c-text-faint: var(--pd-ink-400);
+
+  --c-accent: var(--pd-teal-400);
+  --c-accent-strong: var(--pd-teal-300);
+  --c-accent-on: var(--pd-ink-950); /* texto sobre una superficie llena de acento */
+  --c-accent-wash: rgba(75, 176, 170, 0.12); /* fondo sutil, ej. fila hover */
+
+  --c-good: var(--pd-green-500);
+  --c-good-strong: var(--pd-green-300);
+  --c-bad: var(--pd-red-500);
+  --c-bad-strong: var(--pd-red-300);
+  --c-warn: var(--pd-amber-500);
+  --c-warn-strong: var(--pd-amber-300);
+
+  --c-focus-ring: var(--pd-teal-400);
+}
+
+/* ==========================================================================
+   TEMA CLARO — mismos tokens semánticos, no una inversión ingenua.
+   El instrumento sigue leyéndose "frío"; el acento se re-oscurece para
+   mantener 4.5:1+ sobre paper en vez de aclararse sin más.
+   ========================================================================== */
+@media (prefers-color-scheme: light) {
+  :root {
+    --c-bg: var(--pd-paper-100);
+    --c-surface: var(--pd-paper-100);
+    --c-surface-raised: #ffffff;
+    --c-surface-hover: var(--pd-paper-200);
+    --c-border: var(--pd-paper-300);
+    --c-border-strong: var(--pd-ink-200);
+
+    --c-text: var(--pd-ink-900);
+    --c-text-secondary: var(--pd-ink-600);
+    --c-text-muted: var(--pd-ink-400);
+    --c-text-faint: var(--pd-ink-300);
+
+    --c-accent: var(--pd-teal-600);
+    --c-accent-strong: var(--pd-teal-700);
+    --c-accent-on: #ffffff;
+    --c-accent-wash: rgba(37, 119, 116, 0.08);
+
+    --c-good: var(--pd-green-600);
+    --c-good-strong: var(--pd-green-700);
+    --c-bad: var(--pd-red-600);
+    --c-bad-strong: var(--pd-red-700);
+    --c-warn: var(--pd-amber-600);
+    --c-warn-strong: var(--pd-amber-700);
+
+    --c-focus-ring: var(--pd-teal-600);
+  }
+}
+
+:root[data-theme="dark"] {
+  --c-bg: var(--pd-ink-950);
+  --c-surface: var(--pd-ink-900);
+  --c-surface-raised: var(--pd-ink-800);
+  --c-surface-hover: var(--pd-ink-700);
+  --c-border: var(--pd-ink-600);
+  --c-border-strong: var(--pd-ink-500);
+  --c-text: var(--pd-ink-50);
+  --c-text-secondary: var(--pd-ink-200);
+  --c-text-muted: var(--pd-ink-300);
+  --c-text-faint: var(--pd-ink-400);
+  --c-accent: var(--pd-teal-400);
+  --c-accent-strong: var(--pd-teal-300);
+  --c-accent-on: var(--pd-ink-950);
+  --c-accent-wash: rgba(75, 176, 170, 0.12);
+  --c-good: var(--pd-green-500);
+  --c-good-strong: var(--pd-green-300);
+  --c-bad: var(--pd-red-500);
+  --c-bad-strong: var(--pd-red-300);
+  --c-warn: var(--pd-amber-500);
+  --c-warn-strong: var(--pd-amber-300);
+  --c-focus-ring: var(--pd-teal-400);
+}
+
+:root[data-theme="light"] {
+  --c-bg: var(--pd-paper-100);
+  --c-surface: var(--pd-paper-100);
+  --c-surface-raised: #ffffff;
+  --c-surface-hover: var(--pd-paper-200);
+  --c-border: var(--pd-paper-300);
+  --c-border-strong: var(--pd-ink-200);
+  --c-text: var(--pd-ink-900);
+  --c-text-secondary: var(--pd-ink-600);
+  --c-text-muted: var(--pd-ink-400);
+  --c-text-faint: var(--pd-ink-300);
+  --c-accent: var(--pd-teal-600);
+  --c-accent-strong: var(--pd-teal-700);
+  --c-accent-on: #ffffff;
+  --c-accent-wash: rgba(37, 119, 116, 0.08);
+  --c-good: var(--pd-green-600);
+  --c-good-strong: var(--pd-green-700);
+  --c-bad: var(--pd-red-600);
+  --c-bad-strong: var(--pd-red-700);
+  --c-warn: var(--pd-amber-600);
+  --c-warn-strong: var(--pd-amber-700);
+  --c-focus-ring: var(--pd-teal-600);
+}
+
+/* ==========================================================================
+   CAPA 3 — COMPONENTE (ejemplos; cada componente puede sumar los suyos)
+   ========================================================================== */
+:root {
+  --cmp-kpi-border: var(--c-border);
+  --cmp-kpi-radius: var(--pd-radius-md);
+  --cmp-table-row-border: var(--c-border);
+  --cmp-pill-radius: var(--pd-radius-sm);
+}
