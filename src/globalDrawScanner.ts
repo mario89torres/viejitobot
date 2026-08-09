@@ -3,9 +3,13 @@ import * as path from 'path';
 const dbPath = path.join(__dirname, '..', 'src', 'db');
 const confPath = path.join(__dirname, '..', 'src', 'confidence');
 const tgPath = path.join(__dirname, '..', 'src', 'telegram');
+const fwPath = path.join(__dirname, '..', 'src', 'firewall');
+const devigPath = path.join(__dirname, '..', 'src', 'devig');
 
-const { db } = require(dbPath);
-const { computeStructuralDrawSignal, computeStake } = require(confPath);
+const { db, logPicks } = require(dbPath);
+const { computeStructuralDrawSignal, scoreRow } = require(confPath);
+const { firewallVerdict } = require(fwPath);
+const { devig, defaultMethod } = require(devigPath);
 const { sendStructuralDrawAlert } = require(tgPath);
 
 /**
@@ -161,6 +165,87 @@ export function scanGlobalDraws75() {
   return candidates;
 }
 
+// ── SCORING REAL DEL CANDIDATO ─────────────────────────────────────────────
+/**
+ * Probabilidad justa de la selección, quitando el margen de la casa con devig()
+ * sobre TODO el mercado — igual que hace normalize.js con el feed en vivo.
+ *
+ * El scanner no ve el feed, solo `snapshots`, así que reconstruye el mercado
+ * tomando el último momio activo de CADA selección del mismo (event_id, market).
+ * Si el mercado no tiene al menos 2 patas activas, no hay margen que quitar y
+ * cae a la implícita cruda (1/momio), mismo fallback que normalize.js.
+ */
+function fairProbFromSnapshots(eventId: number, market: string, selection: string, oddDecimal: number): number {
+  try {
+    const legs = db.prepare(`
+      SELECT selection, odd_decimal FROM snapshots s
+      WHERE event_id = ? AND market = ? AND suspended = 0 AND odd_decimal > 0
+        AND ts = (
+          SELECT MAX(ts) FROM snapshots
+          WHERE event_id = s.event_id AND market = s.market AND selection = s.selection
+            AND suspended = 0 AND odd_decimal > 0
+        )
+      GROUP BY selection
+    `).all(eventId, market) as any[];
+
+    if (legs.length > 1) {
+      const probs = devig(legs.map((l: any) => l.odd_decimal), defaultMethod());
+      const i = legs.findIndex((l: any) => l.selection === selection);
+      if (i >= 0 && Number.isFinite(probs[i]) && probs[i] > 0) return probs[i];
+    }
+  } catch {
+    // Sin devig no se descarta el pick: se degrada a la implícita cruda.
+  }
+  return 1 / oddDecimal;
+}
+
+/**
+ * Puntúa el candidato con el MISMO scoreRow() que el resto del bot.
+ *
+ * Hasta 2026-08-09 esto no existía: el scanner insertaba features constantes
+ * (f_prob_justa=0.72, f_avance=0.85, f_situacion=0.75, f_linea=0.82, conf=0.76)
+ * idénticas en las 224 filas que llegó a emitir. Eso tuvo tres costos medidos:
+ *   1. contaminó el dataset de entrenamiento con ~9% de filas de features
+ *      constantes y etiqueta `y` real;
+ *   2. fabricó una regla de firewall falsa (R6, f_linea>=0.80) que en realidad
+ *      solo detectaba la huella 0.82 del scanner — ver la nota de R6;
+ *   3. `conf=0.76` era una invención: con features reales estos picks puntúan
+ *      bastante más bajo (~0.59 en un empate típico al 82'), así que el número
+ *      que se publicaba en Telegram no medía nada.
+ *
+ * Devuelve null si no se puede construir una fila puntuable.
+ */
+export function scoreCandidate(c: any): any {
+  const row = {
+    ts: new Date().toISOString(),
+    eventId: c.event_id,
+    event: c.event,
+    sport: c.sport || 'Fútbol',
+    sportId: c.sport_id || 66,
+    market: c.market,
+    selection: c.selection,
+    score: c.score,
+    minute: parseMinute(c.live_time) ?? c.elapsed_min ?? null,
+    setNum: null,
+    oddDecimal: c.current_odd || c.entry_odd,
+    suspended: 0,
+  } as any;
+
+  if (!row.oddDecimal || !(row.oddDecimal > 1)) return null;
+  row.fairProb = fairProbFromSnapshots(row.eventId, row.market, row.selection, row.oddDecimal);
+
+  try {
+    const s = scoreRow(row);
+    // Una feature NaN envenena conf y se persistiría como basura silenciosa.
+    // Mejor no emitir que emitir un número que no significa nada.
+    const finite = [s.conf, s.base, s.progress, s.fAvance, s.scoreFactor, s.lineFactor];
+    if (finite.some((v: any) => !Number.isFinite(v))) return null;
+    return { ...row, ...s };
+  } catch {
+    return null;
+  }
+}
+
 // ── CACHE PERSISTENTE EN BD (sobrevive reinicios) ──────────────────────────
 function isAlreadyAlerted(key: string): boolean {
   const row = db.prepare('SELECT key FROM alerted_events WHERE key = ?').get(key);
@@ -189,6 +274,46 @@ export async function checkAndBroadcastGlobalDraws(token: string, chatId: string
         continue;
       }
 
+      // Features REALES vía scoreRow, no constantes. Si no se puede puntuar la
+      // jugada no se emite: sin features no hay forma de auditarla después.
+      const scored = scoreCandidate(c);
+      if (!scored) {
+        console.log(`[scanner] ⏭️ Descartado (no puntuable con scoreRow): ${c.event}`);
+        continue;
+      }
+
+      // 🚧 FIREWALL — antes solo lo pasaban los picks de rankPicks; el scanner
+      // insertaba directo en la BD y se lo saltaba entero. Medido sobre los 184
+      // picks liquidados del scanner (2026-08-06 → 08-09):
+      //
+      //   todos           N=184  WR=65.8%  ROI= -7.2%
+      //   momio <= 3.0    N=158  WR=75.9%  ROI= +5.6%
+      //   momio  > 3.0    N= 26  WR= 3.8%  ROI=-84.6%
+      //
+      // Todo el resultado negativo es la cola de momio alto, y R3 la corta en
+      // seco (FIREWALL_MAX_ODDS=3.0). Un "empate estructural" al 75'+ con
+      // marcador empatado cotizado a 9, 51 o 71 no es una señal: es un mercado
+      // mal casado o un evento muerto que dejó de actualizar. R3 era hasta
+      // ahora una regla inerte precisamente porque nunca veía estos picks.
+      //
+      // CAVEAT honesto: los 184 picks son TODOS posteriores al 2026-08-06, así
+      // que no hay corte temporal posible — esto es in-sample. Lo que sostiene
+      // el cambio no es el ROI sino que R3 replica el techo `maxOdds=3` que
+      // rankPicks ya impone a cualquier otro pick del sistema; el scanner era
+      // la excepción, y no por diseño.
+      //
+      // NO se aplican MIN_CONF ni MIN_EDGE a propósito: la señal es
+      // estructural (varianza plana), no de confianza, y con features reales un
+      // empate típico al 82' puntúa ~0.59 — MIN_CONF=0.70 silenciaría el
+      // scanner entero, incluida la banda de momio<=3 que sí gana.
+      // GLOBAL_DRAW_FIREWALL=false lo devuelve al comportamiento anterior.
+      const applyFirewall = String(process.env.GLOBAL_DRAW_FIREWALL || 'true').toLowerCase() !== 'false';
+      const verdict = firewallVerdict(scored);
+      if (applyFirewall && verdict.blocked) {
+        console.log(`[scanner] 🚧 Bloqueado por firewall [${verdict.rules.join(', ')}] @${momio.toFixed(2)}: ${c.event}`);
+        continue;
+      }
+
       // Marcar en BD ANTES de enviar para evitar duplicados en caso de crash
       markAsAlerted(key);
 
@@ -200,36 +325,27 @@ export async function checkAndBroadcastGlobalDraws(token: string, chatId: string
       let pickId = existing?.id;
 
       if (!pickId) {
-        const nowTs = new Date().toISOString();
-        const conf = 0.76;
-        const oddDecimal = c.current_odd || c.entry_odd || 1.75;
-        const stake = computeStake ? computeStake({ conf, oddDecimal }) : 1.5;
-
-        const info = db.prepare(`
-          INSERT INTO picks (
-            ts, event_id, event, sport, market, selection, odd_decimal, conf, stake,
-            f_prob_justa, f_avance, f_situacion, f_linea, conf_heuristic, conf_learned, source
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'global_draw')
-        `).run(
-          nowTs,
-          c.event_id,
-          c.event,
-          c.sport,
-          c.market,
-          c.selection,
-          oddDecimal,
-          conf,
-          stake,
-          0.72,
-          0.85,
-          0.75,
-          0.82,
-          conf,
-          conf
-        );
-
-        pickId = info.lastInsertRowid;
-        console.log(`[scanner] 📝 Pick Oficial Registrado en BD: ID #${pickId} (${c.event})`);
+        // Vía logPicks (src/db.js), la MISMA que usan /seguras y /golden: así el
+        // scanner no puede volver a divergir en qué columnas rellena. Persiste
+        // f_avance CRUDO (`progress`, que es lo que consume el firewall) y
+        // f_avance_model (el valor realmente servido al modelo) por separado.
+        //
+        // El stake sale de scoreRow. Antes se llamaba
+        // `computeStake({ conf, oddDecimal })` con un objeto, pero la firma es
+        // posicional — `computeStake(conf, oddDecimal, mode, isHighConviction)`
+        // — así que el objeto entraba como `conf`, salía NaN y se persistía
+        // NULL: ninguno de los 224 picks históricos del scanner tiene stake.
+        [pickId] = logPicks([{
+          ts: scored.ts, eventId: scored.eventId, event: scored.event, sport: scored.sport,
+          market: scored.market, selection: scored.selection, oddDecimal: scored.oddDecimal, conf: scored.conf,
+          fProbJusta: scored.base, fAvance: scored.progress, fAvanceModel: scored.fAvance,
+          fSituacion: scored.scoreFactor, fLinea: scored.lineFactor,
+          confHeuristic: scored.confHeuristic, confLearned: scored.confLearned,
+          edge: scored.edge, source: 'global_draw',
+          openingOdd: scored.openingOdd, fApertura: scored.fApertura, scoreVersion: scored.scoreVersion,
+          stake: scored.stake, stakeMode: scored.stakeMode,
+        }]);
+        console.log(`[scanner] 📝 Pick Oficial Registrado en BD: ID #${pickId} (${c.event}) conf=${scored.conf.toFixed(3)} edge=${scored.edge.toFixed(3)} stake=${scored.stake}u`);
       }
 
       console.log(`[scanner] 🎯 Alerta Global Empate (Min ${c.elapsed_min}') emitida a Telegram para ${c.event}`);
