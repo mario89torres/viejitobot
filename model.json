@@ -5,7 +5,7 @@
     2
   ],
   "calibration_method": "isotonic",
-  "adopted": true,
+  "adopted": false,
   "features": [
     "f_prob_justa",
     "f_avance",
@@ -455,5 +455,6 @@
       "log_loss": 0,
       "n_folds": 4
     }
-  }
+  },
+  "disabled_reason": "Desadoptado el 2026-08-09. Este modelo (entrenado 2026-08-05, calibracion isotonic) NO cumple la regla de adopcion vigente en train_weights.py, y lo delatan sus propias oos_metrics: calibrated brier 0.1902 y log_loss 0.5813 son PEORES que heuristic (0.1897 / 0.5668), con fold_wins 2/4 en Brier y 0/4 en log loss (se exige mayoria en ambos). Se adopto bajo una regla anterior mas laxa. Corrio en produccion del 2026-08-04 al 08-08 con MODEL_MODE=learned: la conf media subio a ~76% mientras el acierto real caia a ~65% (+11pp de exceso), y como computeStake dimensiona con conf, el stake medio paso de ~1.0u a ~3.4u justo en el peor tramo (maxDD 61.8u). MODEL_MODE ya volvio a heuristic; este flag es la segunda linea de defensa: con adopted=false, learnedConf() devuelve null y se cae al heuristico aunque alguien vuelva a poner MODEL_MODE=learned. Revertir solo con un modelo que pase la puerta actual."
 }
