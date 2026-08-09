@@ -160,7 +160,8 @@ body {
   color: var(--c-text);
   font-stretch: condensed;
 }
-.chart-body { padding: 14px; }
+.chart-body { padding: 14px; position: relative; width: 100%; height: 100%; }
+canvas { max-width: 100% !important; height: auto !important; }
 
 /* ═══ TABLE ═══ */
 .table-wrap { overflow-x: auto; border: 1px solid var(--c-border); border-radius: var(--pd-radius-md); }
@@ -537,11 +538,11 @@ td.sel { font-size: 12px; color: var(--c-text-muted); }
     <div class="chart-grid">
       <div class="chart-card">
         <div class="chart-header">P/L Acumulado (Unidades)</div>
-        <div class="chart-body"><canvas id="chartPL" height="200"></canvas></div>
+        <div class="chart-body"><canvas id="chartPL" style="width:100%;height:300px;display:block;"></canvas></div>
       </div>
       <div class="chart-card">
         <div class="chart-header">Rendimiento por Deporte</div>
-        <div class="chart-body"><canvas id="chartSport" height="200"></canvas></div>
+        <div class="chart-body"><canvas id="chartSport" style="width:100%;height:300px;display:block;"></canvas></div>
       </div>
     </div>
   </div>
