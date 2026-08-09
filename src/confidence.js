@@ -223,10 +223,18 @@ function computeStake(conf, oddDecimal, mode = STAKE_MODE, isHighConviction = fa
   let frac = mode === 'kelly' ? f : f / 2; // half_kelly es el default
   if (isHighConviction) frac *= 1.25; // Sharp / High Conviction boost (+25% stake)
   const units = Math.round(frac * STAKE_UNIT_SCALE * 10) / 10;
-  let dynamicMax = STAKE_MAX;
-  if (oddDecimal >= 1.70) dynamicMax = 2.5;
-  else if (oddDecimal >= 1.50) dynamicMax = 3.5;
-  return Math.min(dynamicMax, Math.max(STAKE_MIN, units));
+  // Tope por momio: a más momio, más varianza, así que el techo baja. Es un
+  // control de riesgo, y por eso se COMBINA con STAKE_MAX en vez de sustituirlo.
+  //
+  // Antes esto ASIGNABA (`dynamicMax = 2.5`), lo que invertía su propósito: con
+  // STAKE_MAX=2 en .env, un pick a momio 1.60 acababa con techo 3.5 — un 75% POR
+  // ENCIMA del máximo que el operador había configurado. Medido el 2026-08-09:
+  // 757 de 1406 picks con stake registrado superaron el STAKE_MAX=2 declarado, y
+  // seguía pasando ese mismo día ya con el modelo revertido (9 de 53 picks
+  // llegaron a 3.5u). El tope del operador nunca debe poder subirse solo.
+  const oddsCap = oddDecimal >= 1.70 ? 2.5 : oddDecimal >= 1.50 ? 3.5 : Infinity;
+  const cap = Math.min(STAKE_MAX, oddsCap);
+  return Math.min(cap, Math.max(STAKE_MIN, units));
 }
 
 // Índice de confianza [0..1] combinando:
