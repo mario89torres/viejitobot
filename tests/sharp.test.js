@@ -154,3 +154,52 @@ test('keysForSport mapea deportes de Altenar a prefijos de The Odds API', () => 
     if (prev === undefined) delete process.env.SHARP_SPORT_KEYS; else process.env.SHARP_SPORT_KEYS = prev;
   }
 });
+
+// --- Empate No Acción (dnb) y Doble oportunidad (dc) ---
+// Añadidos el 2026-08-09: markets.js ya los tipificaba, pero MARKET_FOR_TYPE no
+// los mapeaba, así que caían en 'unsupported_market' sin intentar el match. Se
+// perdieron 281 picks de "Empate No Acción" + 21 de "Doble oportunidad" en cinco
+// días (el 22% de los picks del periodo).
+test('MARKET_FOR_TYPE cubre dnb y dc', () => {
+  const { MARKET_FOR_TYPE } = _internal;
+  assert.strictEqual(MARKET_FOR_TYPE.dnb, 'draw_no_bet');
+  assert.strictEqual(MARKET_FOR_TYPE.dc, 'double_chance');
+});
+
+test('pickOutcomeIndex: draw_no_bet mapea por equipo y respeta el swap', () => {
+  const ev = { home_team: 'Club América', away_team: 'Guadalajara Chivas' };
+  const outcomes = [
+    { name: 'Club América', price: 1.35 },
+    { name: 'Guadalajara Chivas', price: 3.10 },
+  ];
+  // En draw_no_bet el proveedor NO devuelve 'Draw': el empate anula.
+  let r = pickOutcomeIndex({ type: 'dnb', side: 'home' }, ev, false, outcomes);
+  assert.strictEqual(outcomes[r.idx].name, 'Club América');
+  r = pickOutcomeIndex({ type: 'dnb', side: 'away' }, ev, false, outcomes);
+  assert.strictEqual(outcomes[r.idx].name, 'Guadalajara Chivas');
+  // con swap, el local de Altenar es el away_team del proveedor
+  r = pickOutcomeIndex({ type: 'dnb', side: 'home' }, ev, true, outcomes);
+  assert.strictEqual(outcomes[r.idx].name, 'Guadalajara Chivas');
+});
+
+test('pickOutcomeIndex: double_chance empareja por conjunto, no por texto', () => {
+  const ev = { home_team: 'Club América', away_team: 'Guadalajara Chivas' };
+  // Orden y separador deliberadamente inconsistentes: el proveedor no los
+  // garantiza, y por eso el emparejamiento es por conjunto de resultados.
+  const outcomes = [
+    { name: 'Draw or Club América', price: 1.22 },          // 1X, invertido
+    { name: 'Club América or Guadalajara Chivas', price: 1.30 }, // 12
+    { name: 'Guadalajara Chivas or Draw', price: 2.10 },     // X2
+  ];
+  let r = pickOutcomeIndex({ type: 'dc', coversHome: true, coversDraw: true }, ev, false, outcomes);
+  assert.strictEqual(outcomes[r.idx].name, 'Draw or Club América');
+  r = pickOutcomeIndex({ type: 'dc', coversAway: true, coversDraw: true }, ev, false, outcomes);
+  assert.strictEqual(outcomes[r.idx].name, 'Guadalajara Chivas or Draw');
+  // 12 NO debe confundirse con 1X: comparten el local, y comparar texto daría
+  // un falso positivo.
+  r = pickOutcomeIndex({ type: 'dc', coversHome: true, coversAway: true }, ev, false, outcomes);
+  assert.strictEqual(outcomes[r.idx].name, 'Club América or Guadalajara Chivas');
+  // una combinación imposible (los tres) no debe emparejar nada
+  r = pickOutcomeIndex({ type: 'dc', coversHome: true, coversAway: true, coversDraw: true }, ev, false, outcomes);
+  assert.strictEqual(r.idx, -1);
+});

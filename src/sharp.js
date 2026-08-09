@@ -373,8 +373,17 @@ function selectBookmaker(ev, market = 'h2h') {
 
 // Tipo de pick (parsePick) -> mercado de The Odds API. Lo que no está aquí
 // (doble oportunidad…) queda como unsupported_market.
+// Tipo de pick (markets.js) -> clave de mercado de The Odds API.
+//
+// dnb/dc añadidos el 2026-08-09. markets.js ya los tipificaba desde siempre;
+// solo faltaban aquí, así que caían en 'unsupported_market' y NUNCA se
+// intentaba el match. No era una regresión del fix multi-mercado de julio —
+// unsupported_market llevaba en 0 desde el 24 jul — sino que el bot empezó a
+// emitir estos mercados el 08-04: 281 "Empate No Acción" + 21 "Doble
+// oportunidad" perdidos en cinco días, el 22% de todos los picks del periodo.
 const MARKET_FOR_TYPE = {
   winner: 'h2h', draw: 'h2h', total: 'totals', handicap: 'spreads', btts: 'btts',
+  dnb: 'draw_no_bet', dc: 'double_chance',
 };
 
 // Mapea la selección del pick al outcome sharp del mercado correspondiente.
@@ -408,6 +417,41 @@ function pickOutcomeIndex(parsed, ev, swapped, outcomes) {
     case 'btts': {
       const target = parsed.yes ? 'Yes' : 'No';
       return { idx: outcomes.findIndex(o => nameEq(o, target)), target, point: null };
+    }
+    // Empate No Acción. En draw_no_bet el proveedor solo devuelve los dos
+    // equipos (el empate anula), así que el emparejamiento es por nombre, igual
+    // que en h2h.
+    case 'dnb': {
+      const target = teamFor(parsed.side);
+      return { idx: outcomes.findIndex(o => o.name === target), target, point: null };
+    }
+    // Doble oportunidad. Aquí el outcome NO es un nombre de equipo sino una
+    // combinación ("Barcelona or Draw", "Barcelona or Real Madrid"), y el
+    // proveedor no garantiza ni el orden ni el separador. Por eso se compara por
+    // CONJUNTO de lo cubierto en vez de por cadena: se exige que el outcome
+    // mencione exactamente los mismos dos resultados que cubre el pick. Comparar
+    // texto daría falsos negativos con "or"/"/" y con el orden invertido, y
+    // —peor— falsos positivos entre 1X y 12, que comparten un equipo.
+    case 'dc': {
+      const home = (swapped ? ev.away_team : ev.home_team) || '';
+      const away = (swapped ? ev.home_team : ev.away_team) || '';
+      const quiere = new Set([
+        parsed.coversHome && 'home', parsed.coversAway && 'away', parsed.coversDraw && 'draw',
+      ].filter(Boolean));
+      if (quiere.size !== 2) return { idx: -1, target: null, point: null };
+      const cubre = (o) => {
+        const s = (o.name || '').toLowerCase();
+        const set = new Set();
+        if (home && s.includes(home.toLowerCase())) set.add('home');
+        if (away && s.includes(away.toLowerCase())) set.add('away');
+        if (/\bdraw\b/.test(s)) set.add('draw');
+        return set;
+      };
+      const idx = outcomes.findIndex(o => {
+        const c = cubre(o);
+        return c.size === 2 && [...quiere].every(k => c.has(k));
+      });
+      return { idx, target: idx >= 0 ? outcomes[idx].name : null, point: null };
     }
   }
   return { idx: -1, target: null, point: null };
@@ -518,7 +562,7 @@ module.exports = {
   captureForPick, captureClosingForPick, status,
   // internos expuestos para tests
   _internal: {
-    normalizeTeam, teamsMatch, matchEvent, selectBookmaker, pickOutcomeIndex, keysForSport,
+    normalizeTeam, teamsMatch, matchEvent, selectBookmaker, pickOutcomeIndex, keysForSport, MARKET_FOR_TYPE,
     keyForChamp, normText, fetchLeagueOdds,
     fetchSchedule, fetchEventOdds,
     clearCaches: () => { eventsCache.clear(); oddsCache.clear(); leagueCache.clear(); },

@@ -34,10 +34,24 @@ const FAKE_MODEL = {
   calibration: { x: [0, 0.5, 1], y: [0, 0.4, 1] }, // deliberadamente no identidad
 };
 
-test('heuristicConf reproduce los pesos fijos 0.35/0.30/0.20/0.15', () => {
-  const expected = 0.35 * 0.8 + 0.30 * 0.6 + 0.20 * 0.7 + 0.15 * 0.5;
+test('heuristicConf aplica los pesos vigentes y suman 1', () => {
+  // Se lee de HEURISTIC_WEIGHTS en vez de fijar números: los pesos son
+  // configurables por entorno (HEURISTIC_W_*) desde el 2026-08-09, así que
+  // clavarlos aquí haría fallar el test según el .env de quien lo corra.
+  const W = HEURISTIC_WEIGHTS;
+  const expected = W.f_prob_justa * 0.8 + W.f_avance * 0.6 + W.f_situacion * 0.7 + W.f_linea * 0.5;
   assert.ok(Math.abs(heuristicConf(F) - expected) < 1e-12);
-  assert.ok(Math.abs(Object.values(HEURISTIC_WEIGHTS).reduce((s, x) => s + x, 0) - 1) < 1e-12);
+  assert.ok(Math.abs(Object.values(W).reduce((s, x) => s + x, 0) - 1) < 1e-12);
+});
+
+test('f_situacion está fuera de la mezcla por defecto', () => {
+  // Correlaciona −0.119 con acertar (N=1151) y pesaba 20%: restaba señal.
+  // Ver el comentario en src/model.js. Si alguien la reactiva sin rederivar
+  // umbrales, que sea a sabiendas y no por accidente.
+  assert.strictEqual(HEURISTIC_WEIGHTS.f_situacion, 0);
+  const conf = heuristicConf(F);
+  assert.strictEqual(heuristicConf({ ...F, f_situacion: 0.01 }), conf);
+  assert.strictEqual(heuristicConf({ ...F, f_situacion: 0.99 }), conf);
 });
 
 test('interp: interpolación lineal con clamp en extremos', () => {

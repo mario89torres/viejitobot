@@ -11,10 +11,14 @@ const mkRow = (id, odd, fairProb) => ({
 });
 
 test('parlayCombos: exige edge individual positivo en cada pata', () => {
+  // Los momios se eligen para que el signo del EV no dependa de los pesos del
+  // heurístico: antes la pata 2 iba a 1.20 y daba edge +0.0004 con los pesos
+  // viejos y −0.0005 con los de 2026-08-09, así que el test medía el redondeo
+  // de conf en vez de la lógica de combinadas.
   const rows = [
-    mkRow(1, 1.25, 0.88), // +EV individual (0.88 * 1.25 - 1 > 0)
-    mkRow(2, 1.20, 0.88), // +EV individual
-    mkRow(3, 1.05, 0.90), // -EV individual (0.90 * 1.05 - 1 = -0.055)
+    mkRow(1, 1.25, 0.88), // +EV individual con holgura
+    mkRow(2, 1.30, 0.88), // +EV individual con holgura
+    mkRow(3, 1.05, 0.90), // -EV individual con holgura (~-0.12)
   ];
   const combos = parlayCombos(rows, { minConf: 0.65, minOdds: 1.05, maxOdds: 1.45, minEdge: 0.01 });
   assert.ok(combos.length > 0, 'debe encontrar combo +EV');
@@ -29,7 +33,7 @@ test('parlayCombos: agrupa por eventos distintos', () => {
   const rows = [
     mkRow(1, 1.25, 0.88),
     { ...mkRow(1, 1.30, 0.85), selection: 'Otro mercado del mismo partido' },
-    mkRow(2, 1.20, 0.88),
+    mkRow(2, 1.30, 0.88), // 1.20 quedaba al filo del EV cero; ver nota arriba
   ];
   const combos = parlayCombos(rows, { minConf: 0.65, minOdds: 1.05, maxOdds: 1.45, minEdge: 0.01 });
   assert.ok(combos.length > 0);
