@@ -48,7 +48,17 @@ ROOT = Path(__file__).resolve().parent.parent
 # El heurístico de referencia usa sus 4 factores con pesos fijos; el modelo
 # aprende además con f_apertura (drift desde la primera observación en vivo).
 HEUR_FEATURES = ["f_prob_justa", "f_avance", "f_situacion", "f_linea"]
-HEUR_WEIGHTS = np.array([0.35, 0.30, 0.20, 0.15])
+# DEBEN coincidir con HEURISTIC_WEIGHTS de src/model.js: son la línea base
+# contra la que se decide adoptar. Si divergen, el modelo se compara con un
+# heurístico que no existe en producción y la regla de adopción miente.
+# f_situacion está a 0 desde el 2026-08-09 (correlación −0.119 con acertar
+# mientras pesaba 20%); mismos overrides de entorno que en Node.
+HEUR_WEIGHTS = np.array([
+    float(os.environ.get("HEURISTIC_W_PROB") or 0.4375),
+    float(os.environ.get("HEURISTIC_W_AVANCE") or 0.375),
+    float(os.environ.get("HEURISTIC_W_SITUACION") or 0),
+    float(os.environ.get("HEURISTIC_W_LINEA") or 0.1875),
+])
 FEATURES = HEUR_FEATURES + ["f_apertura"]
 MIN_SAMPLES = 80          # mínimo absoluto para intentar entrenar
 SPORT_MIN = 50            # picks mínimos para dummy propia de deporte
