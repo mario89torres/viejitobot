@@ -52,7 +52,6 @@ body {
   flex-direction: column;
   gap: 0;
 }
-@media (max-width: 760px) { .rail { display: none; } }
 .rail-item {
   padding: 10px 18px;
   color: var(--c-text-muted);
@@ -74,6 +73,37 @@ body {
 }
 .rail-item .badge { font-family: var(--pd-font-mono); font-size: 11px; color: var(--c-text-faint); }
 .rail-item.active .badge { color: var(--c-accent-strong); }
+
+/* En pantallas estrechas el rail NO se oculta: se tumba a barra horizontal
+   desplazable. Antes hacía `display:none` sin poner nada en su lugar, así que
+   por debajo de 760px no quedaba forma de cambiar de pestaña — el panel parecía
+   "sin estilos" cuando en realidad se había quedado sin navegación.
+   Va DESPUÉS de las reglas base a propósito: misma especificidad, así que si se
+   declarara antes la cascada lo anularía en silencio. */
+@media (max-width: 760px) {
+  .rail {
+    flex-direction: row;
+    overflow-x: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--c-border);
+    padding: 0 8px;
+    scrollbar-width: none;
+  }
+  .rail::-webkit-scrollbar { display: none; }
+  .rail-item {
+    border-left: none;
+    border-bottom: 2px solid transparent;
+    white-space: nowrap;
+    padding: 12px 14px;
+    gap: 6px;
+    justify-content: flex-start;
+  }
+  .rail-item.active {
+    border-left-color: transparent;
+    border-bottom-color: var(--c-accent);
+  }
+  .main { padding: 16px 14px; }
+}
 
 /* ═══ MAIN CONTENT ═══ */
 .main { padding: 20px 26px; overflow-y: auto; }

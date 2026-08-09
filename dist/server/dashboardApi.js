@@ -57,7 +57,15 @@ function createDashboardServer(port = 3001) {
             res.end();
             return;
         }
-        const url = req.url || '/';
+        const rawUrl = req.url || '/';
+        // Se enruta por PATHNAME, no por la URL cruda. Antes se comparaba
+        // `url === '/api/accepted'`, así que cualquier query string rompía el
+        // enrutado en silencio y caía en el 404 — por eso no se podía parametrizar
+        // ningún endpoint. Las comparaciones exactas de abajo siguen funcionando
+        // igual porque el pathname es lo que ya comparaban.
+        const qIdx = rawUrl.indexOf('?');
+        const url = qIdx === -1 ? rawUrl : rawUrl.slice(0, qIdx);
+        const query = new URLSearchParams(qIdx === -1 ? '' : rawUrl.slice(qIdx + 1));
         try {
             // 1. API Summary
             if (url === '/api/summary') {
@@ -68,10 +76,21 @@ function createDashboardServer(port = 3001) {
                 res.end(JSON.stringify({ health, stats }));
                 return;
             }
-            // 2. API Accepted Picks (Últimos 50 picks emitidos que pasaron los filtros)
+            // 2. API Accepted Picks — picks emitidos que pasaron los filtros.
+            //
+            // El tope era 50 FIJO (LIMIT 500 en SQL y luego .slice(0,50)), así que con
+            // 90 picks en un solo día el dashboard escondía los 40 más viejos sin
+            // avisar. Ahora es ?limit=N con default 500: cubre varios días completos.
+            // El tope duro de 5000 evita que un ?limit=999999 se traiga la tabla
+            // entera y tumbe el navegador.
             if (url === '/api/accepted') {
                 res.setHeader('Content-Type', 'application/json; charset=utf-8');
                 const excl = excludedSports();
+                const reqLimit = Number(query.get('limit')) || 500;
+                const limit = Math.min(5000, Math.max(1, reqLimit));
+                // Se piden más filas de las que se devuelven porque el filtrado por
+                // deporte/mercado ocurre DESPUÉS: sin ese margen, un tramo con muchos
+                // picks excluidos devolvería menos de `limit` aun habiendo más.
                 const rawPicks = db.prepare(`
           SELECT id, ts, event_id, event, sport, market, selection,
                  odd_decimal, opening_odd_decimal, sharp_entry_odd, sharp_closing_odd,
@@ -82,14 +101,14 @@ function createDashboardServer(port = 3001) {
           FROM picks
           WHERE stake IS NOT NULL
           ORDER BY ts DESC
-          LIMIT 500
-        `).all();
+          LIMIT ?
+        `).all(limit * 2);
                 const accepted = rawPicks.filter((r) => {
                     const isExclSport = excl.includes(normSport(r.sport));
                     const isOver = isBlockedOver(r);
                     const isMktBlocked = isBlockedMarket(r);
                     return !isExclSport && !isOver && !isMktBlocked;
-                }).slice(0, 50).map((r) => {
+                }).slice(0, limit).map((r) => {
                     const profit = r.result === 'win' ? (r.stake * (r.odd_decimal - 1)) : (r.result === 'loss' ? -r.stake : 0);
                     return {
                         ...r,
@@ -278,8 +297,8 @@ function createDashboardServer(port = 3001) {
             // 5. API Pick Timeline — Detalle de snapshots e historial completo de un pick específico
             if (url.startsWith('/api/pick-timeline')) {
                 res.setHeader('Content-Type', 'application/json; charset=utf-8');
-                const urlObj = new URL(url, 'http://localhost:3001');
-                const pickId = urlObj.searchParams.get('id');
+                // Lee de `query` y no de `url`: ahora `url` es solo el pathname.
+                const pickId = query.get('id');
                 if (!pickId) {
                     res.writeHead(400);
                     res.end(JSON.stringify({ error: 'Falta id del pick' }));

@@ -116,7 +116,15 @@ async function handleTop(args, chatId) {
 
   const picks = topPicks(filtered, cfg);
   if (!picks.length) return reply(chatId, 'No hay jugadas dentro del rango de momios indicado.');
-  await sendTelegram(TOKEN, chatId, formatMessage(picks));
+  // formatMessage es async: sin await, `text` viajaba como Promise y se
+  // serializaba a {} en el JSON, así que Telegram rechazaba el envío y el
+  // usuario solo veía el error del catch. Era el único punto de llamada.
+  const msg = await formatMessage(picks);
+  // Devuelve null cuando la Guardia Pre-Shot cancela TODAS las jugadas (se
+  // suspendieron entre el cálculo y el envío). Es un caso normal, no un fallo:
+  // sin esto se mandaba text:null y Telegram lo rechazaba igual.
+  if (!msg) return reply(chatId, '⚠️ Las jugadas se suspendieron justo antes de enviarlas. Prueba de nuevo en unos segundos.');
+  await sendTelegram(TOKEN, chatId, msg);
 }
 
 function pct(x) { return `${Math.round(x * 100)}%`; }
