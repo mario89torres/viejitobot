@@ -23,6 +23,12 @@ if exist bot.log (
   ren bot.log bot.log.old
 )
 
+rem Marca que el bot corre BAJO ESTE SUPERVISOR. Lo lee /reboot en Telegram: sin
+rem esto no hay quien relance el proceso y el comando se niega a salir en vez de
+rem dejar el bot muerto hasta el siguiente inicio de sesion (la tarea programada
+rem solo dispara al hacer logon, no vigila el proceso).
+set "BOT_SUPERVISED=1"
+
 :loop
 echo [%date% %time%] arrancando bot.js >> bot.log
 node bot.js >> bot.log 2>&1

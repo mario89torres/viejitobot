@@ -60,6 +60,7 @@ const HELP = `Comandos disponibles:
 /validar — contrasta los resultados liquidados contra el marcador oficial (3 días)
 /validar 6h — solo las últimas 6 horas (menos picks; el costo es por liga, no por pick)
 /train — exporta el dataset y reentrena el modelo (walk-forward + calibración)
+/reboot — reinicia el bot (solo admin; vuelve en ~10 s)
 /deportes — deportes en vivo ahora
 /help — esta ayuda e interfaz de botones`;
 
@@ -426,6 +427,41 @@ async function runTraining() {
   } finally {
     training = false;
   }
+}
+
+/**
+ * Reinicia el bot saliendo del proceso y dejando que el supervisor lo relance.
+ *
+ * NO mata ni respawnea nada por su cuenta, a propósito: scripts/run-bot.cmd ya
+ * envuelve a node en un `:loop` que relanza a los 10 s de cualquier salida, así
+ * que salir limpio ES el reinicio. Intentar spawnear un reemplazo desde aquí
+ * añadiría una carrera con el lock de instancia única para no ganar nada.
+ *
+ * Por qué exige BOT_SUPERVISED: la tarea programada solo dispara al iniciar
+ * sesión (MSFT_TaskLogonTrigger), no vigila el proceso. Si alguien arrancó con
+ * `node bot.js` a mano, no hay quien relance — y entonces /reboot no sería un
+ * reinicio sino un apagado permanente hasta el próximo logon. En ese caso se
+ * niega y lo explica, que es lo contrario de lo que el usuario pidió pero lo
+ * que de verdad quiere.
+ *
+ * El lock se libera solo: singleInstance registra su release en process.on
+ * ('exit'), y los 10 s del supervisor dan margen de sobra para que el PID muera
+ * antes de que el sucesor compruebe si sigue vivo.
+ */
+async function handleReboot(chatId) {
+  if (!process.env.BOT_SUPERVISED) {
+    await reply(chatId,
+      '⚠️ <b>No hay supervisor.</b> Este proceso no se arrancó con <code>scripts/run-bot.cmd</code>, '
+      + 'así que nadie lo relanzaría: reiniciar aquí sería apagarlo hasta el próximo inicio de sesión.\n\n'
+      + 'Arráncalo con <code>scripts\\run-bot.cmd</code> (o la tarea programada) y <code>/reboot</code> funcionará.');
+    return;
+  }
+  // El await importa: process.exit() corta el envío en curso, así que el aviso
+  // tiene que estar entregado ANTES de salir o el usuario se queda sin saber
+  // si el comando llegó.
+  await reply(chatId, '♻️ <b>Reiniciando…</b> el supervisor relanza el bot en ~10 s.');
+  console.log(`[reboot] solicitado desde Telegram (chat ${chatId}); saliendo para que el supervisor relance`);
+  setTimeout(() => process.exit(0), 250);
 }
 
 async function handleTrain(chatId) {
@@ -991,6 +1027,12 @@ async function handleMessage(rawText, chatId = CHAT_ID, fromUser = null) {
     else if (cmd === '/dashboard' || cmd === '/panel') {
       if (!isOwner(chatId)) await reply(chatId, '🔒 Comando reservado al administrador.');
       else await handleDashboard(args, chatId);
+    }
+    // /reboot tumba el proceso: solo el dueño. Sin esta guarda cualquier chat
+    // podría reiniciar el bot en bucle, que es un apagado gratis.
+    else if (cmd === '/reboot' || cmd === '/reiniciar') {
+      if (!isOwner(chatId)) await reply(chatId, '🔒 Comando reservado al administrador.');
+      else await handleReboot(chatId);
     }
     else if (cmd === '/deportes') await handleDeportes(chatId);
     else if (cmd === '/vip') await handleVip(chatId, fromUser);
