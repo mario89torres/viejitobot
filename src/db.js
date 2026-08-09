@@ -29,6 +29,38 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_picks_result ON picks(result);
 
+  -- Grupo de control: candidatos que el sistema RECHAZÓ, con su resultado real.
+  --
+  -- Por qué existe: hasta ahora solo se guardaban los picks emitidos, todos
+  -- pasados por MIN_CONF=0.70 y MIN_EDGE. Eso comprime el 80% de las conf en
+  -- 9pp (restricción de rango) y deja al clasificador SIN NEGATIVOS: no puede
+  -- aprender una frontera que nunca ve. Medido el 2026-08-09, es una de las
+  -- razones de que ningún modelo supere al heurístico.
+  --
+  -- TABLA APARTE, no un source='rejected' dentro de picks, y es deliberado:
+  -- todo el dashboard, las stats y el ROI leen de picks, así que mezclarlos
+  -- contaminaría cada cifra del sistema. Es exactamente el error que ya se
+  -- pagó con source='global_draw'.
+  --
+  -- El índice ÚNICO es el control de tamaño: el universo son ~74k combinaciones
+  -- únicas cada 10 min, así que sin dedupe esto sepultaría la BD (que ya crece
+  -- de más). Con él, cada candidato se guarda UNA vez, no una por ciclo.
+  CREATE TABLE IF NOT EXISTS rejected_picks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    event_id INTEGER, event TEXT, sport TEXT,
+    market TEXT, selection TEXT,
+    odd_decimal REAL, conf REAL, edge REAL,
+    reject_rule TEXT NOT NULL,
+    f_prob_justa REAL, f_avance REAL, f_avance_model REAL,
+    f_situacion REAL, f_linea REAL, f_apertura REAL,
+    conf_heuristic REAL, score_version INTEGER,
+    result TEXT, final_score TEXT, settled_ts TEXT
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_rejected_uniq
+    ON rejected_picks(event_id, market, selection);
+  CREATE INDEX IF NOT EXISTS idx_rejected_result ON rejected_picks(result);
+
   CREATE TABLE IF NOT EXISTS subscribers (
     telegram_id INTEGER PRIMARY KEY,
     username TEXT,
@@ -131,6 +163,37 @@ const logPicks = db.transaction((picks) => {
   return ids;
 });
 
+// --- Grupo de control (rechazados) ---
+// INSERT OR IGNORE: choca contra idx_rejected_uniq y descarta el duplicado sin
+// error, que es justo lo que se quiere — el mismo candidato reaparece en cada
+// ciclo de muestreo y solo interesa su primera aparición.
+const insertRejectedStmt = db.prepare(`
+  INSERT OR IGNORE INTO rejected_picks (ts, event_id, event, sport, market, selection,
+    odd_decimal, conf, edge, reject_rule, f_prob_justa, f_avance, f_avance_model,
+    f_situacion, f_linea, f_apertura, conf_heuristic, score_version)
+  VALUES (@ts, @eventId, @event, @sport, @market, @selection,
+    @oddDecimal, @conf, @edge, @rejectRule, @fProbJusta, @fAvance, @fAvanceModel,
+    @fSituacion, @fLinea, @fApertura, @confHeuristic, @scoreVersion)
+`);
+const logRejected = db.transaction((rows) => {
+  let n = 0;
+  for (const r of rows) {
+    const info = insertRejectedStmt.run({
+      eventId: null, event: null, sport: null, market: null, selection: null,
+      oddDecimal: null, conf: null, edge: null, fProbJusta: null, fAvance: null,
+      fAvanceModel: null, fSituacion: null, fLinea: null, fApertura: null,
+      confHeuristic: null, scoreVersion: null,
+      ...r,
+    });
+    if (info.changes) n++;
+  }
+  return n;
+});
+const unsettledRejectedStmt = db.prepare(`SELECT * FROM rejected_picks WHERE result IS NULL`);
+const settleRejectedStmt = db.prepare(`
+  UPDATE rejected_picks SET result = ?, final_score = ?, settled_ts = ? WHERE id = ?
+`);
+
 const unsettledStmt = db.prepare(`SELECT * FROM picks WHERE result IS NULL`);
 const lastScoreStmt = db.prepare(`
   SELECT score, ts FROM snapshots WHERE event_id = ? AND score != '' ORDER BY ts DESC LIMIT 1
@@ -181,6 +244,10 @@ const sharpClosingStmt = db.prepare(`
 
 module.exports = {
   db, saveSnapshot, logPicks,
+  logRejected,
+  getUnsettledRejected: () => unsettledRejectedStmt.all(),
+  settleRejected: (id, result, finalScore) =>
+    settleRejectedStmt.run(result, finalScore, new Date().toISOString(), id),
   getUnsettledPicks: () => unsettledStmt.all(),
   getLastScore: (eventId) => lastScoreStmt.get(eventId),
   getLastSeen: (eventId) => lastSeenStmt.get(eventId).ts,
@@ -200,6 +267,7 @@ module.exports = {
     const info = db.prepare(`
       DELETE FROM snapshots WHERE ts < ?
         AND event_id NOT IN (SELECT DISTINCT event_id FROM picks)
+        AND event_id NOT IN (SELECT DISTINCT event_id FROM rejected_picks WHERE result IS NULL)
     `).run(cutoff);
     return { deleted: info.changes, cutoff };
   },

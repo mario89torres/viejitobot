@@ -6,14 +6,14 @@ require('dotenv').config();
 if (!require('./src/singleInstance').acquire()) process.exit(1);
 const { fetchAllLive, fetchSportLive } = require('./src/fetcher');
 const { normalize } = require('./src/normalize');
-const { saveSnapshot, logPicks, getUnsettledPicks, getStats,
+const { saveSnapshot, logPicks, logRejected, getUnsettledPicks, getStats,
         setSharpEntry, setSharpStatus, pruneSnapshots,
         isDuplicatePick, countPicksSince,
         addSubscriber, getSubscriber, getActiveSubscribers, getExpiredSubscribers, setSubscriberStatus } = require('./src/db');
 const { processSettlements } = require('./src/results');
 const { topPicks } = require('./src/analyze');
 const { sendTelegram, formatMessage } = require('./src/telegram');
-const { safestPicks, rankPicks, goldenPick, parlayCombos } = require('./src/confidence');
+const { safestPicks, rankPicks, auditRejections, goldenPick, parlayCombos, SCORE_VERSION } = require('./src/confidence');
 const { isElite } = require('./src/firewall');
 const { computeMetrics, compareScores, edgeStats, computeHealth, stakeStats, stakePicksByDate } = require('./src/metrics');
 const { getMode, reloadModel } = require('./src/model');
@@ -1122,10 +1122,47 @@ function isModelStrong(p) {
          p.confLearned >= MODEL_STRONG_CONF && p.confLearned > p.confHeuristic;
 }
 
+// Grupo de control para entrenar: guarda una MUESTRA de los candidatos que se
+// puntuaron y no se emitieron, para que el modelo pueda ver la frontera de
+// decisión. Sin negativos, el clasificador solo ve picks que ya pasaron
+// MIN_CONF=0.70 — el 80% de las conf comprimido en 9pp — y no puede aprender
+// nada (medido el 2026-08-09).
+//
+// Nunca debe tumbar el ciclo de picks: es instrumentación, no producción. De ahí
+// el try/catch. Y REJECTED_SAMPLE=0 lo apaga entero.
+const REJECTED_SAMPLE = Number(process.env.REJECTED_SAMPLE || 5);
+function captureRejectedControls(rows) {
+  if (REJECTED_SAMPLE <= 0) return;
+  try {
+    const muestras = auditRejections(rows, {
+      minOdds: Number(process.env.MIN_ODDS || 1.35),
+      minEdge: Number(process.env.MIN_EDGE || 0.03),
+      minConf: Number(process.env.MIN_CONF || 0.70),
+      limit: REJECTED_SAMPLE,
+    });
+    if (!muestras.length) return;
+    const ts = new Date().toISOString();
+    const n = logRejected(muestras.map(({ row: r, rule }) => ({
+      ts, eventId: r.eventId, event: r.event, sport: r.sport,
+      market: r.market, selection: r.selection, oddDecimal: r.oddDecimal,
+      conf: r.conf, edge: r.edge, rejectRule: rule,
+      fProbJusta: r.fProbJusta, fAvance: r.progress, fAvanceModel: r.fAvance,
+      fSituacion: r.scoreFactor, fLinea: r.lineFactor, fApertura: r.fApertura,
+      confHeuristic: r.confHeuristic, scoreVersion: SCORE_VERSION,
+    })));
+    if (n) console.log(`[control] ${n} candidatos rechazados guardados (de ${muestras.length} muestreados)`);
+  } catch (e) {
+    console.error('[control] no se pudo guardar el grupo de control:', e.message);
+  }
+}
+
 async function autoPicks(rows) {
   if (!AUTO_PICKS) return;
 
-  const candidates = safestPicks(rows.filter(r => !norm(r.sport).startsWith('e-')), 5)
+  const elegibles = rows.filter(r => !norm(r.sport).startsWith('e-'));
+  captureRejectedControls(elegibles);
+
+  const candidates = safestPicks(elegibles, 5)
     .filter(p => !isDuplicatePick(p.eventId, p.market, p.selection));
   if (!candidates.length) return;
 

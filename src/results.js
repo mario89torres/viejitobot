@@ -1,4 +1,5 @@
-const { getUnsettledPicks, getLastScore, getLastSeen, getClosingOdd, settlePick, setSharpClosing } = require('./db');
+const { getUnsettledPicks, getLastScore, getLastSeen, getClosingOdd, settlePick, setSharpClosing,
+        getUnsettledRejected, settleRejected } = require('./db');
 const { gradePick } = require('./markets');
 const { captureClosingForPick } = require('./sharp');
 
@@ -84,6 +85,29 @@ async function processSettlements(liveEventIds) {
         missing.delete(id);
       }
     }
+  }
+  settleRejectedGroup(liveEventIds);
+}
+
+/**
+ * Liquida el grupo de control (candidatos rechazados). Sin resultado no sirven
+ * de nada: el valor entero de guardarlos es poder decir "esto se descartó Y
+ * habría ganado/perdido".
+ *
+ * Más simple que la escalera de los picks emitidos a propósito: no hay dinero
+ * en juego, así que no hace falta protegerse de desapariciones temporales del
+ * feed ni consultar cierres sharp. Basta con que el evento ya no esté en vivo y
+ * exista un marcador. Tampoco escribe 'unknown': un control mal etiquetado
+ * envenena el entrenamiento más de lo que aporta, así que si no hay marcador se
+ * deja pendiente y se reintenta en el ciclo siguiente.
+ */
+function settleRejectedGroup(liveEventIds) {
+  for (const r of getUnsettledRejected()) {
+    if (liveEventIds.has(r.event_id)) continue;
+    const last = getLastScore(r.event_id);
+    if (!last || !last.score) continue;
+    const result = gradePick({ market: r.market, selection: r.selection, event: r.event }, last.score);
+    if (result) settleRejected(r.id, result, last.score);
   }
 }
 

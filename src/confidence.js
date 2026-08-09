@@ -562,21 +562,38 @@ function isSuspensionOrInstabilityInWindow(r, windowSeconds = 60) {
   return isRejectedBy5Guards(r);
 }
 
-function rankPicks(rows, { minOdds = Number(process.env.MIN_ODDS || 1.35), maxOdds = 3, minEdge = 0, minConf = 0, n = 3 } = {}) {
-  const seen = new Set();
-  const excl = excludedSports();
+// Las puertas que se aplican DESPUÉS de puntuar, en orden. Se declaran una sola
+// vez porque las consumen dos caminos — rankPicks (producción) y auditRejections
+// (el grupo de control). Si divergieran, el control quedaría mal etiquetado y
+// entrenaríamos contra una frontera que el bot no usa, que es peor que no tener
+// control ninguno.
+const POST_SCORE_GATES = [
+  ['incierto', (r) => !isUncertain(r)],
+  ['over_bloqueado', (r) => !isBlockedOver(r)],
+  ['mercado_bloqueado', (r) => !isBlockedMarket(r)],
+  ['guardas5', (r) => !isRejectedBy5Guards(r)],
+  ['firewall', (r) => !isFirewallBlocked(r)],
+  ['min_conf', (r, o) => o.minConf <= 0 || r.conf >= o.minConf],
+  ['min_edge', (r, o) => { const th = edgeThresholdFor(r, o.minEdge); return th <= 0 || r.edge >= th; }],
+];
+
+// Filtros previos al scoring. Separados a propósito: rechazan por razones
+// estructurales (suspendido, deporte excluido, momio fuera de rango) y no
+// producen un control interesante — nunca habrían sido apuestas plausibles.
+function preScoreFilter(rows, excl, minOdds, maxOdds) {
   return rows
     .filter(r => !r.suspended)
     .filter(r => !isExcluded(r.sport, excl))
-    .filter(r => r.oddDecimal >= minOdds && r.oddDecimal <= maxOdds)
-    .map(r => ({ ...r, ...scoreRow(r) }))
-    .filter(r => !isUncertain(r))
-    .filter(r => !isBlockedOver(r))
-    .filter(r => !isBlockedMarket(r))
-    .filter(r => !isRejectedBy5Guards(r))
-    .filter(r => !isFirewallBlocked(r))
-    .filter(r => minConf <= 0 || r.conf >= minConf)
-    .filter(r => { const th = edgeThresholdFor(r, minEdge); return th <= 0 || r.edge >= th; })
+    .filter(r => r.oddDecimal >= minOdds && r.oddDecimal <= maxOdds);
+}
+
+function rankPicks(rows, { minOdds = Number(process.env.MIN_ODDS || 1.35), maxOdds = 3, minEdge = 0, minConf = 0, n = 3 } = {}) {
+  const seen = new Set();
+  const excl = excludedSports();
+  const opts = { minConf, minEdge };
+  let out = preScoreFilter(rows, excl, minOdds, maxOdds).map(r => ({ ...r, ...scoreRow(r) }));
+  for (const [, ok] of POST_SCORE_GATES) out = out.filter(r => ok(r, opts));
+  return out
     .sort((a, b) => b.conf - a.conf)
     .filter(r => {
       if (seen.has(r.eventId)) return false;
@@ -584,6 +601,37 @@ function rankPicks(rows, { minOdds = Number(process.env.MIN_ODDS || 1.35), maxOd
       return true;
     })
     .slice(0, n);
+}
+
+/**
+ * Grupo de control para entrenar: candidatos que se puntuaron pero NO se
+ * emitieron, etiquetados con la puerta que los frenó.
+ *
+ * Solo devuelve los que fallan UNA sola puerta ("por poco"). Es deliberado por
+ * dos razones: (1) son los informativos — un candidato que falla seis puertas no
+ * enseña dónde está la frontera, solo que está lejos; (2) el universo son ~74k
+ * combinaciones únicas cada 10 min y guardarlas todas sepultaría una BD que ya
+ * crece de más.
+ *
+ * No toca el camino de producción: se llama aparte, sobre las mismas filas.
+ */
+function auditRejections(rows, { minOdds = Number(process.env.MIN_ODDS || 1.35), maxOdds = 3, minEdge = 0, minConf = 0, limit = 10 } = {}) {
+  const excl = excludedSports();
+  const opts = { minConf, minEdge };
+  const out = [];
+  for (const base of preScoreFilter(rows, excl, minOdds, maxOdds)) {
+    const r = { ...base, ...scoreRow(base) };
+    const failed = POST_SCORE_GATES.filter(([, ok]) => !ok(r, opts));
+    if (failed.length !== 1) continue; // ni emitido (0) ni lejano (>1)
+    out.push({ row: r, rule: failed[0][0] });
+  }
+  // Muestreo aleatorio: quedarse con los primeros sesgaría hacia los deportes
+  // que el feed devuelve antes.
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out.slice(0, limit);
 }
 
 // Del universo de jugadas en vivo, devuelve las N con mayor índice de confianza.
@@ -686,7 +734,7 @@ function parlayCombos(rows, {
 }
 
 module.exports = {
-  scoreRow, safestPicks, rankPicks, goldenPick, parlayCombos, aperturaFactor, lineTrend, avanceForModel, SCORE_VERSION,
+  scoreRow, safestPicks, rankPicks, auditRejections, goldenPick, parlayCombos, aperturaFactor, lineTrend, avanceForModel, SCORE_VERSION,
   isExcluded, excludedSports, baseballProgress, isOverPick, isBlockedOver, isBlockedMarket, isUncertain, isFootballUnder, edgeThresholdFor,
   isSuspensionOrInstabilityInWindow, isRejectedBy5Guards, computeStructuralDrawSignal, DRAW_SIGNAL_DEFAULTS,
   computeStake, kellyFraction, STAKE_MODE,
