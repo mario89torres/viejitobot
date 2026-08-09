@@ -63,6 +63,14 @@ addColumn('picks', 'sharp_closing_odd', 'REAL');
 // Etapa 2: factores crudos del score + scores heurístico/aprendido (shadow)
 addColumn('picks', 'f_prob_justa', 'REAL');
 addColumn('picks', 'f_avance', 'REAL');
+// f_avance guarda el avance CRUDO (progress), pero el modelo consume una
+// versión transformada (invertida para los "Más de" con la línea sin alcanzar).
+// Entrenar sobre f_avance y servir la transformada era un train/serve skew: para
+// cada Over el modelo veía en producción el espejo de lo que aprendió. Esta
+// columna guarda el valor REALMENTE SERVIDO, que es el que debe exportarse al
+// dataset. f_avance se conserva tal cual porque el firewall y sus backtests
+// dependen del crudo. Backfill: scripts/backfill-avance-model.js
+addColumn('picks', 'f_avance_model', 'REAL');
 addColumn('picks', 'f_situacion', 'REAL');
 addColumn('picks', 'f_linea', 'REAL');
 addColumn('picks', 'conf_heuristic', 'REAL');
@@ -102,10 +110,10 @@ function saveSnapshot(rows) {
 
 const insertPickStmt = db.prepare(`
   INSERT INTO picks (ts, event_id, event, sport, market, selection, odd_decimal, conf,
-    f_prob_justa, f_avance, f_situacion, f_linea, conf_heuristic, conf_learned, edge, source,
+    f_prob_justa, f_avance, f_avance_model, f_situacion, f_linea, conf_heuristic, conf_learned, edge, source,
     opening_odd_decimal, f_apertura, score_version, stake, stake_mode)
   VALUES (@ts, @eventId, @event, @sport, @market, @selection, @oddDecimal, @conf,
-    @fProbJusta, @fAvance, @fSituacion, @fLinea, @confHeuristic, @confLearned, @edge, @source,
+    @fProbJusta, @fAvance, @fAvanceModel, @fSituacion, @fLinea, @confHeuristic, @confLearned, @edge, @source,
     @openingOdd, @fApertura, @scoreVersion, @stake, @stakeMode)
 `);
 // Devuelve los rowid insertados (necesarios para la captura sharp posterior)
@@ -113,7 +121,7 @@ const logPicks = db.transaction((picks) => {
   const ids = [];
   for (const p of picks) {
     const info = insertPickStmt.run({
-      fProbJusta: null, fAvance: null, fSituacion: null, fLinea: null,
+      fProbJusta: null, fAvance: null, fAvanceModel: null, fSituacion: null, fLinea: null,
       confHeuristic: null, confLearned: null, edge: null, source: null,
       openingOdd: null, fApertura: null, scoreVersion: null, stake: null, stakeMode: null,
       ...p,
@@ -182,7 +190,11 @@ module.exports = {
   getStats: () => ({ buckets: statsStmt.all(), pending: pendingCountStmt.get().n }),
   // La captura de entrada también inicializa el cierre (semántica "último visto",
   // igual que el cierre de Altenar); refreshSharp lo va sobrescribiendo.
-  // Poda de snapshots viejos preservando los eventos con picks (base del CLV)
+  // Poda de snapshots viejos preservando los eventos con picks (base del CLV).
+  // OJO: la exención es para siempre, no por RETENTION_DAYS extra — un evento
+  // con un pick de hace 6 meses conserva sus snapshots intactos hoy. Con
+  // AUTO_PICKS generando picks continuamente, ese conjunto exento crece sin
+  // tope propio; RETENTION_DAYS solo acota el universo NO elegido.
   pruneSnapshots: (days = 7) => {
     const cutoff = new Date(Date.now() - days * 24 * 3600 * 1000).toISOString();
     const info = db.prepare(`

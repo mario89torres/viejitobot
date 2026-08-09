@@ -9,6 +9,7 @@ const { processSettlements } = require('./src/results');
 const { topPicks } = require('./src/analyze');
 const { sendTelegram, formatMessage } = require('./src/telegram');
 const { safestPicks, rankPicks, goldenPick, parlayCombos } = require('./src/confidence');
+const { isElite } = require('./src/firewall');
 const { computeMetrics, compareScores, edgeStats, computeHealth, stakeStats, stakePicksByDate } = require('./src/metrics');
 const { getMode, reloadModel } = require('./src/model');
 const sharp = require('./src/sharp');
@@ -209,7 +210,7 @@ async function handleSeguras(args, chatId) {
   const pickIds = logPicks(fresh.map(p => ({
     ts: p.ts, eventId: p.eventId, event: p.event, sport: p.sport,
     market: p.market, selection: p.selection, oddDecimal: p.oddDecimal, conf: p.conf,
-    fProbJusta: p.base, fAvance: p.progress, fSituacion: p.scoreFactor, fLinea: p.lineFactor,
+    fProbJusta: p.base, fAvance: p.progress, fAvanceModel: p.fAvance, fSituacion: p.scoreFactor, fLinea: p.lineFactor,
     confHeuristic: p.confHeuristic, confLearned: p.confLearned, edge: p.edge, source: 'seguras',
     openingOdd: p.openingOdd, fApertura: p.fApertura, scoreVersion: p.scoreVersion,
     stake: p.stake, stakeMode: p.stakeMode,
@@ -322,7 +323,7 @@ async function handleGolden(args, chatId) {
     const [id] = logPicks([{
       ts: p.ts, eventId: p.eventId, event: p.event, sport: p.sport,
       market: p.market, selection: p.selection, oddDecimal: p.oddDecimal, conf: p.conf,
-      fProbJusta: p.base, fAvance: p.progress, fSituacion: p.scoreFactor, fLinea: p.lineFactor,
+      fProbJusta: p.base, fAvance: p.progress, fAvanceModel: p.fAvance, fSituacion: p.scoreFactor, fLinea: p.lineFactor,
       confHeuristic: p.confHeuristic, confLearned: p.confLearned, edge: p.edge, source: 'golden',
       openingOdd: p.openingOdd, fApertura: p.fApertura, scoreVersion: p.scoreVersion,
       stake: p.stake, stakeMode: p.stakeMode,
@@ -1142,7 +1143,7 @@ async function autoPicks(rows) {
   const ids = logPicks(picks.map(p => ({
     ts: p.ts, eventId: p.eventId, event: p.event, sport: p.sport,
     market: p.market, selection: p.selection, oddDecimal: p.oddDecimal, conf: p.conf,
-    fProbJusta: p.base, fAvance: p.progress, fSituacion: p.scoreFactor, fLinea: p.lineFactor,
+    fProbJusta: p.base, fAvance: p.progress, fAvanceModel: p.fAvance, fSituacion: p.scoreFactor, fLinea: p.lineFactor,
     confHeuristic: p.confHeuristic, confLearned: p.confLearned, edge: p.edge, source: 'auto',
     openingOdd: p.openingOdd, fApertura: p.fApertura, scoreVersion: p.scoreVersion,
     stake: p.stake, stakeMode: p.stakeMode,
@@ -1157,13 +1158,16 @@ async function autoPicks(rows) {
   let msg = `<b>🤖 Pick automático</b>\n\n`;
   for (const p of picks) {
     const flag = getCountryFlag(p.champ, p.event, p.sport);
-    msg += `${isModelStrong(p) ? '🔥 ' : ''}${flag} <b>${esc(p.event)}</b> <i>(${esc(p.sport)}${p.champ ? ` — ${esc(p.champ)}` : ''})</i>\n`;
+    msg += `${isElite(p) ? '🛡️ ' : ''}${isModelStrong(p) ? '🔥 ' : ''}${flag} <b>${esc(p.event)}</b> <i>(${esc(p.sport)}${p.champ ? ` — ${esc(p.champ)}` : ''})</i>\n`;
     if (p.score) msg += `Marcador: ${esc(p.score)}${p.liveTime ? ` — ${esc(p.liveTime)}` : ''}\n`;
     msg += `${esc(p.market)}: 🎯 <b><u>${esc(p.selection)}</u></b> @ <b>${p.oddDecimal.toFixed(2)}</b> (${p.oddAmerican})\n`;
     msg += `Confianza: <b>${pct(p.conf)}</b> | Edge: <b>+${(100 * p.edge).toFixed(1)}%</b>`;
     msg += p.stake != null ? ` | Unidad: <b>${p.stake.toFixed(1)}u</b>\n` : '\n';
     if (isModelStrong(p)) {
       msg += `<i>🔥 el modelo aprendido le da ${pct(p.confLearned)} — su tercil alto rindió +30% histórico</i>\n`;
+    }
+    if (isElite(p)) {
+      msg += `<i>🛡️ tier ELITE del firewall — el único subconjunto que quedó positivo fuera de muestra (N=28, ROI +10%). Muestra chica: es una marca, no una recomendación de stake.</i>\n`;
     }
     msg += '\n';
   }

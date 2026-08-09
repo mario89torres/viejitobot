@@ -134,6 +134,51 @@ conf = 0.45·probJusta + 0.20·avance + 0.20·situación + 0.15·línea
 
 ---
 
+## Firewall de jugadas (`src/firewall.js`)
+
+Filtro duro que corre **después** del scoring y **antes** de emitir a Telegram, sumado a
+`MIN_CONF`/`MIN_EDGE` y a los vetos por mercado que ya vivían en `confidence.js`. La diferencia es
+el origen: cada regla sale de un bucket con ROI negativo medido sobre picks liquidados y validado
+**fuera de muestra** con corte temporal (`scripts/backtest_firewall.js`, que reutiliza la misma
+función que producción, así que refleja lo que haya en `.env`).
+
+| Regla | Bloquea | Estado | Fuera de muestra |
+|---|---|---|---|
+| R1 | mercado Over ("Más de") | activa | N=86, WR 46.5%, ROI −22.1% |
+| R2 | `progress < FIREWALL_MIN_AVANCE` (0.40) | activa | N=86, WR 46.5%, ROI −22.1% |
+| R3 | momio > `FIREWALL_MAX_ODDS` (3.0) | inerte | N=0 — `rankPicks` ya acota a 3.0 |
+| R4 | momio < `FIREWALL_MIN_ODDS` | **desactivada** | evidencia invertida (ver abajo) |
+| R5 | `f_situacion ≥ FIREWALL_MAX_SITUACION` (0.99) | activa | N=79, WR 50.6%, ROI −14.3% |
+| R6 | `f_linea ≥ FIREWALL_MAX_LINEA` | **desactivada** | era un artefacto (ver abajo) |
+
+```
+TEST (fuera de muestra)   sin firewall: N=719 WR=62.9% ROI=-3.2%
+                          CON firewall: N=629 WR=65.0% ROI=-0.8%  (retiene 87%)
+```
+
+R1 y R2 están **muy solapadas**: fuera de muestra bloquean exactamente el mismo conjunto (Overs
+tardíos). Su aporte no es aditivo.
+
+**Por qué R4 y R6 nacen desactivadas.** Ambas se derivaron de un dataset contaminado.
+`globalDrawScanner.ts` inserta sus picks **directo en la BD, sin pasar por `rankPicks`**, y con
+features **hardcodeadas**: una única combinación (`f_prob_justa=0.72`, `f_avance=0.85`,
+`f_situacion=0.75`, `f_linea=0.82`, `conf=0.76`) para las 184 filas. Como `0.82 ≥ 0.80`, R6 capturaba
+el 100% de esos picks: medía "el scanner rinde mal", no un fenómeno de mercado — fuera de muestra
+bloqueaba 184 picks, **todos del scanner y ninguno con features reales**. Sobre picks reales,
+`f_linea ≥ 0.80` rinde **ROI +2.3%** (N=128) y `momio < 1.30` rinde **ROI +8.9%** (N=67): activarlas
+bloquearía buckets **ganadores**. Los backtests excluyen ahora `source='global_draw'` por eso mismo.
+
+**Qué hace y qué no**: quita daño, **no crea edge** — pasa de perdedor a break-even.
+No existe configuración que dé 100% de aciertos: el techo medido en el subconjunto más selectivo
+(partido casi terminado) es ~80–84% WR. `FIREWALL_ENABLED=false` lo apaga entero. No se aplica a
+`parlayCombos`: sus piernas viven en 1.08–1.45 por diseño y el backtest se corrió sobre picks simples.
+
+La marca 🛡️ **ELITE** señala el único subconjunto que quedó positivo fuera de muestra
+(Under + `progress ≥ 0.75` + `f_linea ≥ 0.55`: N=37, WR 75.7%, ROI +11.8%). N pequeño: es una marca
+orientativa, no una recomendación de stake.
+
+---
+
 ## Backtesting
 
 1. Cada `/seguras` registra sus picks en la tabla `picks` (momio, confianza, timestamp).
@@ -170,6 +215,14 @@ snapshots densos ──► /seguras registra pick (4 features + conf + edge)
 ```
 
 - **De-vig** (`src/devig.js`): probabilidad justa con el método de Shin por defecto (`DEVIG_METHOD`).
+- **`f_avance` vs `f_avance_model`** (importante al entrenar): `f_avance` guarda el avance **crudo**
+  (`progress`); `f_avance_model` guarda el valor **realmente servido al modelo**, que para un
+  "Más de X" con la línea aún sin alcanzar es `1 - progress`. Hasta el 2026-08-09 el dataset se
+  exportaba desde la columna cruda mientras producción servía la transformada: un *train/serve skew*
+  que afectaba al 20.4% de las filas (368 de 2228). `scripts/export-dataset.js` exporta ahora
+  `f_avance_model`, y `scripts/backfill-avance-model.js` reconstruyó el histórico reutilizando la
+  misma función pura (`avanceForModel`) que usa `scoreRow`. El firewall sigue leyendo el **crudo**:
+  sus umbrales se derivaron sobre esa escala.
 - **Score aprendido** (`src/model.js` + `scripts/train_weights.py`): logística calibrada sobre los 4 factores, evaluada en walk-forward temporal; solo se adopta si mejora Brier y log loss out-of-sample reteniendo ≥60% de la mejora in-sample.
 - **Fuente sharp** (`src/sharp.js`): The Odds API con prioridad Pinnacle → Betfair exchange (`ODDS_API_KEY`, `SHARP_*` en `.env`). Solo mercados de ganador/empate (h2h). **Consumo bajo demanda**: el matching de eventos usa el endpoint `/events` (gratuito); solo se gasta 1 crédito al capturar el momio de entrada de un pick matcheado y 1 más al cierre, cuando el evento desaparece del feed de Altenar (sin polling). ~2 créditos por pick matcheado ⇒ la cuota gratuita de ~500/mes cubre ~250 picks. Si el evento ya salió del feed sharp al capturar el cierre, se conserva el último momio visto (como mínimo el de entrada).
 - **Edge estimado**: `edge = conf·momio − 1` se guarda en cada pick. `MIN_EDGE` (default 0 = desactivado) filtra la emisión de `/seguras`; activarlo reduce volumen y alarga el camino a N=300.
@@ -212,7 +265,7 @@ de Altenar (línea blanda) es únicamente diagnóstico. Semáforo de `/stats`
 **`picks`** — registro de `/seguras`:
 `ts, event_id, event, sport, market, selection, odd_decimal, conf, result, final_score, settled_ts`
 más las columnas de las etapas 0–4: `result_source, closing_odd_decimal, closing_ts` (cierre Altenar),
-`f_prob_justa, f_avance, f_situacion, f_linea, conf_heuristic, conf_learned` (features y scores),
+`f_prob_justa, f_avance, f_avance_model, f_situacion, f_linea, conf_heuristic, conf_learned` (features y scores),
 `sharp_entry_odd, sharp_closing_odd, sharp_closing_market, sharp_source, sharp_event_id, sharp_match, edge` (fuente sharp y edge estimado).
 
 Consultas útiles:

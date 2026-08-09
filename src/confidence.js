@@ -1,6 +1,12 @@
 const { db } = require('./db');
 const { parsePick, situationFactor } = require('./markets');
 const { score: modelScore } = require('./model');
+// Firewall de jugadas (src/firewall.js). NO se aplica a parlayCombos a
+// propósito: sus piernas viven en 1.08-1.45 por diseño y R4 (momio < 1.30) las
+// mataría, pero el backtest que originó las reglas se corrió sobre picks
+// simples de la tabla `picks`, no sobre piernas de parlay. Filtrar ahí sería
+// extrapolar sin medición.
+const { isFirewallBlocked, isElite, firewallVerdict } = require('./firewall');
 
 // Versión del cálculo de features. Se persiste en cada pick para no mezclar
 // regímenes al entrenar: las features de versiones distintas no son
@@ -83,6 +89,33 @@ function baseballProgress(inning) {
   const a = BASEBALL_SCORING[Math.min(lo, 9)] ?? 1;
   const b = BASEBALL_SCORING[hi] ?? 1;
   return a + (b - a) * (inning - lo);
+}
+
+// Avance TAL COMO LO CONSUME EL MODELO (y el heurístico), que no es el mismo
+// número que `progress`:
+//   - "Más de X" con la línea aún sin alcanzar: el tiempo corre EN CONTRA, así
+//     que se invierte a (1 - progress).
+//   - "Menos de X" en el tramo final con ≤1 gol de margen: se descuenta la
+//     volatilidad de último minuto.
+//   - Todo lo demás: progress tal cual.
+//
+// Es una función pura y exportada a propósito: scripts/backfill-avance-model.js
+// la reutiliza para reconstruir la columna histórica. Si la lógica viviera
+// duplicada dentro de scoreRow, el backfill y producción podrían divergir en
+// silencio — que es exactamente el bug que esto viene a cerrar.
+function avanceForModel(progress, parsed, score) {
+  if (!parsed || parsed.type !== 'total' || parsed.line === undefined || parsed.line === null) {
+    return progress;
+  }
+  const m = String(score || '').match(/^(\d+)-(\d+)$/);
+  const totalCurrent = m ? Number(m[1]) + Number(m[2]) : 0;
+  if (totalCurrent >= parsed.line) return progress;
+
+  if (parsed.over) return 1 - progress;
+  if ((parsed.line - totalCurrent) <= 1.0 && progress >= 0.75) {
+    return progress * (1 - (progress - 0.75) * 0.4);
+  }
+  return progress;
 }
 
 // Tendencia de línea sobre múltiples snapshots: pendiente a favor menos volatilidad.
@@ -231,27 +264,7 @@ function scoreRow(row) {
   // 0.35/0.30/0.20/0.15 sigue vivo como fallback y para el modo shadow.
   // f_apertura solo la consume el modelo aprendido (los pesos fijos no cambian).
   //
-  // Para selecciones "Más de X" (Over) cuya línea no ha sido alcanzada aún,
-  // la fracción de tiempo transcurrido (progress -> 1) reduce el tiempo disponible
-  // para anotar, por lo que fAvance efectivo es (1 - progress).
-  let fAvance = progress;
-  if (parsed && parsed.type === 'total') {
-    const mScore = (row.score || '').match(/^(\d+)-(\d+)$/);
-    const totalCurrent = mScore ? Number(mScore[1]) + Number(mScore[2]) : 0;
-    if (parsed.over) {
-      if (parsed.line !== undefined && totalCurrent < parsed.line) {
-        fAvance = 1 - progress;
-      }
-    } else {
-      // Para "Menos de X" (Under), si estamos en el tramo final (progress >= 0.75)
-      // y solo queda 1 gol de margen (line - totalCurrent <= 1.0), se aplica un factor
-      // de volatilidad tardía para ajustar la brecha de goles de último minuto.
-      if (parsed.line !== undefined && totalCurrent < parsed.line && (parsed.line - totalCurrent) <= 1.0 && progress >= 0.75) {
-        const lateRiskFactor = 1 - (progress - 0.75) * 0.4;
-        fAvance = progress * lateRiskFactor;
-      }
-    }
-  }
+  const fAvance = avanceForModel(progress, parsed, row.score);
 
   const features = {
     f_prob_justa: base, f_avance: fAvance, f_situacion: scoreFactor,
@@ -265,7 +278,10 @@ function scoreRow(row) {
   const stake = computeStake(conf, row.oddDecimal, STAKE_MODE, isHighConviction);
   return {
     conf, confHeuristic, confLearned, edge, stake, stakeMode: STAKE_MODE, isHighConviction,
-    base, progress, scoreFactor, lineFactor, lineDelta, linePoints: points,
+    // `progress` es el avance CRUDO (lo usan el firewall y los mensajes);
+    // `fAvance` es el que realmente entra al modelo. Se devuelven los dos para
+    // poder persistir el servido sin romper a quien depende del crudo.
+    base, progress, fAvance, scoreFactor, lineFactor, lineDelta, linePoints: points,
     openingOdd, fApertura, scoreVersion: SCORE_VERSION,
     lead, marketType: parsed ? parsed.type : null,
   };
@@ -550,6 +566,7 @@ function rankPicks(rows, { minOdds = Number(process.env.MIN_ODDS || 1.35), maxOd
     .filter(r => !isBlockedOver(r))
     .filter(r => !isBlockedMarket(r))
     .filter(r => !isRejectedBy5Guards(r))
+    .filter(r => !isFirewallBlocked(r))
     .filter(r => minConf <= 0 || r.conf >= minConf)
     .filter(r => { const th = edgeThresholdFor(r, minEdge); return th <= 0 || r.edge >= th; })
     .sort((a, b) => b.conf - a.conf)
@@ -594,6 +611,7 @@ function goldenPick(rows, {
     .filter(r => !isBlockedOver(r))
     .filter(r => !isBlockedMarket(r))
     .filter(r => !isRejectedBy5Guards(r))
+    .filter(r => !isFirewallBlocked(r))
     .filter(r => r.conf >= minConf && r.edge > 0 && r.edge >= minEdge)
     .sort((a, b) => b.edge - a.edge);
   return candidates[0] || null;
@@ -660,7 +678,7 @@ function parlayCombos(rows, {
 }
 
 module.exports = {
-  scoreRow, safestPicks, rankPicks, goldenPick, parlayCombos, aperturaFactor, lineTrend, SCORE_VERSION,
+  scoreRow, safestPicks, rankPicks, goldenPick, parlayCombos, aperturaFactor, lineTrend, avanceForModel, SCORE_VERSION,
   isExcluded, excludedSports, baseballProgress, isOverPick, isBlockedOver, isBlockedMarket, isUncertain, isFootballUnder, edgeThresholdFor,
   isSuspensionOrInstabilityInWindow, isRejectedBy5Guards, computeStructuralDrawSignal, DRAW_SIGNAL_DEFAULTS,
   computeStake, kellyFraction, STAKE_MODE,
