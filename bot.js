@@ -1,4 +1,9 @@
 require('dotenv').config();
+// Antes que nada: si ya hay un bot vivo, abortar. Va aquí arriba a propósito,
+// antes de abrir la BD o tocar Telegram, para no dejar efectos a medias.
+// Ver src/singleInstance.js para el porqué (dos cuentas de Windows, getUpdates
+// en conflicto y picks duplicados sobre la misma BD).
+if (!require('./src/singleInstance').acquire()) process.exit(1);
 const { fetchAllLive, fetchSportLive } = require('./src/fetcher');
 const { normalize } = require('./src/normalize');
 const { saveSnapshot, logPicks, getUnsettledPicks, getStats,

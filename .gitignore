@@ -48,3 +48,4 @@ draw_universe_*.json
 # son copias de seguridad antes de reentrenar. Nunca deben entrar al repo.
 snapshots_pre_vacuum_*
 model_pre_*.json
+.bot.lock
