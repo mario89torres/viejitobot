@@ -57,6 +57,8 @@ const HELP = `Comandos disponibles:
 /health — calibración de los últimos 200 picks (detección de drift)
 /unidades — unidades apostadas vs ganadas (resumen general y últimos 7 días)
 /unidades hoy — detalle pick por pick liquidados hoy (o /unidades ayer / AAAA-MM-DD)
+/pick 3300 — ficha de un pick con gráfica de evolución de cuota (el #id sale en cada pick automático)
+/dia — gráfica de P/L acumulado del día hasta el momento (o /dia ayer / AAAA-MM-DD)
 /validar — contrasta los resultados liquidados contra el marcador oficial (3 días)
 /validar 6h — solo las últimas 6 horas (menos picks; el costo es por liga, no por pick)
 /train — exporta el dataset y reentrena el modelo (walk-forward + calibración)
@@ -1026,6 +1028,10 @@ async function handleMessage(rawText, chatId = CHAT_ID, fromUser = null) {
     else if (cmd === '/stats') await handleStats(chatId);
     else if (cmd === '/health') await handleHealth(chatId);
     else if (cmd === '/unidades') await handleUnidades(args, chatId);
+    else if (cmd === '/dia') {
+      const { sendDailyPerformanceChart } = require('./src/telegram');
+      await sendDailyPerformanceChart(TOKEN, chatId, args[0]);
+    }
     else if (cmd === '/validar') await handleValidar(args, chatId);
     // /train y /dashboard lanzan procesos en la máquina: solo el dueño.
     else if (cmd === '/train') {
@@ -1248,9 +1254,14 @@ async function autoPicks(rows) {
   if (!AUTO_PICK_NOTIFY) return;
   const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   let msg = `<b>🤖 Pick automático</b>\n\n`;
-  for (const p of picks) {
+  // El #id es lo que permite pedir después /pick <id> y recibir la gráfica de
+  // evolución de cuota (misma ficha que el inspector del dashboard). Antes
+  // `ids` se calculaba para capturar el momio sharp y nunca llegaba al
+  // mensaje: no había forma de saber qué número pedir sin abrir el dashboard.
+  for (let i = 0; i < picks.length; i++) {
+    const p = picks[i];
     const flag = getCountryFlag(p.champ, p.event, p.sport);
-    msg += `${isElite(p) ? '🛡️ ' : ''}${isModelStrong(p) ? '🔥 ' : ''}${flag} <b>${esc(p.event)}</b> <i>(${esc(p.sport)}${p.champ ? ` — ${esc(p.champ)}` : ''})</i>\n`;
+    msg += `${isElite(p) ? '🛡️ ' : ''}${isModelStrong(p) ? '🔥 ' : ''}${flag} <b>#${ids[i]}</b> · <b>${esc(p.event)}</b> <i>(${esc(p.sport)}${p.champ ? ` — ${esc(p.champ)}` : ''})</i>\n`;
     if (p.score) msg += `Marcador: ${esc(p.score)}${p.liveTime ? ` — ${esc(p.liveTime)}` : ''}\n`;
     msg += `${esc(p.market)}: 🎯 <b><u>${esc(p.selection)}</u></b> @ <b>${p.oddDecimal.toFixed(2)}</b> (${p.oddAmerican})\n`;
     msg += `Confianza: <b>${pct(p.conf)}</b> | Edge: <b>+${(100 * p.edge).toFixed(1)}%</b>`;

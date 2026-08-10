@@ -271,6 +271,94 @@ async function sendPickInspectorCard(token, chatId, pickId) {
   }
 }
 
+/**
+ * Envía la gráfica de rendimiento del día (o cualquier fecha) hasta el
+ * momento: P/L acumulado por pick, más un resumen textual. Reutiliza
+ * stakePicksByDate (src/metrics.js), la misma agregación que ya usa
+ * /unidades, en vez de recalcular nada: dos caminos calculando lo mismo por
+ * separado es como se filtran los desacuerdos silenciosos entre comandos.
+ *
+ * Igual que sendPickInspectorCard: gráfica vía QuickChart (sin dependencias
+ * nuevas, mismo servicio que ya se usa para la ficha de pick) con fallback a
+ * texto plano si el servicio no responde.
+ */
+async function sendDailyPerformanceChart(token, chatId, dateStr) {
+  const { stakePicksByDate } = require('./metrics');
+  const s = stakePicksByDate(dateStr);
+  const label = !dateStr || dateStr === 'hoy' ? 'HOY' : dateStr === 'ayer' ? 'AYER' : dateStr;
+
+  if (!s.n) {
+    await sendTelegram(token, chatId, `📊 <b>Rendimiento — ${esc(label)}</b>\n\nSin picks liquidados en esa fecha todavía.`);
+    return;
+  }
+
+  // Acumulado corrido pick a pick (no por hora): con volumen bajo un día
+  // agrupar por hora aplana la curva a un escalón; pick a pick se ve el
+  // vaivén real de la sesión, que es lo que se quiere revisar "hasta el momento".
+  //
+  // El acumulado se calcula sobre TODOS los picks del día (el nivel final debe
+  // ser exacto), pero solo se grafican los últimos MAX_POINTS. En un día activo
+  // hay cientos de picks (se han visto 372 en una sola hora) y meterlos todos en
+  // la URL de QuickChart la dispara a varios miles de caracteres — con 400
+  // picks, solo las etiquetas ya pesan 7.6KB. Recortar es el mismo patrón que
+  // sendPickInspectorCard usa para su historial de cuotas (.slice(-30)).
+  const MAX_POINTS = 80;
+  let acum = 0;
+  const allLabels = [];
+  const allSerie = [];
+  for (const p of s.picks) {
+    acum += p.profit;
+    const hora = new Date(p.ts).toLocaleTimeString('es-MX', { timeZone: 'America/Mexico_City', hour: '2-digit', minute: '2-digit', hour12: false });
+    allLabels.push(`#${p.id} ${hora}`);
+    allSerie.push(Number(acum.toFixed(2)));
+  }
+  const truncated = allLabels.length > MAX_POINTS;
+  const labels = truncated ? allLabels.slice(-MAX_POINTS) : allLabels;
+  const serie = truncated ? allSerie.slice(-MAX_POINTS) : allSerie;
+
+  const positivo = acum >= 0;
+  const lineColor = positivo ? '#5a9a5e' : '#c15750';
+  const fillColor = positivo ? 'rgba(90,154,94,0.15)' : 'rgba(193,87,80,0.15)';
+
+  const chartConfig = {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: 'P/L acumulado (u)',
+        data: serie,
+        borderColor: lineColor,
+        backgroundColor: fillColor,
+        fill: true,
+        pointRadius: labels.length <= 20 ? 3 : 0,
+        borderWidth: 2,
+      }],
+    },
+    options: {
+      title: { display: true, text: `RENDIMIENTO — ${label} (${s.n} picks)`, fontColor: '#d4d4d4', fontSize: 14 },
+      legend: { display: false },
+      scales: {
+        xAxes: [{ ticks: { fontColor: '#5c6370', autoSkip: true, maxTicksLimit: 12 }, gridLines: { color: '#282c34' } }],
+        yAxes: [{ ticks: { fontColor: '#abb2bf' }, gridLines: { color: '#282c34' } }],
+      },
+    },
+  };
+  const chartUrl = `https://quickchart.io/chart?bkg=181a1f&w=800&h=420&c=${encodeURIComponent(JSON.stringify(chartConfig))}`;
+
+  // stakePicksByDate solo cubre LIQUIDADOS (win/loss): no hay pendientes que
+  // reportar aquí, a diferencia de stakeStats. Si se quiere ver qué sigue en
+  // juego, ese es justo el trabajo de /unidades.
+  const roiTxt = s.roi != null ? `${s.roi >= 0 ? '+' : ''}${s.roi.toFixed(1)}%` : '—';
+  const caption = `📊 <b>RENDIMIENTO — ${esc(label)}</b>\n\n` +
+    `• Picks liquidados: <b>${s.n}</b> (${s.wins}✅ / ${s.n - s.wins}❌ — ${s.wr.toFixed(0)}% acierto)\n` +
+    `• Apostado: <b>${s.staked.toFixed(2)}u</b>\n` +
+    `• P/L: <b>${acum >= 0 ? '+' : ''}${acum.toFixed(2)}u</b> (ROI ${roiTxt})\n\n` +
+    (truncated ? `<i>Gráfica: últimos ${MAX_POINTS} de ${allLabels.length} picks (el P/L total ya incluye todos).</i>\n` : '') +
+    `<i>Pide /pick #id de cualquier punto de la curva para ver su ficha completa.</i>`;
+
+  await sendPhotoTelegram(token, chatId, chartUrl, caption);
+}
+
 let lastUpdateId = 0;
 function startTelegramBotListener(token) {
   if (!token) return;
@@ -311,5 +399,6 @@ module.exports = {
   sendStructuralDrawAlert,
   sendSniperAlert,
   sendPickInspectorCard,
+  sendDailyPerformanceChart,
   startTelegramBotListener,
 };
