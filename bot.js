@@ -831,8 +831,12 @@ const MAIN_KEYBOARD = {
   keyboard: [
     [{ text: '🛡️ Seguras' }, { text: '🥇 Pick Dorado' }, { text: '🎰 Parlay +EV' }],
     [{ text: '🎯 Top Momios' }, { text: '💰 Unidades' }, { text: '📋 Unidades Hoy' }],
-    [{ text: '⭐ Membresía VIP' }, { text: '📊 Rendimiento' }, { text: '⚽ Deportes' }],
-    [{ text: '🩺 Salud Modelo' }, { text: '🔍 Validar' }, { text: '❓ Ayuda' }]
+    [{ text: '⭐ Membresía VIP' }, { text: '📊 Rendimiento' }, { text: '📈 Gráfica del Día' }],
+    // /pick <id> no entra aquí: necesita un número como argumento, y un botón
+    // de texto fijo no puede llevarlo. El propio mensaje de "Pick automático"
+    // ya muestra el #id para copiarlo y escribir /pick <id> a mano.
+    [{ text: '⚽ Deportes' }, { text: '🩺 Salud Modelo' }, { text: '🔍 Validar' }],
+    [{ text: '❓ Ayuda' }]
   ],
   resize_keyboard: true,
   is_persistent: true,
@@ -991,6 +995,9 @@ async function handleMessage(rawText, chatId = CHAT_ID, fromUser = null) {
     '📊 rendimiento': '/stats',
     'rendimiento': '/stats',
     'stats': '/stats',
+    '📈 grafica del dia': '/dia',
+    'grafica del dia': '/dia',
+    'dia': '/dia',
     '⚽ deportes': '/deportes',
     'deportes': '/deportes',
     '🩺 salud modelo': '/health',
