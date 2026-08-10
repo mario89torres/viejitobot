@@ -737,6 +737,36 @@ tbody tr.r-pending td:first-child { box-shadow: inset 3px 0 0 var(--c-warn); }
         <tbody id="fwBody"></tbody>
       </table>
     </div>
+
+    <!-- Grupo de control: candidatos que NUNCA se emitieron (min_conf, min_edge,
+         guardas, firewall) pero se muestreó una fracción con su resultado real.
+         Distinto de la tabla de arriba, que son picks que SÍ se emitieron y el
+         dashboard descarta después. Aquí se ve qué habría pasado si se hubieran
+         apostado — la pregunta que pide saber si el sistema está siendo
+         demasiado (o poco) selectivo. -->
+    <div class="section-title" style="margin-top:28px">🔬 Grupo de Control — Candidatos Descartados</div>
+    <div class="fw-hero" id="cgHero"></div>
+    <div class="tbl-wrap" style="margin-bottom:16px">
+      <table>
+        <thead><tr><th>Regla</th><th>Liquidados</th><th>Habrían Ganado</th><th>WR</th></tr></thead>
+        <tbody id="cgByRule"></tbody>
+      </table>
+    </div>
+    <div class="view-toggle">
+      <button class="vt-btn active" onclick="setCgFilter('all')">Todos</button>
+      <button class="vt-btn" onclick="setCgFilter('win')">Habrían ganado</button>
+      <button class="vt-btn" onclick="setCgFilter('loss')">Habrían perdido</button>
+      <button class="vt-btn" onclick="setCgFilter('pending')">En curso</button>
+    </div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr>
+          <th>#</th><th>Fecha</th><th>Evento</th><th>Mercado</th><th>Selección</th>
+          <th>Cuota</th><th>Conf</th><th>Regla</th><th>Resultado</th>
+        </tr></thead>
+        <tbody id="cgBody"></tbody>
+      </table>
+    </div>
   </div>
 
   <!-- ═══════════ MODAL: PICK INSPECTOR ═══════════ -->
@@ -1147,6 +1177,74 @@ async function loadFirewall() {
   } catch (e) { console.error('Firewall load error:', e); }
 }
 
+// ═══════════ GRUPO DE CONTROL (candidatos descartados) ═══════════
+let cgData = [];
+let cgFilter = 'all';
+
+const cgReglaLabel = r => ({
+  min_conf: 'Confianza insuficiente', min_edge: 'Edge insuficiente',
+  incierto: 'Mercado incierto', guardas5: 'Suspensión/inestabilidad',
+  firewall: 'Bloqueado por firewall', mercado_bloqueado: 'Mercado bloqueado',
+}[r] || r || '—');
+
+async function loadControlGroup() {
+  try {
+    const res = await fetch(API + '/api/control-group');
+    const { total, pendientes, liquidados, wrDescartado, porRegla, rows } = await res.json();
+    cgData = rows || [];
+
+    const wrColor = wrDescartado == null ? 'var(--fg3)' : wrDescartado >= 55 ? 'var(--red)' : 'var(--green)';
+    document.getElementById('cgHero').innerHTML = `
+      <div class="fw-stat"><div class="fw-val" style="color:var(--cyan)">${total}</div><div class="fw-label">Descartados (muestra)</div></div>
+      <div class="fw-stat"><div class="fw-val" style="color:var(--yellow)">${pendientes}</div><div class="fw-label">Partido en Curso</div></div>
+      <div class="fw-stat"><div class="fw-val" style="color:${wrColor}">${wrDescartado == null ? '—' : wrDescartado + '%'}</div><div class="fw-label">WR de lo Descartado</div></div>
+    `;
+
+    document.getElementById('cgByRule').innerHTML = Object.entries(porRegla || {}).map(([regla, s]) => {
+      const wr = s.n ? (s.win / s.n * 100) : 0;
+      const wrColor2 = wr >= 55 ? 'var(--red)' : 'var(--green)';
+      return `<tr>
+        <td>${esc(cgReglaLabel(regla))}</td>
+        <td>${s.n}</td>
+        <td style="color:var(--green)">${s.win}</td>
+        <td style="color:${wrColor2};font-weight:700">${wr.toFixed(1)}%</td>
+      </tr>`;
+    }).join('') || '<tr><td colspan="4" style="color:var(--fg3)">Aún sin datos liquidados.</td></tr>';
+
+    renderControlGroup();
+  } catch (e) { console.error('Control group load error:', e); }
+}
+
+function setCgFilter(f) {
+  cgFilter = f;
+  document.querySelectorAll('#panel-firewall .view-toggle .vt-btn').forEach(b => b.classList.remove('active'));
+  document.querySelector(`#panel-firewall .view-toggle .vt-btn[onclick="setCgFilter('${f}')"]`).classList.add('active');
+  renderControlGroup();
+}
+
+function renderControlGroup() {
+  const rows = cgData.filter(r => {
+    if (cgFilter === 'win') return r.result === 'win';
+    if (cgFilter === 'loss') return r.result === 'loss';
+    if (cgFilter === 'pending') return !r.result;
+    return true;
+  });
+  document.getElementById('cgBody').innerHTML = rows.slice(0, 200).map(r => {
+    const resColor = r.result === 'win' ? 'var(--green)' : r.result === 'loss' ? 'var(--red)' : r.result === 'push' ? 'var(--fg3)' : 'var(--yellow)';
+    return `<tr>
+      <td style="color:var(--fg3)">${r.id}</td>
+      <td style="color:var(--fg3)">${fmtDate(r.ts)}</td>
+      <td class="col-event" style="font-family:var(--font)">${esc(r.event)}</td>
+      <td style="color:var(--fg3);max-width:140px;overflow:hidden;text-overflow:ellipsis">${esc(r.market)}</td>
+      <td style="color:var(--yellow)">${esc(r.selection)}</td>
+      <td style="color:var(--orange)">@ ${fmt(r.odd_decimal, 2)}</td>
+      <td style="color:var(--cyan)">${r.conf != null ? fmtPct(r.conf * 100) : '—'}</td>
+      <td><span class="reason-tag">${esc(cgReglaLabel(r.reject_rule))}</span></td>
+      <td style="color:${resColor};font-weight:700">${esc(r.resultLabel)}</td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="9" style="color:var(--fg3);text-align:center;padding:20px">Sin candidatos en este filtro.</td></tr>';
+}
+
 // ═══════════ PICK INSPECTOR MODAL ═══════════
 async function openPick(id) {
   const overlay = document.getElementById('modalOverlay');
@@ -1251,6 +1349,7 @@ async function init() {
   loadScanner();
   loadHistory();
   loadFirewall();
+  loadControlGroup();
 }
 
 init();
@@ -1262,6 +1361,7 @@ setInterval(() => {
   loadScanner();
   loadHistory();
   loadFirewall();
+  loadControlGroup();
 }, 15000);
 
 // Keep dashboard alive when tab is hidden/restored

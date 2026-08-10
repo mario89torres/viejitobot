@@ -178,6 +178,53 @@ function createDashboardServer(port = 3001) {
                 }));
                 return;
             }
+            // 3b. API Grupo de Control — candidatos RECHAZADOS por el firewall o los
+            // filtros (min_conf, min_edge, guardas), con su resultado real una vez
+            // liquidados. No confundir con /api/rejected: ese lee de `picks` (jugadas
+            // que sí se emitieron y luego el dashboard filtra por deporte/mercado);
+            // este lee de `rejected_picks`, la tabla de near-miss que nunca se
+            // emitieron. Ver src/db.js y bot.js:captureRejectedControls.
+            if (url === '/api/control-group') {
+                res.setHeader('Content-Type', 'application/json; charset=utf-8');
+                const rows = db.prepare(`
+          SELECT id, ts, event, sport, market, selection, odd_decimal, conf, edge,
+                 reject_rule, result, final_score, settled_ts
+          FROM rejected_picks
+          ORDER BY ts DESC
+          LIMIT 500
+        `).all();
+                const liquidados = rows.filter((r) => r.result === 'win' || r.result === 'loss');
+                const wins = liquidados.filter((r) => r.result === 'win').length;
+                const porRegla = {};
+                for (const r of liquidados) {
+                    const k = r.reject_rule || '(sin regla)';
+                    porRegla[k] = porRegla[k] || { n: 0, win: 0, loss: 0 };
+                    porRegla[k].n++;
+                    if (r.result === 'win')
+                        porRegla[k].win++;
+                    else
+                        porRegla[k].loss++;
+                }
+                res.writeHead(200);
+                res.end(JSON.stringify({
+                    total: rows.length,
+                    pendientes: rows.length - liquidados.length,
+                    liquidados: liquidados.length,
+                    // WR de lo que se DESCARTÓ: si sube mucho, el firewall/umbral está
+                    // dejando dinero en la mesa; si es bajo, está haciendo su trabajo.
+                    wrDescartado: liquidados.length ? Number((wins / liquidados.length * 100).toFixed(1)) : null,
+                    porRegla,
+                    rows: rows.map((r) => ({
+                        ...r,
+                        resultLabel: r.result === 'win' ? '✅ Habría ganado'
+                            : r.result === 'loss' ? '❌ Habría perdido'
+                                : r.result === 'push' ? '⚪ Anulada'
+                                    : r.result === 'unknown' ? '❔ No calificable'
+                                        : '⏳ En curso',
+                    })),
+                }));
+                return;
+            }
             // 4. API Live — picks pendientes con tracking de cuota en tiempo real
             if (url === '/api/live') {
                 res.setHeader('Content-Type', 'application/json; charset=utf-8');
