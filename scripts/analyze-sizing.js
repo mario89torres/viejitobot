@@ -31,7 +31,7 @@ const db = new Database(path.join(__dirname, '..', 'snapshots.db'), { readonly: 
 const norm = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 
 const picks = db.prepare(`
-  SELECT ts, market, selection, odd_decimal, conf, result, f_avance, f_situacion, f_linea
+  SELECT ts, market, selection, odd_decimal, conf, result, f_avance, f_situacion, f_linea, f_apertura
   FROM picks
   WHERE result IN ('win','loss') AND stake IS NOT NULL AND f_avance IS NOT NULL
     AND (source IS NULL OR source != 'global_draw')
@@ -45,6 +45,7 @@ const picks = db.prepare(`
     progress: r.f_avance, scoreFactor: r.f_situacion, lineFactor: r.f_linea,
     marketType: /^total/i.test(r.market) ? 'total' : null,
     isUnder: /^total/i.test(r.market) && /^menos/.test(norm(r.selection)),
+    fApertura: r.f_apertura,
     line: lm ? Number(lm[1]) : null,
   };
 }).filter(p => !firewallVerdict(p).blocked);
@@ -58,6 +59,16 @@ const ESQUEMAS = {
   'x3 en Under <= 2.5       ': p => (p.isUnder && p.line <= 2.5 ? 3 : 1),
   'escalonado 3/2/1 por linea': p => (p.isUnder && p.line <= 2.5 ? 3 : p.isUnder && p.line <= 3.5 ? 2 : 1),
   'x2 Under / x0.5 el resto ': p => (p.isUnder ? 2 : 0.5),
+  // f_apertura alta: la línea se movió a nuestro favor desde la apertura. Es
+  // la única señal NUEVA que sobrevivió al escaneo — +30% de ROI fuera de
+  // muestra en los 3 cortes — pero son solo ~2 picks/día (N=45 en 21d), así
+  // que sirve para dimensionar, no para filtrar.
+  'x2 en f_apertura >= 0.70 ': p => (p.fApertura != null && p.fApertura >= 0.70 ? 2 : 1),
+  'combinado: linea + apertura': p => {
+    let w = p.isUnder && p.line <= 2.5 ? 3 : p.isUnder && p.line <= 3.5 ? 2 : 1;
+    if (p.fApertura != null && p.fApertura >= 0.70) w *= 2;
+    return w;
+  },
   // Control negativo: escalonar por conf, que sabemos que NO ordena. Si esto
   // "mejora" tanto como los de arriba, es que el test no distingue señal.
   'CONTROL: escalonado por conf': p => (p.conf >= 0.74 ? 2 : 1),
