@@ -299,8 +299,67 @@ function kellyFraction(conf, oddDecimal) {
 // que stake en unidades = fracción de Kelly × 20 (× 0.5 si es medio Kelly).
 // Acotado a [STAKE_MIN, STAKE_MAX] para que un edge extremo no dispare el
 // tamaño de la apuesta más allá de lo prudente.
-function computeStake(conf, oddDecimal, mode = STAKE_MODE, isHighConviction = false) {
+// --- STAKE_MODE=tiered ------------------------------------------------------
+// Escalona el stake por la ÚNICA señal que demuestra ordenar el resultado:
+// mercado + línea, reforzada por la deriva desde apertura. NO usa `conf`, que
+// tiene Spearman 0.092 con el acierto — dimensionar con ella reparte sobre
+// ruido (por eso se abandonó Kelly el 2026-08-09).
+//
+// Medido sobre 21 días (N=1004 tras firewall, sin source='global_draw'), con
+// TODOS los esquemas normalizados a la misma exposición total para que la
+// comparación no premie el simple apalancamiento:
+//
+//                              TEST(OOS)          TOTAL      maxDD   P/L:maxDD
+//   plano 1u                    -6.3u            +50.7u      15.2u      3.33
+//   escalonado por linea        -3.0u            +70.8u      10.3u      6.89
+//   linea + apertura (este)     +1.1u            +76.1u       9.5u      7.98
+//   CONTROL escalonado por conf -11.6u           +36.9u      21.3u      1.73
+//
+// El CONTROL existe a propósito: si escalonar por conf mejorara igual que lo
+// demás, el test no estaría midiendo señal. Empeora, como debía.
+//
+// Las bandas de f_apertura salieron de un escaneo de avance, hora del día,
+// edge, deporte y deriva; solo la deriva sobrevivió, con +33.7/+33.0/+30.0% de
+// ROI fuera de muestra en tres cortes distintos. Son ~2 picks/día (N=45 en
+// 21d): por eso pondera el stake y NO filtra.
+//
+// LOS VALORES MANTIENEN LA EXPOSICIÓN ACTUAL, no la suben. Con la mezcla
+// observada el stake medio queda en ~1u, igual que el plano que sustituye:
+// esto REDISTRIBUYE riesgo, no añade. Subir el tamaño total es una decisión
+// aparte — se hace con STAKE_TIER_BASE, a la vista.
+const STAKE_TIER_BASE = Number(process.env.STAKE_TIER_BASE || 0.6);
+const STAKE_TIER_MID = Number(process.env.STAKE_TIER_MID || 1.2);
+const STAKE_TIER_HIGH = Number(process.env.STAKE_TIER_HIGH || 1.8);
+const STAKE_TIER_APERTURA = Number(process.env.STAKE_TIER_APERTURA || 0.70);
+
+const deacc = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+
+/** Peso de escalón de un pick. `ctx` es opcional: sin él, cae al escalón base. */
+function tierStake(ctx = {}) {
+  const sel = deacc(ctx.selection);
+  const esUnder = /^menos de/.test(sel)
+    && (ctx.marketType === undefined || ctx.marketType === null || ctx.marketType === 'total');
+  const m = String(ctx.selection || '').match(/([\d.]+)/);
+  const linea = m ? Number(m[1]) : null;
+
+  let stake = STAKE_TIER_BASE;
+  if (esUnder && linea != null && linea <= 2.5) stake = STAKE_TIER_HIGH;
+  else if (esUnder && linea != null && linea <= 3.5) stake = STAKE_TIER_MID;
+  // Deriva a favor desde la apertura: sube un escalón, sin acumular sin tope.
+  else if (ctx.fApertura != null && ctx.fApertura >= STAKE_TIER_APERTURA) stake = STAKE_TIER_MID;
+
+  return stake;
+}
+
+function computeStake(conf, oddDecimal, mode = STAKE_MODE, isHighConviction = false, ctx = {}) {
   if (mode === 'flat') return 1;
+  if (mode === 'tiered') {
+    // Se respetan igualmente STAKE_MIN/STAKE_MAX y el tope por momio: el
+    // escalón decide el tamaño relativo, no anula los controles de riesgo.
+    const oddsCapT = oddDecimal >= 1.70 ? 2.5 : oddDecimal >= 1.50 ? 3.5 : Infinity;
+    const capT = Math.min(STAKE_MAX, oddsCapT);
+    return Math.min(capT, Math.max(STAKE_MIN, tierStake(ctx)));
+  }
   const f = kellyFraction(conf, oddDecimal);
   let frac = mode === 'kelly' ? f : f / 2; // half_kelly es el default
   if (isHighConviction) frac *= 1.25; // Sharp / High Conviction boost (+25% stake)
@@ -365,7 +424,12 @@ function scoreRow(row) {
   const edge = conf * row.oddDecimal - 1;
   const isHighConviction = ((confLearned || conf) >= 0.80) &&
     (row.sharpMatch === 'matched' || row.sharp_match === 'matched' || (edge >= 0.15 && row.oddDecimal >= 1.35));
-  const stake = computeStake(conf, row.oddDecimal, STAKE_MODE, isHighConviction);
+  // El contexto lo necesita STAKE_MODE=tiered para saber en qué escalón cae:
+  // mercado/línea y deriva desde apertura. Los demás modos lo ignoran.
+  const stake = computeStake(conf, row.oddDecimal, STAKE_MODE, isHighConviction, {
+    selection: row.selection, marketType: parsed && parsed.type === 'total' ? 'total' : null,
+    fApertura,
+  });
   return {
     conf, confHeuristic, confLearned, edge, stake, stakeMode: STAKE_MODE, isHighConviction,
     // `progress` es el avance CRUDO (lo usan el firewall y los mensajes);
@@ -820,6 +884,6 @@ module.exports = {
   isExcluded, excludedSports, baseballProgress, isOverPick, isBlockedOver, isBlockedMarket, isUncertain, isFootballUnder, edgeThresholdFor,
   isSuspensionOrInstabilityInWindow, isRejectedBy5Guards, computeStructuralDrawSignal, DRAW_SIGNAL_DEFAULTS,
   recentScoreChange, isDrawSelection, readSpike, SPIKE_DEFAULTS,
-  computeStake, kellyFraction, STAKE_MODE,
+  computeStake, kellyFraction, tierStake, STAKE_MODE,
 };
 

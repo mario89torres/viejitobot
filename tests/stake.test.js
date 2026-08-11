@@ -143,3 +143,45 @@ test('stakePicksByDate: devuelve los picks liquidados filtrados por fecha local'
   } finally { limpiar(); }
 });
 
+
+// --- STAKE_MODE=tiered ---
+// Escalona por mercado/línea + deriva de apertura, la única señal que demuestra
+// ordenar el resultado. NO usa conf (Spearman 0.092 con el acierto).
+// Los valores mantienen la exposición del plano que sustituye: redistribuyen
+// riesgo, no lo aumentan.
+const ctx = (selection, fApertura = null, marketType = 'total') => ({ selection, fApertura, marketType });
+
+test('tiered: escalona por línea del Under', () => {
+  // Under línea baja = donde vive el edge (+9.8% ROI con IC sobre cero).
+  assert.strictEqual(computeStake(0.72, 1.45, 'tiered', false, ctx('Menos de 1.5')), 1.8);
+  assert.strictEqual(computeStake(0.72, 1.45, 'tiered', false, ctx('Menos de 2.5')), 1.8);
+  assert.strictEqual(computeStake(0.72, 1.45, 'tiered', false, ctx('Menos de 3.5')), 1.2);
+  // Todo lo demás al escalón base.
+  assert.strictEqual(computeStake(0.72, 1.45, 'tiered', false, ctx('No', null, null)), 0.6);
+});
+
+test('tiered: la deriva desde apertura sube un escalón', () => {
+  // f_apertura >= 0.70 rindió +30% fuera de muestra en 3 cortes distintos.
+  assert.strictEqual(computeStake(0.72, 1.45, 'tiered', false, ctx('No', 0.75, null)), 1.2);
+  assert.strictEqual(computeStake(0.72, 1.45, 'tiered', false, ctx('No', 0.65, null)), 0.6);
+});
+
+test('tiered: NO depende de conf', () => {
+  // Si dependiera de conf estaría repartiendo sobre ruido; el mismo pick con
+  // conf muy distinta debe recibir el mismo stake.
+  const bajo = computeStake(0.60, 1.45, 'tiered', false, ctx('Menos de 2.5'));
+  const alto = computeStake(0.95, 1.45, 'tiered', false, ctx('Menos de 2.5'));
+  assert.strictEqual(bajo, alto);
+});
+
+test('tiered: respeta STAKE_MIN/STAKE_MAX y el tope por momio', () => {
+  // El escalón fija el tamaño relativo, no anula los controles de riesgo.
+  const s = computeStake(0.72, 2.50, 'tiered', false, ctx('Menos de 1.5'));
+  assert.ok(s <= 2.5, `no debía superar el tope por momio, dio ${s}`);
+});
+
+test('tiered: sin contexto cae al escalón base, no revienta', () => {
+  // Rutas que llamen sin ctx (o con un pick raro) deben degradar con gracia.
+  assert.strictEqual(computeStake(0.72, 1.45, 'tiered'), 0.6);
+  assert.strictEqual(computeStake(0.72, 1.45, 'tiered', false, {}), 0.6);
+});
