@@ -180,22 +180,47 @@ async function processSettlements(rows) {
  * de nada: el valor entero de guardarlos es poder decir "esto se descartó Y
  * habría ganado/perdido".
  *
- * Más simple que la escalera de los picks emitidos a propósito: no hay dinero
- * en juego, así que no hace falta protegerse de desapariciones temporales del
- * feed ni consultar cierres sharp. Basta con que el evento ya no esté en vivo y
- * exista un marcador; sin marcador se deja pendiente y se reintenta.
+ * ESPERA OBLIGATORIA antes de liquidar (CONTROL_SETTLE_MIN, 15 min por
+ * defecto). La primera versión liquidaba en cuanto el evento salía del feed,
+ * razonando que "como no hay dinero en juego no hace falta la escalera de
+ * reintentos de los picks emitidos". Ese razonamiento era FALSO y costó caro:
+ * la escalera no protege el dinero, protege la CORRECCIÓN DE LA ETIQUETA.
  *
- * Se escribe SIEMPRE que haya marcador, incluidos 'push' y 'unknown'. La
- * versión anterior hacía `if (result)`, y como gradePick devuelve null tanto
- * para las anuladas como para los mercados ininterpretables, esas filas se
- * quedaban pendientes PARA SIEMPRE — y una fila pendiente exime a su evento de
- * la poda de snapshots, así que el conjunto exento crecía sin tope. El
- * entrenamiento ya filtra a win/loss, así que guardar la etiqueta real no
- * contamina nada; lo que contaminaba era inventarse un resultado.
+ * Un evento desaparece del feed por muchos motivos que no son "terminó":
+ * suspensión, hueco del proveedor, descanso. Sin espera, el pick se liquidaba
+ * contra el marcador de ese instante — casi siempre temprano. Medido el
+ * 2026-08-10 sobre 1048 filas liquidadas:
+ *
+ *   45% se liquidó en menos de 20 min (un partido dura 90), mínimo 0.9 min
+ *   '0-0' era el 18% de los marcadores finales, vs 5.7% en los picks emitidos
+ *   de los liquidados en <20 min, el 22% quedó en '0-0'
+ *
+ * El efecto era una fantasía estadística: los rechazados por min_conf parecían
+ * rendir +18.7% de ROI (+159u), cuando lo que pasaba es que se les graduaba
+ * contra marcadores de primer tiempo. Un control mal etiquetado es PEOR que no
+ * tenerlo — inventa reglas falsas con apariencia de evidencia.
+ *
+ * El ancla es el último snapshot REAL del evento (BD), no el reloj del proceso,
+ * igual que en la escalera de processSettlements: así la espera sobrevive a
+ * reinicios del bot.
+ *
+ * Se escribe SIEMPRE que haya marcador, incluidos 'push' y 'unknown': una fila
+ * pendiente exime a su evento de la poda de snapshots, así que dejarlas
+ * colgadas hace crecer el conjunto exento sin tope.
  */
+const CONTROL_SETTLE_MIN = Number(process.env.CONTROL_SETTLE_MIN || 15);
+
 function settleRejectedGroup(liveEventIds) {
   for (const r of getUnsettledRejected()) {
     if (liveEventIds.has(r.event_id)) continue;
+
+    // ¿Cuánto lleva el evento fuera del feed? Se mide contra su último
+    // snapshot, no contra Date.now() del arranque.
+    const lastSeen = getLastSeen(r.event_id);
+    if (!lastSeen) continue;
+    const minutosFuera = (Date.now() - Date.parse(lastSeen)) / 60000;
+    if (minutosFuera < CONTROL_SETTLE_MIN) continue;
+
     const last = getLastScore(r.event_id);
     if (!last || !last.score) continue;
     const row = { market: r.market, selection: r.selection, event: r.event, sport: r.sport };
