@@ -48,6 +48,18 @@ function isOver(r) {
   return r.marketType === undefined || r.marketType === null || r.marketType === 'total';
 }
 
+// "Menos de X" (Under), con su línea. La línea sale del texto de la selección
+// porque es donde vive siempre; `market` no la trae de forma fiable.
+function isUnder(r) {
+  const sel = deaccent(r.selection);
+  if (!/^menos de/.test(sel)) return false;
+  return r.marketType === undefined || r.marketType === null || r.marketType === 'total';
+}
+function underLine(r) {
+  const m = String(r.selection || '').match(/([\d.]+)/);
+  return m ? Number(m[1]) : null;
+}
+
 function config() {
   return {
     enabled: bool(process.env.FIREWALL_ENABLED, true),
@@ -58,6 +70,8 @@ function config() {
     minOdds: num(process.env.FIREWALL_MIN_ODDS, 0),
     maxSituacion: num(process.env.FIREWALL_MAX_SITUACION, 0.99),
     maxLinea: num(process.env.FIREWALL_MAX_LINEA, 0),
+    // R7 — tope de línea en los Under. Ver la nota de la regla abajo.
+    maxUnderLine: num(process.env.FIREWALL_MAX_UNDER_LINE, 3.5),
     // Tier ELITE: el único subconjunto que quedó POSITIVO fuera de muestra
     // (Under + avance>=0.75 + linea>=0.55 → N=37, WR 75.7%, ROI +11.8%).
     // N chico: es una marca orientativa, no una recomendación de stake.
@@ -120,6 +134,35 @@ function firewallVerdict(r) {
   // activarla bloquearía un bucket GANADOR. No reactivar sin rederivar.
   if (c.maxLinea > 0 && r.lineFactor != null && r.lineFactor >= c.maxLinea) rules.push('R6:linea');
 
+  // R7 — Under con línea ALTA. Under es el mercado que sostiene al sistema,
+  // pero su edge está concentrado en las líneas bajas y se apaga al subirlas.
+  // Medido el 2026-08-10 sobre 21 días (N=1211 que pasan el resto del firewall,
+  // sin source='global_draw', stake plano 1u), con IC95%:
+  //
+  //   Under linea <= 2.5   N=233  ROI=+11.6%  IC[+3.5%, +19.7%]   edge real
+  //   Under linea <= 3.5   N=347  ROI= +9.8%  IC[+3.1%, +16.4%]   edge real
+  //   Under linea  > 3.5   N=207  ROI= +0.7%  IC[-9.0%, +10.5%]   cruza cero
+  //
+  // O sea que la cola alta no pierde dinero: simplemente no aporta nada y suma
+  // varianza. Cortarla sube el ROI de 4.3% a 5.0% costando solo el 17% del
+  // volumen. Es la regla más barata de todas las que se probaron.
+  //
+  // ATENCIÓN AL CONTRAEJEMPLO, porque invierte la intuición: "emitir SOLO
+  // Under <= 3.5" luce mucho mejor en ROI (+9.8%) pero con stake plano BAJA el
+  // P/L total, de +52.2u a +33.9u — menos apuestas, menos beneficio, aunque
+  // cada una sea más eficiente. Concentrar solo compensa si además se sube el
+  // stake, y eso es una decisión de riesgo aparte. Por eso R7 es un veto
+  // dirigido y NO una lista blanca.
+  //
+  // Fuera de muestra (4 cortes temporales distintos) el tope se mantiene del
+  // lado bueno, pero mucho más modesto que en muestra: +0.9% a +1.8%, no
+  // +9.8%. La diferencia es sesgo de selección — la regla se eligió mirando
+  // estos mismos datos. Tratar el +9.8% como expectativa sería engañarse.
+  if (c.maxUnderLine > 0 && isUnder(r)) {
+    const linea = underLine(r);
+    if (linea != null && linea > c.maxUnderLine) rules.push('R7:under_linea_alta');
+  }
+
   return { blocked: rules.length > 0, rules };
 }
 
@@ -136,4 +179,4 @@ function isElite(r) {
   return true;
 }
 
-module.exports = { firewallVerdict, isFirewallBlocked, isElite, isOver, config };
+module.exports = { firewallVerdict, isFirewallBlocked, isElite, isOver, isUnder, underLine, config };
