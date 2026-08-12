@@ -14,6 +14,20 @@ const OUT = process.argv[2] || path.join(__dirname, '..', 'dataset.csv');
 // Afectaba a 368 de 2228 picks. Backfill: scripts/backfill-avance-model.js.
 // El nombre de la columna en el CSV se mantiene como `f_avance` para no tocar
 // train_weights.py, que ya la espera así.
+// UNION con rejected_picks (grupo de control) desde 2026-08-11. Hasta ahora el
+// entrenamiento solo veía picks que YA habían pasado MIN_CONF/MIN_EDGE/firewall
+// — puro sesgo de selección: comprime el 80% de las conf en 9pp y deja al
+// clasificador SIN NEGATIVOS de verdad, así que nunca puede aprender dónde
+// está la frontera (ver memoria por-que-no-entrena). Medido el 2026-08-11:
+//
+//               N      WR       f_prob_justa (rango)
+//   picks      1932   69.8%     [0.228, 0.921]
+//   rejected   2036   47.6%     [0.070, 0.713]   <- cubre zona que picks NUNCA vio
+//   combinado  3968   58.4%
+//
+// rejected_picks no tiene opening_odd_decimal (esa columna ni se usa como
+// feature en train_weights.py, solo viaja sin tocar en el CSV) — se exporta
+// NULL para esas filas y no rompe nada.
 const rows = db.prepare(`
   SELECT ts, sport, market, odd_decimal, opening_odd_decimal,
     f_prob_justa, f_avance_model AS f_avance, f_situacion, f_linea, f_apertura,
@@ -30,6 +44,19 @@ const rows = db.prepare(`
     -- un backfill de f_apertura las readmitiría en silencio, que es exactamente
     -- lo que acaba de pasar con f_avance_model. Este filtro lo hace explícito.
     AND COALESCE(score_version, 1) > 0
+
+  UNION ALL
+
+  SELECT ts, sport, market, odd_decimal, NULL AS opening_odd_decimal,
+    f_prob_justa, f_avance_model AS f_avance, f_situacion, f_linea, f_apertura,
+    COALESCE(score_version, 1) AS score_version,
+    CASE result WHEN 'win' THEN 1 ELSE 0 END AS y
+  FROM rejected_picks
+  WHERE result IN ('win','loss')
+    AND f_prob_justa IS NOT NULL AND f_avance_model IS NOT NULL
+    AND f_situacion IS NOT NULL AND f_linea IS NOT NULL AND f_apertura IS NOT NULL
+    AND COALESCE(score_version, 1) > 0
+
   ORDER BY ts ASC
 `).all();
 
