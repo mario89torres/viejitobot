@@ -1209,7 +1209,10 @@ function captureRejectedControls(rows) {
       ts, eventId: r.eventId, event: r.event, sport: r.sport,
       market: r.market, selection: r.selection, oddDecimal: r.oddDecimal,
       conf: r.conf, edge: r.edge, rejectRule: rule,
-      fProbJusta: r.fProbJusta, fAvance: r.progress, fAvanceModel: r.fAvance,
+      // scoreRow (src/confidence.js) devuelve la probabilidad justa como `base`,
+      // no `fProbJusta` — con ese nombre nunca hubo match y la columna se
+      // guardaba siempre NULL desde que existe esta tabla (2026-08-09).
+      fProbJusta: r.base, fAvance: r.progress, fAvanceModel: r.fAvance,
       fSituacion: r.scoreFactor, fLinea: r.lineFactor, fApertura: r.fApertura,
       confHeuristic: r.confHeuristic, scoreVersion: SCORE_VERSION,
     })));
