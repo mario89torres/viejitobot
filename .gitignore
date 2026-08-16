@@ -22,6 +22,9 @@ bot.log.*
 
 # Datasets & temporary exports
 dataset.csv
+# CSV del experimento de filtrado del grupo de control (scripts/experiment-control-filter.js):
+# se regenera desde la BD, no debe versionarse igual que dataset.csv
+dataset_con_regla.csv
 model_candidate.json
 
 # Probe / scratch files
