@@ -28,10 +28,18 @@ const OUT = process.argv[2] || path.join(__dirname, '..', 'dataset.csv');
 // rejected_picks no tiene opening_odd_decimal (esa columna ni se usa como
 // feature en train_weights.py, solo viaja sin tocar en el CSV) — se exporta
 // NULL para esas filas y no rompe nada.
+// La columna `origin` NO es opcional: es la que permite a train_weights.py
+// evaluar la regla de adopción sobre la población que REALMENTE se apuesta.
+// Sin ella, el 2026-08-16 se adoptó un modelo que mejoraba +0.0070 de Brier en
+// el agregado pero EMPEORABA -0.0026 sobre los picks emitidos — el 95% del pool
+// de evaluación eran rechazados, así que el agregado medía sobre todo la
+// capacidad de distinguir "rechazado típico" de "pick típico", que es trivial y
+// no vale dinero. Ver model.json:disabled_reason.
 const rows = db.prepare(`
   SELECT ts, sport, market, odd_decimal, opening_odd_decimal,
     f_prob_justa, f_avance_model AS f_avance, f_situacion, f_linea, f_apertura,
     COALESCE(score_version, 1) AS score_version,
+    'picks' AS origin,
     CASE result WHEN 'win' THEN 1 ELSE 0 END AS y
   FROM picks
   WHERE result IN ('win','loss')
@@ -50,6 +58,7 @@ const rows = db.prepare(`
   SELECT ts, sport, market, odd_decimal, NULL AS opening_odd_decimal,
     f_prob_justa, f_avance_model AS f_avance, f_situacion, f_linea, f_apertura,
     COALESCE(score_version, 1) AS score_version,
+    'rejected' AS origin,
     CASE result WHEN 'win' THEN 1 ELSE 0 END AS y
   FROM rejected_picks
   WHERE result IN ('win','loss')
@@ -65,10 +74,10 @@ const esc = v => {
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 };
 
-const header = 'ts,sport,market,odd_decimal,opening_odd_decimal,f_prob_justa,f_avance,f_situacion,f_linea,f_apertura,score_version,y';
+const header = 'ts,sport,market,odd_decimal,opening_odd_decimal,f_prob_justa,f_avance,f_situacion,f_linea,f_apertura,score_version,origin,y';
 const lines = rows.map(r => [
   r.ts, r.sport, r.market, r.odd_decimal, r.opening_odd_decimal,
-  r.f_prob_justa, r.f_avance, r.f_situacion, r.f_linea, r.f_apertura, r.score_version, r.y,
+  r.f_prob_justa, r.f_avance, r.f_situacion, r.f_linea, r.f_apertura, r.score_version, r.origin, r.y,
 ].map(esc).join(','));
 
 fs.writeFileSync(OUT, [header, ...lines].join('\n') + '\n');

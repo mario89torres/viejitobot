@@ -85,10 +85,31 @@ CLIP = (0.001, 0.999)
 
 ADOPTION_RULE = (
     "REGLA DE ADOPCIÓN: adoptar el modelo solo si mejora Brier Y log loss\n"
-    "out-of-sample frente al heurístico, Y gana en la mayoría de los folds.\n"
+    "out-of-sample frente al heurístico, Y gana en la mayoría de los folds,\n"
+    "Y cumple LO MISMO sobre el subconjunto origin='picks' (los que se apuestan).\n"
     "La retención de la mejora in-sample se reporta como señal, no como veto.\n"
     "Si no cumple, mantener el heurístico."
 )
+
+# Por qué existe la condición sobre origin='picks' (añadida 2026-08-16):
+#
+# El dataset une picks EMITIDOS con el grupo de control (rejected_picks). Con la
+# regla anterior —que solo miraba el agregado— se adoptó un modelo que mejoraba
+# +0.0070 de Brier y ganaba 4/4 folds... porque el 95% del pool de evaluación
+# eran rechazados. El modelo era bueno distinguiendo "rechazado típico" de "pick
+# típico" (dos poblaciones con f_prob_justa y mezcla de mercados distintas), y
+# eso es trivial y no vale dinero.
+#
+# Sobre las 344 filas OOS de picks reales, ese mismo modelo daba Brier -0.0026 y
+# log loss -0.0082 (PEOR que el heurístico), ganando 1 de 4 folds. Bootstrap
+# pareado: P(mejora>0) = 18.8% / 15.7%.
+#
+# La lección general: al mezclar poblaciones con distinta prevalencia, una
+# métrica agregada puede mejorar sin que mejore ninguna subpoblación que
+# importe. El grupo de control sirve para APRENDER (aporta los negativos que
+# rompen la restricción de rango), pero la adopción debe decidirse sobre la
+# población que recibe dinero.
+MIN_PICKS_OOS = int(os.environ.get("MIN_PICKS_OOS", 300))
 
 
 def clipped(p):
@@ -223,7 +244,7 @@ def main():
     k_blocks = 5 if n >= 600 else 4
     edges = np.linspace(0, n, k_blocks + 1, dtype=int)
     folds, skipped = [], 0
-    pooled = {m: {"y": [], "heur": [], "raw": [], "cal": []} for m in ["test"]}
+    pooled = {m: {"y": [], "heur": [], "raw": [], "cal": [], "is_pick": []} for m in ["test"]}
     is_rows = []  # in-sample por fold (para la retención)
 
     print(f"\nWalk-forward: {k_blocks} bloques -> {k_blocks - 1} folds (entrena pasado, valida bloque siguiente)")
@@ -255,13 +276,29 @@ def main():
         b_h_is, l_h_is = metrics(y_tr, tr["heur"].to_numpy())
         b_c_is, l_c_is = metrics(y_tr, p_cal_tr)
 
+        # Mismas métricas restringidas a los picks EMITIDOS del bloque de test.
+        # Es la población que recibe dinero, y la única sobre la que tiene
+        # sentido decidir la adopción (ver nota en ADOPTION_RULE).
+        mask_p = (te["origin"] == "picks").to_numpy()
+        n_p = int(mask_p.sum())
+        if n_p >= 20 and len(np.unique(y_te[mask_p])) == 2:
+            b_h_p, l_h_p = metrics(y_te[mask_p], te["heur"].to_numpy()[mask_p])
+            b_c_p, l_c_p = metrics(y_te[mask_p], p_cal_te[mask_p])
+        else:
+            # Muy pocos picks (o una sola clase) en este bloque: no se puede
+            # evaluar el fold sobre esa población. Se marca como NO ganado en
+            # vez de inventar un empate favorable.
+            b_h_p = l_h_p = b_c_p = l_c_p = float("nan")
+
         folds.append(dict(fold=i, n_train=len(tr), n_test=len(te), method=method,
-                          brier=(b_h, b_r, b_c), logloss=(l_h, l_r, l_c)))
+                          brier=(b_h, b_r, b_c), logloss=(l_h, l_r, l_c),
+                          n_picks=n_p, brier_p=(b_h_p, b_c_p), logloss_p=(l_h_p, l_c_p)))
         is_rows.append(dict(n=len(tr), d_brier=b_h_is - b_c_is, d_logloss=l_h_is - l_c_is))
         pooled["test"]["y"].append(y_te)
         pooled["test"]["heur"].append(te["heur"].to_numpy())
         pooled["test"]["raw"].append(p_raw_te)
         pooled["test"]["cal"].append(p_cal_te)
+        pooled["test"]["is_pick"].append(mask_p)
 
         print(f"{i:<5}{len(tr):>6}{len(te):>6}  {method:<9}{b_h:>9.4f}{b_r:>10.4f}{b_c:>10.4f}{l_h:>8.4f}{l_r:>8.4f}{l_c:>8.4f}")
 
@@ -304,15 +341,55 @@ def main():
     n_folds = len(folds)
     majority = wins_b > n_folds / 2 and wins_l > n_folds / 2
 
-    adopted = oos_d_brier > 0 and oos_d_logloss > 0 and majority
+    # --- lo mismo, pero SOLO sobre los picks emitidos (la población con dinero) ---
+    IS_PICK = np.concatenate(pooled["test"]["is_pick"])
+    n_picks_oos = int(IS_PICK.sum())
+    if n_picks_oos >= 20 and len(np.unique(Y[IS_PICK])) == 2:
+        pb_h, pl_h = metrics(Y[IS_PICK], P_h[IS_PICK])
+        pb_c, pl_c = metrics(Y[IS_PICK], P_c[IS_PICK])
+        picks_d_brier, picks_d_logloss = pb_h - pb_c, pl_h - pl_c
+    else:
+        pb_h = pl_h = pb_c = pl_c = float("nan")
+        picks_d_brier = picks_d_logloss = float("nan")
+
+    # NaN (fold sin picks suficientes) NO cuenta como victoria: `<` con NaN es
+    # False, que es exactamente el comportamiento conservador que se quiere.
+    wins_b_p = sum(1 for f in folds if f["brier_p"][1] < f["brier_p"][0])
+    wins_l_p = sum(1 for f in folds if f["logloss_p"][1] < f["logloss_p"][0])
+    majority_p = wins_b_p > n_folds / 2 and wins_l_p > n_folds / 2
+    picks_ok = (
+        n_picks_oos >= MIN_PICKS_OOS
+        and picks_d_brier > 0
+        and picks_d_logloss > 0
+        and majority_p
+    )
+
+    adopted = oos_d_brier > 0 and oos_d_logloss > 0 and majority and picks_ok
     low_ret = ret_b < RETENTION_MIN or ret_l < RETENTION_MIN
 
     print(f"\n{ADOPTION_RULE}")
-    print(f"\nMejora OOS:  Brier {oos_d_brier:+.4f} | log loss {oos_d_logloss:+.4f}   <- criterio principal")
-    print(f"Consistencia: gana en {wins_b}/{n_folds} folds (Brier), {wins_l}/{n_folds} (log loss)   <- requiere mayoría")
+    print(f"\n--- AGREGADO (todas las filas: picks + grupo de control) ---")
+    print(f"Mejora OOS:  Brier {oos_d_brier:+.4f} | log loss {oos_d_logloss:+.4f}")
+    print(f"Consistencia: gana en {wins_b}/{n_folds} folds (Brier), {wins_l}/{n_folds} (log loss)")
     print(f"Mejora IS:   Brier {is_d_brier:+.4f} | log loss {is_d_logloss:+.4f}")
     print(f"Retención:   Brier {ret_b:.0%} | log loss {ret_l:.0%}   <- señal, no veto (referencia {RETENTION_MIN:.0%})")
+
+    frac_picks = n_picks_oos / len(Y) if len(Y) else 0
+    print(f"\n--- SOLO PICKS EMITIDOS (la población que recibe dinero) --- <- CRITERIO DECISIVO")
+    print(f"N picks OOS: {n_picks_oos} de {len(Y)} ({frac_picks:.1%} del pool)   <- mínimo exigido: {MIN_PICKS_OOS}")
+    if np.isnan(picks_d_brier):
+        print("Sin picks suficientes para evaluar: NO se adopta (no se puede verificar donde importa).")
+    else:
+        print(f"Mejora OOS:  Brier {picks_d_brier:+.4f} | log loss {picks_d_logloss:+.4f}")
+        print(f"Consistencia: gana en {wins_b_p}/{n_folds} folds (Brier), {wins_l_p}/{n_folds} (log loss)")
+        if frac_picks < 0.25:
+            print(f"⚠️ Los picks son solo el {frac_picks:.1%} del pool: el AGREGADO mide sobre todo el")
+            print("   grupo de control. Por eso la decisión se toma con el bloque de arriba.")
+
     print(f"\n>>> DECISIÓN: {'ADOPTAR modelo aprendido' if adopted else 'MANTENER heurístico'}")
+    if not adopted and oos_d_brier > 0 and oos_d_logloss > 0 and majority and not picks_ok:
+        print("    (el agregado SÍ mejoraba, pero no se sostiene sobre los picks emitidos —")
+        print("     exactamente el falso positivo que costó la adopción errónea del 2026-08-16)")
     if adopted and low_ret:
         print("⚠️ Retención baja: la ventaja in-sample crece más rápido que la out-of-sample.")
         print("   El modelo gana fuera de muestra, pero vigila que no se degrade al reentrenar.")
@@ -377,6 +454,19 @@ def main():
                           "log_loss": ret_l if ret_l != float("inf") else None},
             "retention_low": bool(low_ret),
             "fold_wins": {"brier": int(wins_b), "log_loss": int(wins_l), "n_folds": int(n_folds)},
+            # Métricas restringidas a los picks EMITIDOS. Son las que DECIDEN la
+            # adopción: el agregado de arriba está dominado por el grupo de
+            # control y puede mejorar sin que mejore nada que reciba dinero.
+            "picks_only": {
+                "n": n_picks_oos,
+                "frac_of_pool": round(float(frac_picks), 4),
+                "heuristic": None if np.isnan(pb_h) else {"brier": float(pb_h), "log_loss": float(pl_h)},
+                "calibrated": None if np.isnan(pb_c) else {"brier": float(pb_c), "log_loss": float(pl_c)},
+                "d_brier": None if np.isnan(picks_d_brier) else float(picks_d_brier),
+                "d_log_loss": None if np.isnan(picks_d_logloss) else float(picks_d_logloss),
+                "fold_wins": {"brier": int(wins_b_p), "log_loss": int(wins_l_p), "n_folds": int(n_folds)},
+                "passed": bool(picks_ok),
+            },
         },
     }
     out = ROOT / ("model.json" if adopted else "model_candidate.json")
