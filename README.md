@@ -1,6 +1,6 @@
-# Playdoit Monitor
+# BOT Monitor
 
-Sistema de monitoreo de momios en vivo de [Playdoit.mx](https://www.playdoit.mx/) con bot interactivo de Telegram, almacenamiento histórico de snapshots, análisis de confianza y backtesting.
+Sistema de monitoreo de momios en vivo de una casa de apuestas... con bot interactivo de Telegram, almacenamiento histórico de snapshots, análisis de confianza y backtesting.
 
 > **Aviso legal**: este sistema consume la API del sportsbook (Altenar) que usa Playdoit. El uso automatizado puede violar los términos de servicio del sitio. Úsalo bajo tu propio riesgo, con intervalos moderados. No constituye consejo de apuestas.
 
