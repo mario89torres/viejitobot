@@ -1,72 +1,96 @@
 # Playdoit Monitor
 
-Sistema de monitoreo de momios en vivo de [Playdoit.mx](https://www.playdoit.mx/) con bot interactivo de Telegram, almacenamiento histórico de snapshots, análisis de confianza y backtesting.
+Sistema de monitoreo de momios en vivo de [Playdoit.mx](https://www.playdoit.mx/) con bot de Telegram, histórico de snapshots, scoring de confianza, firewall de jugadas y un pipeline de aprendizaje con grupo de control.
 
-> **Aviso legal**: este sistema consume la API del sportsbook (Altenar) que usa Playdoit. El uso automatizado puede violar los términos de servicio del sitio. Úsalo bajo tu propio riesgo, con intervalos moderados. No constituye consejo de apuestas.
+> **Aviso legal**: consume la API del sportsbook (Altenar) que usa Playdoit. El uso automatizado puede violar los términos de servicio. Úsalo bajo tu propio riesgo. No constituye consejo de apuestas, y el bot no coloca apuestas ni debe automatizarse para hacerlo.
+
+---
+
+## Estado actual (2026-08-19)
+
+| | |
+|---|---|
+| Picks registrados | 2 887 (2 521 liquidados, **WR 70.3%**) |
+| Grupo de control | 11 220 rechazados etiquetados, 11 148 liquidados |
+| Snapshots | ~47.5 M filas (13 GB) |
+| Quién decide los picks | **el heurístico** |
+| `MODEL_MODE` | `shadow` — el modelo se calcula y se guarda, **no decide** |
+| `STAKE_MODE` | `tiered` — escalonado por mercado/línea/apertura, **no lee `conf`** |
+| Firewall | activo, R1/R2/R5/R7 |
+
+El modelo aprendido **pasa su regla de adopción** desde el 2026-08-19 (ver [Modelo aprendido](#modelo-aprendido)) pero corre en shadow a propósito: la ventaja medida es pequeña y su intervalo de confianza roza el cero. Está acumulando historial fuera de muestra antes de que se le deje decidir nada.
 
 ---
 
 ## Arquitectura
 
 ```
-┌─────────────┐   ┌──────────────┐   ┌────────────┐   ┌────────────┐
-│ Recolección │ → │Normalización │ → │Almacenam.  │ → │  Análisis  │
-│ fetcher.js  │   │ normalize.js │   │   db.js    │   │ analyze.js │
-│ (API JSON)  │   │ (formato     │   │  (SQLite)  │   │confidence.js│
-└─────────────┘   │  común)      │   └────────────┘   └────────────┘
-                  └──────────────┘                          ↓
-                  ┌──────────────────────────────────────────┐
-                  │        bot.js — Telegram (comandos)      │
-                  │  + recolector de fondo + liquidación     │
-                  └──────────────────────────────────────────┘
+        ┌──────────────┐   ┌──────────────┐   ┌────────────┐
+        │  Recolección │ → │Normalización │ → │ SQLite     │
+        │  fetcher.js  │   │ normalize.js │   │ db.js      │
+        │  (API JSON)  │   │  devig.js    │   │snapshots.db│
+        └──────────────┘   └──────────────┘   └─────┬──────┘
+                                                    │
+   ┌────────────────────────────────────────────────┴─────────────┐
+   │  Scoring y emisión                                           │
+   │                                                              │
+   │  confidence.js ──► model.js ──► POST_SCORE_GATES ──► firewall│
+   │   (4 factores)     (aprendido)   (7 puertas)         (R1..R7)│
+   │        │                              │                      │
+   │        │                              ├─► EMITE ──► picks    │
+   │        │                              └─► RECHAZA ─► rejected_picks
+   │        ▼                                            (grupo de control)
+   │  results.js ──► liquidación (win/loss/push)                  │
+   └──────────────────────────────┬───────────────────────────────┘
+                                  ▼
+              ┌───────────────────────────────────────┐
+              │  bot.js — Telegram + sampler + panel  │
+              └───────────────────────────────────────┘
 ```
 
-**Fuente de datos**: en lugar de raspar el DOM con un navegador, el sistema consume directamente la API JSON del proveedor del sportsbook de Playdoit (Altenar, `sb2frontend-altenar2.biahosted.com`). Es más rápido (~7 s por ciclo completo), más estable y entrega los momios ya en formato decimal.
+**Fuente de datos**: consume directamente la API JSON del proveedor del sportsbook (Altenar, `sb2frontend-altenar2.biahosted.com`) en lugar de raspar el DOM. Más rápido, más estable, y entrega los momios ya en decimal.
 
 ### Módulos
 
 | Archivo | Responsabilidad |
 |---|---|
-| `bot.js` | Punto de entrada principal. Bot de Telegram (long-polling), recolector de fondo y liquidación de picks. |
-| `index.js` | Modo alternativo: envía el top 10 por intervalos fijos (`--once` para un solo ciclo). |
-| `src/fetcher.js` | Descarga el overview en vivo de todos los deportes con reintentos y pausa entre peticiones. |
-| `src/normalize.js` | Aplana eventos/mercados/momios a filas comunes; calcula momio americano, probabilidad justa (sin vig), minuto y set. |
-| `src/db.js` | SQLite (`snapshots.db`): tablas `snapshots` (histórico de momios) y `picks` (registro y liquidación de `/seguras`). |
-| `src/analyze.js` | Top N por momio decimal ascendente con filtros (rango de momios, deportes excluidos, 1 jugada por evento). |
-| `src/markets.js` | Interpreta cada mercado (ganador, 1x2, doble oportunidad, totales, hándicap, ambos marcan), evalúa su situación en vivo y lo califica contra un marcador final. |
-| `src/confidence.js` | Algoritmo de confianza de `/seguras` (ver abajo). |
-| `src/telegram.js` | Envío de mensajes HTML al bot de Telegram. |
-| `probe*.js` | Scripts de exploración usados durante el desarrollo (pueden borrarse). |
+| `bot.js` | Entrada principal: bot de Telegram (long-polling), sampler de fondo, emisión automática, liquidación. |
+| `src/fetcher.js` | Descarga el overview en vivo de todos los deportes. Reintentos, backoff y `AbortSignal.timeout(20 s)`. |
+| `src/normalize.js` | Aplana eventos/mercados/momios a filas comunes; momio americano, minuto, set. |
+| `src/devig.js` | Probabilidad justa sin margen de la casa. Método de Shin por defecto (`DEVIG_METHOD`). |
+| `src/confidence.js` | Scoring (4 factores), puertas post-scoring, dimensionamiento (`computeStake`), grupo de control (`auditRejections`). |
+| `src/model.js` | Inferencia del modelo aprendido y features de mercado (`marketFeatures`). |
+| `src/firewall.js` | Filtro duro R1–R7 derivado de buckets con ROI negativo medido. |
+| `src/markets.js` | Interpreta cada mercado, evalúa su situación en vivo y lo califica contra un marcador. |
+| `src/results.js` | Liquidación: `win`/`loss`/`push`/`unknown`, con espera antes de liquidar el grupo de control. |
+| `src/db.js` | SQLite: esquema, migraciones y prune por lotes. |
+| `src/sharp.js` | Referencia sharp (The Odds API → Pinnacle/Betfair) con presupuesto de créditos. |
+| `src/metrics.js` | Brier, log loss, ECE, CLV, ROI por segmento. |
+| `src/health.js` | Detección de drift de calibración. |
+| `src/telegram.js` | Envío de mensajes HTML, botonera y gráficas. |
+| `src/singleInstance.js` | Lock de instancia única (`.bot.lock`). |
+| `src/ratelimit.js` | Ventana deslizante, tope `MAX_REQ_PER_MIN`. |
+| `src/validate.js` | Contrasta resultados liquidados contra marcador oficial. |
+| `src/betlink.js` | Enlaces directos a la jugada en Playdoit. |
+| `index.js` | Modo alternativo: top N por intervalos (`--once` para un ciclo). |
+| `probe*.js` | Exploración del desarrollo inicial. Se pueden borrar. |
 
 ---
 
 ## Instalación
 
-Requisitos: Node.js 18+ (usa `fetch` nativo).
+Requisitos: Node.js 22 (`better-sqlite3` es nativo y está compilado contra ese ABI). Python 3 solo para reentrenar.
 
 ```bash
 npm install
 ```
 
-Configura `.env`:
-
-```ini
-TELEGRAM_BOT_TOKEN=123456:ABC...   # token de @BotFather
-TELEGRAM_CHAT_ID=123456789         # tu chat id
-INTERVAL_MINUTES=10                # intervalo del modo index.js
-SAMPLE_MINUTES=3                   # frecuencia del recolector de fondo
-TOP_N=10                           # tamaño del top por defecto
-MIN_ODDS=1.05                      # momio decimal mínimo
-MAX_ODDS=100                       # momio decimal máximo
-EXCLUDE_SPORTS=                    # deportes a excluir (coma-separados)
-```
-
-## Uso
+Copia `.env.example` a `.env` y rellena los tokens. Las claves están comentadas allí con **el porqué**, no solo el valor — especialmente `MODEL_MODE` y `STAKE_MODE`, donde el valor que suena mejor es el peligroso.
 
 ```bash
-node bot.js          # modo principal: bot interactivo + recolector de fondo
-node index.js        # modo alternativo: envío por intervalos
-node index.js --once # un solo ciclo (útil para probar)
+node bot.js          # modo principal
+node index.js --once # un ciclo del modo alternativo
+npm test             # suite de tests
 ```
 
 ---
@@ -75,51 +99,62 @@ node index.js --once # un solo ciclo (útil para probar)
 
 | Comando | Descripción |
 |---|---|
-| `/top` | Top 10 momios más bajos de todos los deportes en vivo. |
-| `/top 5` | Top N (máx. 25). |
-| `/top futbol` | Filtra por deporte (búsqueda parcial, sin acentos). |
-| `/top 1.5-3` | Solo momios dentro del rango decimal. |
-| `/top futbol +60` | Solo partidos con 60+ minutos jugados. |
-| `/top tenis s2` | Solo partidos en el 2º set (o parte/cuarto) en adelante. |
-| `/top 5 futbol +75 1.2-3` | Todos los filtros son combinables. |
-| `/seguras` | Top 3 jugadas con mayor índice de confianza (e-sports excluidos). |
-| `/seguras futbol` | Ídem, filtrado por deporte (permite pedir e-sports explícitamente). |
-| `/stats` | Tasa de acierto por confianza + calibración (Brier, log loss, ECE), CLV y semáforo de edge. |
-| `/health` | ECE de los últimos 200 picks liquidados; alerta si hay drift de calibración. |
-| `/deportes` | Deportes en vivo ahora con conteo de eventos y jugadas. |
-| `/dashboard` | **Solo dueño.** Levanta el panel web (puerto 3001), que además dispara las alertas automáticas. `status` y `off` para consultarlo y detenerlo. Alias: `/panel`. |
-| `/train` | **Solo dueño.** Exporta el dataset y reentrena el modelo. |
-| `/help` | Ayuda. |
+| `/top [N] [deporte] [rango] [+min] [sN]` | Momios más bajos. Todos los filtros combinables. |
+| `/seguras [deporte]` | Top 3 por índice de confianza. |
+| `/golden [deporte]` | Un solo pick: edge máximo con `conf ≥ 70%` y momio ≥ 1.15. |
+| `/parlay [deporte]` | Combos sugeridos, +EV verificado por pata. |
+| `/stats` | Acierto por confianza, calibración (Brier, log loss, ECE), CLV y semáforo de edge. |
+| `/health` | ECE de los últimos 200 liquidados; alerta de drift. |
+| `/unidades [hoy\|ayer\|fecha]` | Unidades apostadas vs ganadas; con argumento, detalle pick por pick. |
+| `/pick <id>` | Ficha de un pick con gráfica de evolución de cuota. El `#id` sale en cada pick automático. |
+| `/dia [ayer\|fecha]` | Gráfica de P/L acumulado del día. |
+| `/validar [6h]` | Contrasta liquidaciones contra el marcador oficial. |
+| `/deportes` | Deportes en vivo con conteo de eventos. |
+| `/start`, `/vip`, `/ticket` | Alta y suscripción VIP. |
+| `/help` | Ayuda y botonera. |
+
+**Solo administrador** (`isOwner()`, contra `TELEGRAM_CHAT_ID`):
+
+| Comando | Descripción |
+|---|---|
+| `/train` | Exporta el dataset y reentrena (walk-forward + calibración). |
+| `/dashboard` (`/panel`) | Levanta el panel web (puerto 3001). `status` / `off`. |
+| `/reboot` (`/reiniciar`) | Reinicia el bot. Exige `BOT_SUPERVISED`; si nadie lo relanzaría, se niega. |
+
+### Control de acceso
+
+El bot **atiende a cualquier chat** a propósito: los suscriptores VIP necesitan `/start` y `/vip`. Los comandos que lanzan procesos, escriben en disco o gastan cuota de API están tras `isOwner()`. **Cualquier comando nuevo de ese tipo debe pasar por `isOwner()`** — el resto son de solo lectura.
 
 ---
 
-## Algoritmo de confianza (`/seguras`)
+## Scoring de confianza
 
-Cada jugada candidata (momio decimal entre 1.05 y 3.0) recibe un índice de confianza `[0..1]`:
+Cada candidata (momio 1.35–3.0) recibe un índice `[0..1]`:
 
 ```
-conf = 0.45·probJusta + 0.20·avance + 0.20·situación + 0.15·línea
+conf = 0.4375·probJusta + 0.375·avance + 0·situación + 0.1875·línea
 ```
 
 | Factor | Peso | Cálculo |
 |---|---|---|
-| **Probabilidad justa** | 45% | `(1/momio) / Σ(1/momios del mercado)` — elimina el margen de la casa (vig). |
-| **Avance del juego** | 20% | `minuto / duración` o `set / setsTotales`, con parámetros por deporte. A menos tiempo restante, más certeza. |
-| **Situación del juego** | 20% | Depende del tipo de mercado (ver tabla siguiente). |
-| **Tendencia de línea** | 15% | Sobre los snapshots de la última hora: pendiente relativa (línea bajando = el mercado confía) menos penalización por volatilidad (línea que rebota = incertidumbre). |
+| Probabilidad justa | **43.75%** | De-vig por Shin sobre el mercado completo. |
+| Avance del juego | **37.5%** | `minuto / duración` o `set / setsTotales`, por deporte. |
+| Situación del juego | **0%** | Se sigue calculando y persistiendo (el firewall la usa en R5), pero **salió de la mezcla**. |
+| Tendencia de línea | **18.75%** | Pendiente relativa sobre la última hora, menos penalización por volatilidad. |
 
-### Situación por tipo de mercado
+**Por qué `f_situacion` pesa 0.** Medido sobre picks liquidados (N=1151): su correlación con acertar es **negativa (−0.119)** y la heurística le daba el 20% del peso, así que restaba señal. La mezcla completa (corr +0.080) rendía *peor* que su mejor componente sola (`f_prob_justa`, +0.131). Con corte temporal, quitarla mejoró dentro y fuera de muestra. Reversible sin tocar código: `HEURISTIC_W_SITUACION`.
+
+<details>
+<summary>Situación por tipo de mercado y parámetros por deporte</summary>
 
 | Mercado | Evaluación en vivo |
 |---|---|
-| Ganador / 1x2 | Ventaja del marcador a favor del pick, normalizada por el margen "decisivo" del deporte. |
-| Empate | Favorable mientras menor sea la diferencia actual. |
+| Ganador / 1x2 | Ventaja del marcador, normalizada por el margen "decisivo" del deporte. |
+| Empate | Favorable mientras menor sea la diferencia. |
 | Doble oportunidad | Mide solo el riesgo del resultado NO cubierto. |
 | Hándicap | Aplica el hándicap al marcador actual. |
-| Total (Más/Menos) | Proyecta el ritmo de anotación al final del juego y lo compara con la línea. Si la línea ya se superó: ganado (Más) o descartado (Menos). |
+| Total (Más/Menos) | Proyecta el ritmo de anotación y lo compara con la línea. |
 | Ambos marcan | Detecta si ya se cumplió; si no, pondera el tiempo restante. |
-
-### Parámetros por deporte
 
 | Deporte | Duración | Margen decisivo | Sets |
 |---|---|---|---|
@@ -130,161 +165,187 @@ conf = 0.45·probJusta + 0.20·avance + 0.20·situación + 0.15·línea
 | Béisbol | 9 innings | 3 carreras | — |
 | Tenis | — | 1 set | 3 |
 | Voleibol / Tenis de mesa / Dardos | — | 2 | 5 |
-| Otros (default) | 90' | 3 | 3 |
+| Otros | 90' | 3 | 3 |
+
+</details>
 
 ---
 
-## Firewall de jugadas (`src/firewall.js`)
+## Puertas de emisión y grupo de control
 
-Filtro duro que corre **después** del scoring y **antes** de emitir a Telegram, sumado a
-`MIN_CONF`/`MIN_EDGE` y a los vetos por mercado que ya vivían en `confidence.js`. La diferencia es
-el origen: cada regla sale de un bucket con ROI negativo medido sobre picks liquidados y validado
-**fuera de muestra** con corte temporal (`scripts/backtest_firewall.js`, que reutiliza la misma
-función que producción, así que refleja lo que haya en `.env`).
+Tras puntuar, cada candidata pasa por `POST_SCORE_GATES` **en orden**:
 
-| Regla | Bloquea | Estado | Fuera de muestra |
-|---|---|---|---|
-| R1 | mercado Over ("Más de") | activa | N=86, WR 46.5%, ROI −22.1% |
-| R2 | `progress < FIREWALL_MIN_AVANCE` (0.40) | activa | N=86, WR 46.5%, ROI −22.1% |
-| R3 | momio > `FIREWALL_MAX_ODDS` (3.0) | inerte | N=0 — `rankPicks` ya acota a 3.0 |
-| R4 | momio < `FIREWALL_MIN_ODDS` | **desactivada** | evidencia invertida (ver abajo) |
-| R5 | `f_situacion ≥ FIREWALL_MAX_SITUACION` (0.99) | activa | N=79, WR 50.6%, ROI −14.3% |
-| R6 | `f_linea ≥ FIREWALL_MAX_LINEA` | **desactivada** | era un artefacto (ver abajo) |
+```
+incierto → over_bloqueado → mercado_bloqueado → guardas5 → firewall → min_conf → min_edge → modelo_veto
+```
+
+La lista se declara **una sola vez** porque la consumen dos caminos: `rankPicks` (producción) y `auditRejections` (el grupo de control). Si divergieran, el control quedaría mal etiquetado y se entrenaría contra una frontera que el bot no usa.
+
+Lo rechazado se guarda en **`rejected_picks`** con la puerta que lo frenó, y **se liquida igual que un pick real**. Reparto actual:
+
+| Puerta | Rechazados | Liquidados |
+|---|---|---|
+| `min_conf` | 7 649 | 7 581 |
+| `incierto` | 1 705 | 1 704 |
+| `mercado_bloqueado` | 748 | 748 |
+| `firewall` | 625 | 622 |
+| `guardas5` | 300 | 299 |
+| `min_edge` | 194 | 194 |
+
+**Para qué sirve.** Sin él, el entrenamiento solo veía picks que ya habían pasado `MIN_CONF`/`MIN_EDGE`/firewall: puro sesgo de selección, que comprime el 80% de las confianzas en 9 puntos y deja al clasificador **sin negativos de verdad**. El grupo de control cubre un rango de `f_prob_justa` que los picks emitidos nunca vieron.
+
+> **Al entrenar, la adopción se decide sobre `origin='picks'`, no sobre el agregado.** El 2026-08-16 un modelo pasó la regla con +0.0070 de Brier en el agregado mientras **empeoraba −0.0026** sobre los picks emitidos: el 95% del pool de evaluación eran rechazados, así que el agregado medía sobre todo distinguir "rechazado típico" de "pick típico", que es trivial y no vale dinero.
+
+---
+
+## Firewall (`src/firewall.js`)
+
+Filtro duro **después** del scoring. Cada regla sale de un bucket con ROI negativo medido sobre picks liquidados y validado **fuera de muestra** con corte temporal (`scripts/backtest_firewall.js`, que reutiliza la misma función que producción).
+
+| Regla | Bloquea | Estado |
+|---|---|---|
+| R1 | mercado Over ("Más de") | activa |
+| R2 | `progress < FIREWALL_MIN_AVANCE` (0.40) | activa |
+| R3 | momio > `FIREWALL_MAX_ODDS` (3.0) | inerte — `rankPicks` ya acota a 3.0 |
+| R4 | momio < `FIREWALL_MIN_ODDS` | **desactivada** — evidencia invertida |
+| R5 | `f_situacion ≥ FIREWALL_MAX_SITUACION` (0.99) | activa |
+| R6 | `f_linea ≥ FIREWALL_MAX_LINEA` | **desactivada** — era un artefacto |
+| R7 | Under con línea > `FIREWALL_MAX_UNDER_LINE` (3.5) | activa |
 
 ```
 TEST (fuera de muestra)   sin firewall: N=719 WR=62.9% ROI=-3.2%
                           CON firewall: N=629 WR=65.0% ROI=-0.8%  (retiene 87%)
 ```
 
-R1 y R2 están **muy solapadas**: fuera de muestra bloquean exactamente el mismo conjunto (Overs
-tardíos). Su aporte no es aditivo.
+R1 y R2 están **muy solapadas**: fuera de muestra bloquean el mismo conjunto (Overs tardíos). Su aporte no es aditivo.
 
-**Por qué R4 y R6 nacen desactivadas.** Ambas se derivaron de un dataset contaminado.
-`globalDrawScanner.ts` inserta sus picks **directo en la BD, sin pasar por `rankPicks`**, y con
-features **hardcodeadas**: una única combinación (`f_prob_justa=0.72`, `f_avance=0.85`,
-`f_situacion=0.75`, `f_linea=0.82`, `conf=0.76`) para las 184 filas. Como `0.82 ≥ 0.80`, R6 capturaba
-el 100% de esos picks: medía "el scanner rinde mal", no un fenómeno de mercado — fuera de muestra
-bloqueaba 184 picks, **todos del scanner y ninguno con features reales**. Sobre picks reales,
-`f_linea ≥ 0.80` rinde **ROI +2.3%** (N=128) y `momio < 1.30` rinde **ROI +8.9%** (N=67): activarlas
-bloquearía buckets **ganadores**. Los backtests excluyen ahora `source='global_draw'` por eso mismo.
+**Por qué R7.** El edge de los Under no es uniforme por línea: `≤ 3.5` rinde **ROI +9.8%** (IC [+3.1%, +16.4%]); `> 3.5` rinde **+0.7%** con el IC cruzando cero. R7 corta donde el edge se desvanece.
 
-**Qué hace y qué no**: quita daño, **no crea edge** — pasa de perdedor a break-even.
-No existe configuración que dé 100% de aciertos: el techo medido en el subconjunto más selectivo
-(partido casi terminado) es ~80–84% WR. `FIREWALL_ENABLED=false` lo apaga entero. No se aplica a
-`parlayCombos`: sus piernas viven en 1.08–1.45 por diseño y el backtest se corrió sobre picks simples.
+**Por qué R4 y R6 nacen desactivadas.** Se derivaron de un dataset contaminado: `globalDrawScanner.ts` insertaba picks directo en la BD, sin pasar por `rankPicks`, con features **hardcodeadas** (una única combinación para 184 filas). Como `0.82 ≥ 0.80`, R6 capturaba el 100% de esos picks: medía "el scanner rinde mal", no un fenómeno de mercado. Sobre picks reales, `f_linea ≥ 0.80` rinde **+2.3%** y `momio < 1.30` rinde **+8.9%**: activarlas bloquearía buckets **ganadores**. Los backtests excluyen `source='global_draw'` y esas filas están marcadas `score_version = 0`.
 
-La marca 🛡️ **ELITE** señala el único subconjunto que quedó positivo fuera de muestra
-(Under + `progress ≥ 0.75` + `f_linea ≥ 0.55`: N=37, WR 75.7%, ROI +11.8%). N pequeño: es una marca
-orientativa, no una recomendación de stake.
+**Qué hace y qué no**: quita daño, **no crea edge** — pasa de perdedor a break-even. El techo medido en el subconjunto más selectivo es ~80–84% WR. `FIREWALL_ENABLED=false` lo apaga entero. No se aplica a `parlayCombos`.
+
+La marca 🛡️ **ELITE** señala el único subconjunto que quedó positivo fuera de muestra (Under + `progress ≥ 0.75` + `f_linea ≥ 0.55`: N=37, WR 75.7%, ROI +11.8%). N pequeño: es orientativa, no una recomendación de stake.
 
 ---
 
-## Backtesting
+## Dimensionamiento (`STAKE_MODE`)
 
-1. Cada `/seguras` registra sus picks en la tabla `picks` (momio, confianza, timestamp).
-2. El recolector de fondo detecta cuándo un evento sale del listado en vivo y lo **liquida** automáticamente: califica el pick (`win`/`loss`) contra el último marcador conocido usando `src/markets.js`.
-3. `/stats` muestra la tasa de acierto por nivel de confianza (alta ≥75%, media 60–75%, baja <60%), para verificar la calibración de los pesos con datos reales.
+| Modo | Qué hace |
+|---|---|
+| `flat` | 1 unidad siempre. |
+| `kelly` / `half_kelly` | Fracción de Kelly sobre `conf` y momio. |
+| **`tiered`** (activo) | Escalonado por **mercado + línea + `f_apertura`**. |
 
-**Limitación**: la liquidación usa el último marcador muestreado (cada `SAMPLE_MINUTES`), no el resultado oficial. En finales muy cerrados el resultado puede diferir. Los picks no calificables se marcan `unknown` y no cuentan en las estadísticas.
+**Por qué `tiered` y no Kelly.** La confianza **no ordena** el resultado: Spearman entre `conf` y acierto = 0.09, y las cuatro políticas dan el mismo ROI por unidad arriesgada — pero Kelly duplica el drawdown. Escalonar por línea y apertura sube el P/L ~50% y baja el drawdown ~37%.
+
+Y hay una razón de seguridad: **`tiered` no lee `conf`**. Eso cierra el vector del incidente de agosto, en el que un modelo mal calibrado infló la confianza y Kelly multiplicó el tamaño de la apuesta.
 
 ---
 
-## Pipeline de mejora continua (Etapas 0–4)
+## Modelo aprendido
 
-```
-snapshots densos ──► /seguras registra pick (4 features + conf + edge)
-      │                        │
-      │                        ├─► captura sharp (The Odds API / Pinnacle):
-      │                        │     sharp_entry_odd + matching por nombres
-      │                        │     normalizados e inicio ± 15 min
-      │                        ▼
-      └────────────► liquidación (win/loss) + cierre Altenar + cierre sharp
-                               │
-                               ▼
-             dataset.csv ──► train_weights.py (walk-forward + calibración)
-                               │                    │
-                               ▼                    ▼
-                          model.json ◄──── regla de adopción (Brier+logloss OOS)
-                               │
-                               ▼
-             MODEL_MODE: heuristic → shadow → learned  (reversible por .env)
-                               │
-                               ▼
-              /stats: Brier · log loss · ECE · CLV_altenar · CLV_sharp · semáforo
-              /health: drift de calibración (ECE últimos 200 > 0.05 → reentrenar)
-```
+`src/model.js` + `scripts/train_weights.py`: logística calibrada, evaluada en **walk-forward temporal** (nunca partición aleatoria — sería fuga temporal).
 
-- **De-vig** (`src/devig.js`): probabilidad justa con el método de Shin por defecto (`DEVIG_METHOD`).
-- **`f_avance` vs `f_avance_model`** (importante al entrenar): `f_avance` guarda el avance **crudo**
-  (`progress`); `f_avance_model` guarda el valor **realmente servido al modelo**, que para un
-  "Más de X" con la línea aún sin alcanzar es `1 - progress`. Hasta el 2026-08-09 el dataset se
-  exportaba desde la columna cruda mientras producción servía la transformada: un *train/serve skew*
-  que afectaba al 20.4% de las filas (368 de 2228). `scripts/export-dataset.js` exporta ahora
-  `f_avance_model`, y `scripts/backfill-avance-model.js` reconstruyó el histórico reutilizando la
-  misma función pura (`avanceForModel`) que usa `scoreRow`. El firewall sigue leyendo el **crudo**:
-  sus umbrales se derivaron sobre esa escala.
-- **Score aprendido** (`src/model.js` + `scripts/train_weights.py`): logística calibrada sobre los 4 factores, evaluada en walk-forward temporal; solo se adopta si mejora Brier y log loss out-of-sample reteniendo ≥60% de la mejora in-sample.
-- **Fuente sharp** (`src/sharp.js`): The Odds API con prioridad Pinnacle → Betfair exchange (`ODDS_API_KEY`, `SHARP_*` en `.env`). Solo mercados de ganador/empate (h2h). **Consumo bajo demanda**: el matching de eventos usa el endpoint `/events` (gratuito); solo se gasta 1 crédito al capturar el momio de entrada de un pick matcheado y 1 más al cierre, cuando el evento desaparece del feed de Altenar (sin polling). ~2 créditos por pick matcheado ⇒ la cuota gratuita de ~500/mes cubre ~250 picks. Si el evento ya salió del feed sharp al capturar el cierre, se conserva el último momio visto (como mínimo el de entrada).
-- **Edge estimado**: `edge = conf·momio − 1` se guarda en cada pick. `MIN_EDGE` (default 0 = desactivado) filtra la emisión de `/seguras`; activarlo reduce volumen y alarga el camino a N=300.
+**Regla de adopción**: mejorar Brier **y** log loss fuera de muestra, ganar la mayoría de folds, **y** cumplir lo mismo sobre `origin='picks'` con `N ≥ MIN_PICKS_OOS` (300). Todo queda en `model.json:oos_metrics.picks_only`.
 
-### Métrica primaria de decisión: CLV_sharp
+### Features de mercado (2026-08-19)
 
-`CLV_sharp = prob_shin(cierre sharp) / prob_shin(entrada Altenar) − 1`. **Solo el CLV
-contra la línea sharp cuenta como evidencia de edge**; el CLV contra el propio cierre
-de Altenar (línea blanda) es únicamente diagnóstico. Semáforo de `/stats`
-(N = picks liquidados con match sharp):
+El modelo era **ciego al mercado** pese a que el mercado es lo único que hemos demostrado que discrimina. Añadidas `is_under`, `is_over`, `is_btts`, `is_ganador`, `is_dnb`, `linea`. Sobre picks emitidos (N=439):
+
+| variante | d_Brier | folds |
+|---|---|---|
+| base (5 features) | −0.0010 | 2/4 |
+| **+ mercado + línea** | **+0.0044** | **4/4** |
+| CONTROL: + ruido aleatorio | −0.0006 | 1/4 |
+
+El **control con ruido** es lo que hace creíble el resultado: una feature aleatoria no mejora, así que la ganancia es información real y no capacidad extra. Bootstrap pareado: **P(mejora>0) = 95.4%** (el modelo rechazado el 08-16 daba 18.8%). Los coeficientes coinciden con mediciones previas e independientes: `is_over` = −0.520, que concuerda con su ROI de −22.2%.
+
+**Una sola fuente de verdad**: `marketFeatures()` vive en `src/model.js` y `export-dataset.js` escribe las columnas **ya calculadas** al CSV. Python nunca las recalcula. Si cada lado las derivara por su cuenta, cualquier divergencia sería un *train/serve skew* silencioso.
+
+### Por qué sigue en `shadow`
+
+El IC95% roza el cero ([−0.0009, +0.0096]) y la hipótesis "el mercado importa" salió de **este mismo dataset**, así que el sesgo de selección no es cero. En shadow el modelo se calcula y se persiste (`conf_learned`) sin decidir nada, acumulando historial genuinamente fuera de muestra.
+
+**Veto, probado y apagado.** Existe una puerta `modelo_veto` (`MODEL_VETO=1`) que exige pasar **ambos** umbrales, `conf_heuristic` y `conf_learned` — el modelo solo puede *quitar* picks, nunca añadir. Se apagó tras medirla fuera de muestra: a 0.70 recorta ~23% del volumen para dejar el P/L igual o peor (+29.5u con veto vs **+30.4u sin él**, N=439), y el segmento vetado resulta rentable. La medición in-sample decía −23.5u; era sobreajuste casi entero.
+
+### `f_avance` vs `f_avance_model`
+
+`f_avance` guarda el avance **crudo**; `f_avance_model` el valor **realmente servido al modelo**, que para un "Más de X" sin la línea alcanzada es `1 - progress`. Hasta el 2026-08-09 el dataset se exportaba desde la columna cruda mientras producción servía la transformada: un *train/serve skew* que afectaba al 20.4% de las filas. El firewall sigue leyendo el **crudo**: sus umbrales se derivaron sobre esa escala.
+
+---
+
+## Fuente sharp y CLV
+
+`src/sharp.js`: The Odds API con prioridad Pinnacle → Betfair. Solo mercados h2h. **Consumo bajo demanda**: el matching usa el endpoint `/events` (gratuito); se gasta 1 crédito al capturar la entrada y 1 al cierre. ~2 créditos por pick matcheado.
+
+**Métrica primaria de decisión**: `CLV_sharp = prob_shin(cierre sharp) / prob_shin(entrada Altenar) − 1`. **Solo el CLV contra la línea sharp cuenta como evidencia de edge**; el CLV contra el cierre de Altenar (línea blanda) es diagnóstico.
 
 | Condición | Veredicto |
 |---|---|
-| CLV_sharp medio > 0 y N ≥ 300 | **EDGE PROBABLE**: el sistema bate la línea de cierre; el ROI llegará con volumen. |
-| CLV_sharp ≤ 0 pero ROI > 0 | **PRECAUCIÓN**: resultado positivo sin batir el cierre = probablemente varianza. No escalar. |
-| CLV_sharp > 0 pero ROI < 0 | **VARIANZA NEGATIVA**: mantener proceso, revisar en +100 picks. |
-| N < 300 | **MUESTRA INSUFICIENTE** (N/300). |
-
-### Limitaciones (léelas antes de sacar conclusiones)
-
-- **Matching entre proveedores**: el emparejamiento Altenar ↔ The Odds API es heurístico
-  (nombres normalizados + hora de inicio estimada ± 15 min). Habrá falsos negativos
-  (picks sin match) y, con equipos homónimos, posibles falsos positivos. Los no-matcheados
-  quedan en `picks.sharp_match = 'unmatched'` y la tasa de match se reporta en `/stats`.
-- **Cobertura sharp parcial**: solo ligas configuradas en `SHARP_SPORT_KEYS` y solo mercados
-  h2h; totales, hándicaps y deportes de nicho no tienen referencia sharp. El cierre sharp es
-  el "último visto" antes de liquidar, limitado por la cuota gratuita de la API (~500 req/mes).
-- **Riesgo de limitación de cuenta**: si se apostara con dinero real, las casas blandas
-  limitan o cierran cuentas ganadoras; el CLV positivo sostenido acelera ese resultado.
-- **Nada de esto constituye consejo de apuestas**: es un sistema de medición y aprendizaje.
-  El bot no coloca apuestas ni debe automatizarse para hacerlo.
+| CLV_sharp > 0 y N ≥ 300 | **EDGE PROBABLE** |
+| CLV_sharp ≤ 0 pero ROI > 0 | **PRECAUCIÓN**: probablemente varianza. No escalar. |
+| CLV_sharp > 0 pero ROI < 0 | **VARIANZA NEGATIVA**: mantener proceso. |
+| N < 300 | **MUESTRA INSUFICIENTE** |
 
 ---
 
 ## Base de datos (`snapshots.db`)
 
-**`snapshots`** — una fila por momio observado:
-`ts, sport, sport_id, champ, event_id, event, score, live_time, market, selection, odd_decimal, odd_american`
-
-**`picks`** — registro de `/seguras`:
-`ts, event_id, event, sport, market, selection, odd_decimal, conf, result, final_score, settled_ts`
-más las columnas de las etapas 0–4: `result_source, closing_odd_decimal, closing_ts` (cierre Altenar),
-`f_prob_justa, f_avance, f_avance_model, f_situacion, f_linea, conf_heuristic, conf_learned` (features y scores),
-`sharp_entry_odd, sharp_closing_odd, sharp_closing_market, sharp_source, sharp_event_id, sharp_match, edge` (fuente sharp y edge estimado).
-
-Consultas útiles:
+| Tabla | Filas | Contenido |
+|---|---|---|
+| `snapshots` | ~47.5 M | Una fila por momio observado. |
+| `picks` | 2 887 | Picks emitidos, features, scores, liquidación, datos sharp. |
+| `rejected_picks` | 11 220 | Grupo de control: candidatas rechazadas con `reject_rule`, liquidadas igual. |
+| `subscribers` | 1 | Suscriptores VIP. |
+| `sharp_budget` | 16 | Consumo de créditos de The Odds API. |
+| `alerted_events` | 1 304 | Deduplicación de alertas. |
 
 ```sql
 -- Movimiento de línea de un evento
 SELECT ts, market, selection, odd_decimal FROM snapshots
 WHERE event_id = 16838147 ORDER BY ts;
 
--- Historial de picks liquidados
-SELECT ts, event, selection, odd_decimal, conf, result, final_score
-FROM picks WHERE result IS NOT NULL ORDER BY ts DESC;
+-- Rendimiento por puerta del grupo de control
+SELECT reject_rule, COUNT(*) n,
+       ROUND(100.0*SUM(result='win')/SUM(result IN ('win','loss')),1) wr
+FROM rejected_picks WHERE result IN ('win','loss') GROUP BY reject_rule;
 ```
+
+---
+
+## Backtesting y liquidación
+
+1. Cada pick emitido se registra con momio, confianza, edge, stake y las features.
+2. El sampler detecta cuándo un evento sale del listado en vivo y lo **liquida** contra el último marcador conocido (`src/markets.js`).
+3. `/stats` y `/health` reportan calibración; `/validar` contrasta contra el marcador oficial.
+
+**Limitación**: la liquidación usa el último marcador muestreado, no el resultado oficial. En finales cerrados puede diferir. Los no calificables se marcan `unknown` y no cuentan.
+
+El grupo de control **espera `CONTROL_SETTLE_MIN` minutos** antes de liquidar. Sin esa espera, el 45% se liquidaba en menos de 20 minutos contra un marcador aún provisional, fabricando ~159 unidades de edge inexistente.
 
 ---
 
 ## Notas operativas
 
-- El bot corre como tarea programada de Windows (`PlaydoitMonitorBot`): arranca oculto al iniciar sesión y `scripts/run-bot.cmd` lo relanza solo si crashea (log en `bot.log`, rotado a `bot.log.old` en cada arranque). Tras cambiar código o `.env`, ejecuta `scripts\restart-bot.cmd`. Limitación: corre desde que inicias sesión; para que arranque sin login habría que marcar "Ejecutar tanto si el usuario inició sesión como si no" en el Programador de tareas (pide tu contraseña).
-- La API se consulta con `User-Agent` de navegador y `Referer` de playdoit.mx; hay una pausa de 500 ms entre deportes y reintentos con backoff ante fallos.
-- **Control de acceso**: el bot atiende a cualquier chat, porque los suscriptores VIP necesitan `/start` y `/vip`. Los comandos que ejecutan procesos en la máquina (`/train`, `/dashboard`) están restringidos al `TELEGRAM_CHAT_ID` mediante `isOwner()`; el resto son de solo lectura y quedan abiertos a propósito. Cualquier comando nuevo que lance procesos, escriba en disco o gaste cuota de API debe pasar por `isOwner()`.
-- El factor de línea mejora con historial: el recolector de fondo alimenta la BD cada 3 minutos aunque no uses comandos.
+- El bot corre como tarea programada de Windows (`PlaydoitMonitorBot`). `scripts/run-bot.cmd` lo envuelve en un bucle que lo relanza a los 10 s de cualquier salida y exporta `BOT_SUPERVISED=1`, que es lo que permite `/reboot`. Log en `bot.log`, rotado a `bot.log.old`.
+- **Reiniciar**: `scripts\restart-bot.cmd`, o `/reboot` desde Telegram. Un `kill` a secas no basta si el proceso está atascado — el supervisor lo relanza a los 10 s y vuelve a caer en lo mismo; hay que matar primero el `cmd.exe` supervisor.
+- Node se toma de `C:\Users\Invitadow\node` a propósito: `C:\nvm4w\nodejs` apunta al perfil de **otro** usuario y cualquier `nvm use` rompería `better-sqlite3`, que es nativo.
+- La API se consulta con `User-Agent` de navegador y `Referer` de playdoit.mx, con 500 ms entre deportes y tope `MAX_REQ_PER_MIN`.
+- El sampler corre cada `SAMPLE_MINUTES` (**1 min** en producción) y alimenta la BD aunque no uses comandos: el factor de línea mejora con historial.
+
+---
+
+## Limitaciones conocidas
+
+Todo lo de aquí está **medido**, no supuesto.
+
+- **La base de datos crece sin freno y el prune no lo arregla.** La guarda `event_id NOT IN (SELECT event_id FROM picks)` conserva el historial **entero, sin límite temporal**, de los 2 737 eventos que alguna vez dieron un pick. El **100%** de las filas más viejas que `RETENTION_DAYS` están protegidas: el prune examina millones y borra **cero**. Buscar 5 000 filas borrables cuesta 80 s; borrarlas, 12 ms. Decidir cuánta historia necesita un pick liquidado es una decisión de producto pendiente.
+- **`better-sqlite3` es síncrono.** Cualquier consulta pesada **congela el proceso entero** — sampler, Telegram y timers incluidos. Por eso `prune()` va diferido y con ventana acotada (`PRUNE_MAX_MS`, `PRUNE_DELAY_MS`). Un bot "vivo, quemando CPU y sin escribir logs" es este síntoma.
+- **El sampler puede enmudecer sin morirse.** `sample()` tiene guard de instancia única; si un `await` interno se colgara, el guard quedaría puesto y el bot dejaría de muestrear **para siempre**, sin error y con Telegram respondiendo normal. Mitigado con timeouts en todos los `fetch` y el watchdog `SAMPLE_STUCK_MS`.
+- **8 tests fallan** (`npm test` → 112 pass / 8 fail). No son flaky ni ajenos: `isRejectedBy5Guards` exige "mínimo 4 snapshots activos", así que rechaza toda fila **sintética** por no tener histórico en la BD. Los tests afectados son de `rankPicks` y necesitan fixtures con historial.
+- **`is_ganador` está fragmentado**: casa con `Resultado Final (Tiempo Regular)` pero no con `1x2`, `Ganador` ni `Ganador (incl. prórroga)`. Son 51 de 2 310 picks emitidos (2.2%), así que el +0.0044 medido ya incluye el defecto.
+- **Matching sharp heurístico**: nombres normalizados + hora de inicio ± 15 min. Habrá falsos negativos y, con equipos homónimos, falsos positivos.
+- **Cobertura sharp parcial**: solo `SHARP_SPORT_KEYS` y solo h2h. Totales y hándicaps no tienen referencia sharp.
+- **El mapa precio→resultado no es estacionario**: el lift sobre el precio cayó de +8.9 pp a +1.8 pp en tres semanas. Ningún modelo captura un mapa que se mueve más rápido de lo que se acumulan datos — de ahí que las ganancias sean de milésimas de Brier, no de centésimas.
+- **Riesgo de limitación de cuenta**: si se apostara con dinero real, las casas blandas limitan cuentas ganadoras.
