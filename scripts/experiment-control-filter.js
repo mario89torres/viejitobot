@@ -31,7 +31,7 @@ const OUT = process.argv[2] || path.join(__dirname, '..', 'dataset_con_regla.csv
 // Mismo WHERE que export-dataset.js, más reject_rule para poder segmentar.
 // `origin` distingue la población que recibe dinero de la que no.
 const rows = db.prepare(`
-  SELECT ts, sport, market, odd_decimal,
+  SELECT ts, sport, market, selection, odd_decimal,
     f_prob_justa, f_avance_model AS f_avance, f_situacion, f_linea, f_apertura,
     COALESCE(score_version, 1) AS score_version,
     'picks' AS origin, '' AS reject_rule,
@@ -44,7 +44,7 @@ const rows = db.prepare(`
 
   UNION ALL
 
-  SELECT ts, sport, market, odd_decimal,
+  SELECT ts, sport, market, selection, odd_decimal,
     f_prob_justa, f_avance_model AS f_avance, f_situacion, f_linea, f_apertura,
     COALESCE(score_version, 1) AS score_version,
     'rejected' AS origin, COALESCE(reject_rule, '(sin regla)') AS reject_rule,
@@ -62,9 +62,9 @@ const esc = v => {
   const s = String(v ?? '');
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 };
-const header = 'ts,sport,market,odd_decimal,f_prob_justa,f_avance,f_situacion,f_linea,f_apertura,score_version,origin,reject_rule,y';
+const header = 'ts,sport,market,selection,odd_decimal,f_prob_justa,f_avance,f_situacion,f_linea,f_apertura,score_version,origin,reject_rule,y';
 const lines = rows.map(r => [
-  r.ts, r.sport, r.market, r.odd_decimal,
+  r.ts, r.sport, r.market, r.selection, r.odd_decimal,
   r.f_prob_justa, r.f_avance, r.f_situacion, r.f_linea, r.f_apertura,
   r.score_version, r.origin, r.reject_rule, r.y,
 ].map(esc).join(','));

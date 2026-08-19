@@ -59,7 +59,26 @@ HEUR_WEIGHTS = np.array([
     float(os.environ.get("HEURISTIC_W_SITUACION") or 0),
     float(os.environ.get("HEURISTIC_W_LINEA") or 0.1875),
 ])
-FEATURES = HEUR_FEATURES + ["f_apertura"]
+# Features de MERCADO (2026-08-19). Vienen YA CALCULADAS del CSV: las deriva
+# marketFeatures() en src/model.js, la misma función que usa el scoring en
+# producción. Python no las recalcula a propósito — dos implementaciones podrían
+# divergir y eso sería un train/serve skew silencioso (el bug de f_avance).
+#
+# Por qué se añaden: el modelo era ciego al mercado, pese a que es lo único que
+# demostradamente discrimina (Under <=3.5 +9.8% ROI vs Over -22.2%). Medido
+# sobre picks EMITIDOS, que es la métrica que decide:
+#   base (5 features)   d_Brier -0.0011  2/4 folds
+#   + mercado + línea   d_Brier +0.0044  4/4 folds
+#   CONTROL: + ruido    d_Brier -0.0006  1/4 folds  <- no mejora, como debe
+# El control con ruido aleatorio no mejora, así que la ganancia es información
+# real y no capacidad extra del modelo. Ver scripts/experiment-features.py.
+#
+# Se pueden desactivar con MARKET_FEATURES=0 para comparar contra el modelo viejo.
+MARKET_FEATURES = (
+    ["is_under", "is_over", "is_btts", "is_ganador", "is_dnb", "linea"]
+    if os.environ.get("MARKET_FEATURES", "1") != "0" else []
+)
+FEATURES = HEUR_FEATURES + ["f_apertura"] + MARKET_FEATURES
 MIN_SAMPLES = 80          # mínimo absoluto para intentar entrenar
 SPORT_MIN = 50            # picks mínimos para dummy propia de deporte
 # train >= ISOTONIC_MIN -> isotonic; si no, sigmoid (Platt).

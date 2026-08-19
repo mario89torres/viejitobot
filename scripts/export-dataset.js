@@ -5,6 +5,8 @@ const path = require('path');
 const fs = require('fs');
 const { db } = require('../src/db');
 
+const { marketFeatures, MARKET_FEATURES } = require('../src/model');
+
 const OUT = process.argv[2] || path.join(__dirname, '..', 'dataset.csv');
 
 // f_avance se exporta desde f_avance_model — el valor REALMENTE SERVIDO al
@@ -36,7 +38,7 @@ const OUT = process.argv[2] || path.join(__dirname, '..', 'dataset.csv');
 // capacidad de distinguir "rechazado típico" de "pick típico", que es trivial y
 // no vale dinero. Ver model.json:disabled_reason.
 const rows = db.prepare(`
-  SELECT ts, sport, market, odd_decimal, opening_odd_decimal,
+  SELECT ts, sport, market, selection, odd_decimal, opening_odd_decimal,
     f_prob_justa, f_avance_model AS f_avance, f_situacion, f_linea, f_apertura,
     COALESCE(score_version, 1) AS score_version,
     'picks' AS origin,
@@ -55,7 +57,7 @@ const rows = db.prepare(`
 
   UNION ALL
 
-  SELECT ts, sport, market, odd_decimal, NULL AS opening_odd_decimal,
+  SELECT ts, sport, market, selection, odd_decimal, NULL AS opening_odd_decimal,
     f_prob_justa, f_avance_model AS f_avance, f_situacion, f_linea, f_apertura,
     COALESCE(score_version, 1) AS score_version,
     'rejected' AS origin,
@@ -74,11 +76,21 @@ const esc = v => {
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 };
 
-const header = 'ts,sport,market,odd_decimal,opening_odd_decimal,f_prob_justa,f_avance,f_situacion,f_linea,f_apertura,score_version,origin,y';
-const lines = rows.map(r => [
-  r.ts, r.sport, r.market, r.odd_decimal, r.opening_odd_decimal,
-  r.f_prob_justa, r.f_avance, r.f_situacion, r.f_linea, r.f_apertura, r.score_version, r.origin, r.y,
-].map(esc).join(','));
+// Las features de mercado se derivan con marketFeatures() de src/model.js — la
+// MISMA función que usa el scoring en producción. Python solo lee las columnas,
+// nunca las recalcula: así no puede haber divergencia train/serve.
+const header = ['ts', 'sport', 'market', 'odd_decimal', 'opening_odd_decimal',
+  'f_prob_justa', 'f_avance', 'f_situacion', 'f_linea', 'f_apertura',
+  ...MARKET_FEATURES, 'score_version', 'origin', 'y'].join(',');
+const lines = rows.map(r => {
+  const mf = marketFeatures(r);
+  return [
+    r.ts, r.sport, r.market, r.odd_decimal, r.opening_odd_decimal,
+    r.f_prob_justa, r.f_avance, r.f_situacion, r.f_linea, r.f_apertura,
+    ...MARKET_FEATURES.map(k => mf[k]),
+    r.score_version, r.origin, r.y,
+  ].map(esc).join(',');
+});
 
 fs.writeFileSync(OUT, [header, ...lines].join('\n') + '\n');
 console.log(`${rows.length} picks exportados a ${OUT}`);

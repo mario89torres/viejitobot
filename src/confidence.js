@@ -1,6 +1,6 @@
 const { db } = require('./db');
 const { parsePick, situationFactor } = require('./markets');
-const { score: modelScore } = require('./model');
+const { score: modelScore, marketFeatures } = require('./model');
 // Firewall de jugadas (src/firewall.js). NO se aplica a parlayCombos a
 // propósito: sus piernas viven en 1.08-1.45 por diseño y R4 (momio < 1.30) las
 // mataría, pero el backtest que originó las reglas se corrió sobre picks
@@ -415,9 +415,14 @@ function scoreRow(row) {
   //
   const fAvance = avanceForModel(progress, parsed, row.score);
 
+  // marketFeatures() se deriva en model.js y el exportador del dataset escribe
+  // esas MISMAS claves al CSV: una sola fuente para entrenar y para servir, así
+  // no puede haber divergencia. El heurístico las ignora (solo suma FEATURES),
+  // así que añadirlas aquí no cambia conf mientras el modelo no se adopte.
   const features = {
     f_prob_justa: base, f_avance: fAvance, f_situacion: scoreFactor,
     f_linea: lineFactor, f_apertura: fApertura,
+    ...marketFeatures(row),
   };
   const { conf, confHeuristic, confLearned } = modelScore(features, row.sport);
   // edge estimado al momento de emitir: valor esperado por unidad apostada

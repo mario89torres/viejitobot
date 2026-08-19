@@ -54,6 +54,75 @@ const HEURISTIC_WEIGHTS = {
   f_linea: w('HEURISTIC_W_LINEA', 0.1875),
 };
 
+// --- Features de MERCADO (2026-08-19) --------------------------------------
+//
+// Se derivan AQUÍ, en Node, y el exportador del dataset las escribe ya
+// calculadas al CSV. Python nunca las recalcula. Es deliberado: si cada lado
+// las derivara por su cuenta, cualquier divergencia entre las dos
+// implementaciones sería un train/serve skew silencioso — exactamente el bug
+// de f_avance que costó reconstruir 2228 filas (ver avanceForModel en
+// confidence.js). Con una sola fuente, ese fallo no puede existir.
+//
+// POR QUÉ EXISTEN. El modelo entrenaba con f_prob_justa/f_avance/f_situacion/
+// f_linea/f_apertura y era CIEGO a qué mercado era el pick — pese a que el
+// mercado es lo único que hemos demostrado que discrimina de verdad:
+//   Under línea <= 3.5  ROI  +9.8%  IC [+3.1%, +16.4%]
+//   Under línea  > 3.5  ROI  +0.7%  IC cruza cero
+//   Over                ROI -22.2%  IC [-39.9%, -4.6%]
+// Ese edge estaba implementado a mano en el firewall (R1, R7) y en el
+// dimensionamiento (STAKE_MODE=tiered), pero el modelo no podía aprenderlo.
+//
+// Medido el 2026-08-19 sobre picks EMITIDOS (la métrica que decide):
+//   base (5 features)      d_Brier -0.0011   2/4 folds
+//   + mercado + línea      d_Brier +0.0044   4/4 folds   <- pasa la regla
+//   CONTROL: + ruido       d_Brier -0.0006   1/4 folds   <- no mejora, como debe
+// El control con ruido aleatorio NO mejora, así que la ganancia es información
+// real y no simple capacidad extra del modelo.
+//
+// LIMITACIÓN CONOCIDA (medida, no sospechada): is_ganador sólo casa con
+// "Resultado Final (Tiempo Regular)" — el 2551 de filas dominante — y NO con
+// "1x2", "Ganador", "Ganador (incl. prórroga)" ni "Ganador (incl. super over)",
+// que son la misma apuesta con otro nombre. Esas caen al bucket de referencia
+// (sin ninguna flag) junto a hándicaps y doble oportunidad. Son 51 de 2310
+// picks emitidos = 2.2%, así que el +0.0044 medido YA incluye este defecto: la
+// ganancia es real a pesar de él, no gracias a él. Ampliar el regex es un
+// experimento aparte y hay que correrlo con el mismo rigor (control de ruido,
+// picks-only, 4/4 folds), no como un retoque — cada variante que se prueba
+// sobre el mismo dataset gasta grados de libertad.
+// Lo que NO es: un train/serve skew. Producción y entrenamiento usan ESTA
+// función, así que ambos lados fragmentan idéntico.
+const deaccModel = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+
+/**
+ * Features de mercado a partir del pick crudo. Devuelve SIEMPRE todas las
+ * claves (0 cuando no aplica): un `undefined` acabaría en el `?? 0.5` de
+ * learnedConf(), que para un indicador binario sería un valor imposible y
+ * reintroduciría el skew que este diseño evita.
+ */
+function marketFeatures(row = {}) {
+  const sel = deaccModel(row.selection);
+  const mkt = deaccModel(row.market);
+  const esTotal = /^total/.test(mkt);
+
+  const isUnder = esTotal && /^menos de/.test(sel) ? 1 : 0;
+  const isOver = esTotal && /^mas de/.test(sel) ? 1 : 0;
+  const m = String(row.selection || '').match(/(\d+(?:\.\d+)?)/);
+  // Acotada a 6.5: por encima el edge ya se desvaneció y una línea de 10.5
+  // dominaría la escala sin aportar.
+  const linea = esTotal && m ? Math.min(Number(m[1]), 6.5) : 0;
+
+  return {
+    is_under: isUnder,
+    is_over: isOver,
+    is_btts: /ambos equipos marcan/.test(mkt) ? 1 : 0,
+    is_ganador: /resultado final/.test(mkt) ? 1 : 0,
+    is_dnb: /empate no accion/.test(mkt) ? 1 : 0,
+    linea,
+  };
+}
+
+const MARKET_FEATURES = ['is_under', 'is_over', 'is_btts', 'is_ganador', 'is_dnb', 'linea'];
+
 let model = null;
 function reloadModel() {
   try {
@@ -101,13 +170,33 @@ function heuristicConf(features) {
 
 // sigmoid(β0 + Σ βi·fi + β_deporte) pasado por la tabla de calibración.
 // La lista de features viene del propio model.json (puede incluir features
-// nuevas como f_apertura que el heurístico no usa); si al momento de inferir
-// falta alguna, se asume el valor neutro 0.5.
+// nuevas como f_apertura que el heurístico no usa).
+//
+// EL FALLBACK ES LA PARTE PELIGROSA. Antes, una feature ausente se sustituía en
+// silencio por 0.5. Para las f_* continuas eso es un "valor neutro" defendible,
+// pero para un indicador binario (is_under, is_over…) 0.5 es un valor
+// IMPOSIBLE: el modelo entrenó viendo 0 o 1 y en producción recibiría medio
+// punto, o sea el mismo train/serve skew que costó reconstruir 2228 filas con
+// f_avance. Ahora un binario ausente vale 0 y se avisa una sola vez, en vez de
+// degradar callando.
+const AVISADAS = new Set();
+function valorFeature(features, f) {
+  const v = features[f];
+  if (v !== undefined && v !== null) return v;
+  if (!AVISADAS.has(f)) {
+    AVISADAS.add(f);
+    console.error(`[model] falta la feature '${f}' al inferir; se usa ${MARKET_FEATURES.includes(f) ? 0 : 0.5}. `
+      + 'Si es de mercado, quien llama debe pasar marketFeatures(row).');
+  }
+  // Un binario/lineal de mercado ausente es 0 ("no es ese mercado"), nunca 0.5.
+  return MARKET_FEATURES.includes(f) ? 0 : 0.5;
+}
+
 function learnedConf(features, sport) {
   if (!model || model.adopted === false) return null;
   const featList = Array.isArray(model.features) && model.features.length ? model.features : FEATURES;
   let z = model.intercept;
-  for (const f of featList) z += (model.coef[f] || 0) * (features[f] ?? 0.5);
+  for (const f of featList) z += (model.coef[f] || 0) * valorFeature(features, f);
   const sc = model.sport_coef || {};
   const key = sc[sport] !== undefined ? sport : 'otros';
   z += sc[key] || 0;
@@ -126,4 +215,7 @@ function score(features, sport) {
   return { conf, confHeuristic, confLearned, mode };
 }
 
-module.exports = { score, heuristicConf, learnedConf, getMode, reloadModel, interp, FEATURES, HEURISTIC_WEIGHTS };
+module.exports = {
+  score, heuristicConf, learnedConf, getMode, reloadModel, interp,
+  marketFeatures, MARKET_FEATURES, FEATURES, HEURISTIC_WEIGHTS,
+};
