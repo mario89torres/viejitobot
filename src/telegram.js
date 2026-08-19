@@ -3,10 +3,17 @@ const { generateBetLink } = require('./betlink');
 async function sendTelegram(token, chatId, text, replyMarkup = null) {
   const payload = { chat_id: chatId, text, parse_mode: 'HTML', disable_web_page_preview: true };
   if (replyMarkup) payload.reply_markup = replyMarkup;
+  // El timeout NO es opcional: un fetch sin AbortSignal en Node se queda colgado
+  // para siempre si la conexión se establece y no responde. sendTelegram se
+  // llama DENTRO del ciclo del sampler, que tiene un guard `sampling` de una
+  // sola instancia — así que un cuelgue aquí deja el guard en true y el bot
+  // deja de muestrear PARA SIEMPRE sin lanzar un error ni morirse. Es lo que
+  // pasó el 2026-08-19 a las 17:38: 4h de silencio con el proceso vivo.
   const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(15000),
   });
   const data = await res.json();
   if (!data.ok) throw new Error(`Telegram: ${data.description}`);

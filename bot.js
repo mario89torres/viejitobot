@@ -1290,10 +1290,25 @@ async function autoPicks(rows) {
   }
 }
 
+// El guard de instancia única necesita watchdog. Si un await de dentro se cuelga
+// sin timeout, `sampling` se queda en true y TODOS los ciclos siguientes salen
+// por el return de arriba: el bot deja de muestrear para siempre, sin error y
+// sin morirse, así que ni el supervisor ni las alertas se enteran. Pasó el
+// 2026-08-19 (sendTelegram sin AbortSignal, 4h de silencio con el proceso vivo).
+// Los timeouts de fetch son el arreglo de fondo; esto es el cinturón: pasado
+// SAMPLE_STUCK_MS damos el ciclo por perdido y arrancamos otro. Solaparse es
+// mucho menos malo que enmudecer.
+const SAMPLE_STUCK_MS = Number(process.env.SAMPLE_STUCK_MS || 5 * 60000);
 let sampling = false;
+let samplingSince = 0;
 async function sample() {
-  if (sampling) return;
+  if (sampling) {
+    const stuckMs = Date.now() - samplingSince;
+    if (stuckMs < SAMPLE_STUCK_MS) return;
+    console.error(`[sampler] el ciclo anterior lleva ${Math.round(stuckMs / 1000)}s sin terminar; se da por colgado y se arranca otro`);
+  }
   sampling = true;
+  samplingSince = Date.now();
   try {
     const sportResults = await fetchAllLive();
     const rows = normalize(sportResults);
@@ -1333,16 +1348,31 @@ setInterval(driftCheck, 24 * 3600 * 1000);
 
 // Poda diaria de snapshots (~1.1M filas/día): retiene RETENTION_DAYS (default 7)
 // y preserva siempre los eventos con picks, que alimentan el CLV histórico.
+// NO se llama en el arranque, y no es un descuido. pruneSnapshots es síncrono
+// (better-sqlite3), así que mientras corre NADA más se ejecuta en este proceso.
+// Arrancar con un backlog grande dejaba el bot clavado antes de muestrear una
+// sola vez. Ahora: primer pase a los PRUNE_DELAY_MS de haber arrancado (con el
+// sampler ya en marcha) y en lotes de PRUNE_MAX_MS, reprogramando mientras
+// queden filas en vez de vaciar el backlog de una sentada.
+const PRUNE_MAX_MS = Number(process.env.PRUNE_MAX_MS || 2000);
+const PRUNE_DELAY_MS = Number(process.env.PRUNE_DELAY_MS || 60000);
 function prune() {
   try {
-    const { deleted } = pruneSnapshots(Number(process.env.RETENTION_DAYS || 7));
-    if (deleted) console.log(`[prune] ${deleted} snapshots viejos eliminados`);
+    const { deleted, pending, ms, examined } = pruneSnapshots(
+      Number(process.env.RETENTION_DAYS || 7), { maxMs: PRUNE_MAX_MS });
+    if (deleted) console.log(`[prune] ${deleted} snapshots viejos eliminados en ${ms}ms${pending ? ' (queda backlog)' : ''}`);
+    else console.log(`[prune] nada que borrar: ${examined} filas examinadas en ${ms}ms, todas protegidas o dentro del retention`);
+    // Sólo se insiste si la pasada RINDIÓ. Con deleted=0 seguir cada minuto
+    // congelaría el bot varios segundos por nada: hoy el 100% de las filas
+    // viejas están protegidas por la cláusula de `picks`, así que reintentar
+    // es puro coste. Si no rindió, se espera al ciclo de 24 h.
+    if (deleted > 0 && pending) setTimeout(prune, PRUNE_DELAY_MS);
   } catch (e) {
     console.error('[prune]', e.message);
   }
 }
 setInterval(prune, 24 * 3600 * 1000);
-prune();
+setTimeout(prune, PRUNE_DELAY_MS);
 
 // Ciclo focalizado: solo los deportes de interés, cada FOCUS_SAMPLE_SECONDS
 // con jitter ±20%. El tope global de peticiones lo aplica src/ratelimit.js.

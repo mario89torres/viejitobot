@@ -127,6 +127,10 @@ addColumn('picks', 'f_apertura', 'REAL');
 addColumn('picks', 'score_version', 'INTEGER');
 db.prepare(`UPDATE picks SET score_version = 1 WHERE score_version IS NULL`).run();
 
+// Cursor del prune: por dónde iba el escaneo. Vive entre llamadas para que
+// cada pasada avance en vez de re-mirar siempre las mismas filas viejas.
+let pruneCursor = 0;
+
 const insertStmt = db.prepare(`
   INSERT INTO snapshots (ts, sport, sport_id, champ, event_id, event, score, live_time, market, selection, odd_decimal, odd_american, suspended)
   VALUES (@ts, @sport, @sportId, @champ, @eventId, @event, @score, @liveTime, @market, @selection, @oddDecimal, @oddAmerican, @suspended)
@@ -262,14 +266,53 @@ module.exports = {
   // con un pick de hace 6 meses conserva sus snapshots intactos hoy. Con
   // AUTO_PICKS generando picks continuamente, ese conjunto exento crece sin
   // tope propio; RETENTION_DAYS solo acota el universo NO elegido.
-  pruneSnapshots: (days = 7) => {
+  // ACOTADO POR VENTANA DE ESCANEO, no solo por filas borradas. Dos motivos, los
+  // dos medidos el 2026-08-19 sobre la BD real (47.5M filas, 13 GB):
+  //
+  // 1. better-sqlite3 es SÍNCRONO: mientras esto corre no se ejecuta NADA más en
+  //    el proceso — ni sampler, ni polling de Telegram. El prune del arranque
+  //    dejó el bot clavado >15 min sin un log ni un crash: vivo, quemando CPU,
+  //    sin hacer nada.
+  // 2. Acotar solo las filas BORRADAS no basta. El 100% de las filas más viejas
+  //    están protegidas por la cláusula de `picks`, así que un `LIMIT 5000` de
+  //    borrables escanea millones de filas antes de rendirse: 80 s para
+  //    encontrar 5000 rowids, contra 12 ms para borrarlos. El coste está en
+  //    BUSCAR, no en borrar.
+  //
+  // Por eso la ventana se acota por rowid (≈ orden de inserción) y el cursor
+  // avanza entre llamadas: cada pasada mira como mucho `scan` filas y vuelve.
+  //
+  // OJO — esto NO arregla el crecimiento de la BD, solo evita que el prune
+  // congele el bot. La causa de fondo es de política: proteger `event_id IN
+  // picks` sin límite temporal conserva el historial ENTERO de los 2737 eventos
+  // con pick, y eso es la mayor parte de la tabla. Decidir cuánta historia
+  // necesita un pick liquidado es una decisión de producto, no de este módulo.
+  pruneSnapshots: (days = 7, { scan = 50000, maxMs = 2000 } = {}) => {
     const cutoff = new Date(Date.now() - days * 24 * 3600 * 1000).toISOString();
-    const info = db.prepare(`
-      DELETE FROM snapshots WHERE ts < ?
-        AND event_id NOT IN (SELECT DISTINCT event_id FROM picks)
-        AND event_id NOT IN (SELECT DISTINCT event_id FROM rejected_picks WHERE result IS NULL)
-    `).run(cutoff);
-    return { deleted: info.changes, cutoff };
+    const maxRowid = db.prepare('SELECT MAX(rowid) m FROM snapshots').get().m || 0;
+    // Ventana: los siguientes `scan` rowids que EXISTEN a partir del cursor. Se
+    // pide su máximo en vez de sumar `scan` al cursor porque los rowid tienen
+    // huecos tras cada borrado, y sumar a ciegas re-escanearía lo ya visto.
+    const windowStmt = db.prepare(
+      'SELECT MAX(rowid) m FROM (SELECT rowid FROM snapshots WHERE rowid > ? ORDER BY rowid LIMIT ?)');
+    const delStmt = db.prepare(`
+      DELETE FROM snapshots
+      WHERE rowid > ? AND rowid <= ? AND ts < ?
+        AND event_id NOT IN (SELECT event_id FROM picks)
+        AND event_id NOT IN (SELECT event_id FROM rejected_picks WHERE result IS NULL)
+    `);
+    const t0 = Date.now();
+    let deleted = 0, examined = 0;
+    do {
+      if (pruneCursor >= maxRowid) { pruneCursor = 0; break; } // vuelta completa
+      const hasta = windowStmt.get(pruneCursor, scan).m;
+      if (hasta === null) { pruneCursor = 0; break; }
+      deleted += delStmt.run(pruneCursor, hasta, cutoff).changes;
+      examined += scan;
+      pruneCursor = hasta;
+    } while (Date.now() - t0 < maxMs);
+    return { deleted, cutoff, examined, cursor: pruneCursor,
+             pending: pruneCursor > 0 && pruneCursor < maxRowid, ms: Date.now() - t0 };
   },
   // true si el pick ya está cubierto (evento con pick vivo, o misma selección ya registrada)
   isDuplicatePick: (eventId, market, selection) =>
