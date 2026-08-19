@@ -726,7 +726,36 @@ const POST_SCORE_GATES = [
   ['firewall', (r) => !isFirewallBlocked(r)],
   ['min_conf', (r, o) => o.minConf <= 0 || r.conf >= o.minConf],
   ['min_edge', (r, o) => { const th = edgeThresholdFor(r, o.minEdge); return th <= 0 || r.edge >= th; }],
+  // VETO DEL MODELO (2026-08-19). El modelo aprendido NO sustituye al
+  // heurístico: sólo puede QUITAR picks que el heurístico habría emitido, nunca
+  // añadir.
+  //
+  // Por qué así y no MODEL_MODE=learned. La ventaja medida (+0.0044 de Brier,
+  // bootstrap P=95.4%) se midió sobre `origin='picks'` — o sea CONDICIONADA a
+  // la selección del heurístico. Si el modelo pasara a decidir `conf`,
+  // cambiaría la población emitida (`conf` alimenta MIN_CONF y
+  // edge = conf × momio − 1) y empezaría a puntuar jugadas de una zona donde no
+  // hay ninguna validación. El veto se queda DENTRO de la población medida, que
+  // es la única sobre la que sabemos algo.
+  //
+  // Va la ÚLTIMA de las puertas a propósito: así etiqueta exactamente los picks
+  // que el bot HABRÍA emitido, y auditRejections los guarda con razón
+  // 'modelo_veto'. Eso hace la decisión MEDIBLE — en unas semanas se compara el
+  // rendimiento de lo vetado contra lo emitido y se sabe si acertó, en vez de
+  // discutirlo.
+  //
+  // Falla ABIERTO: sin conf_learned (MODEL_MODE=heuristic, model.json ausente o
+  // adopted:false) la puerta deja pasar. Un modelo que desaparece no puede
+  // dejar al bot sin emitir.
+  ['modelo_veto', (r) => !modelVetoActivo() || r.confLearned == null || r.confLearned >= modelVetoMinConf()],
 ];
+
+// Se leen en cada llamada, no al cargar el módulo: los tests cambian el entorno
+// en caliente con withEnv, y una constante congelada al arranque los haría
+// mentir.
+const modelVetoActivo = () => process.env.MODEL_VETO === '1';
+const modelVetoMinConf = () =>
+  Number(process.env.MODEL_VETO_MIN_CONF || process.env.MIN_CONF || 0.70);
 
 // Filtros previos al scoring. Separados a propósito: rechazan por razones
 // estructurales (suspendido, deporte excluido, momio fuera de rango) y no
@@ -890,5 +919,6 @@ module.exports = {
   isSuspensionOrInstabilityInWindow, isRejectedBy5Guards, computeStructuralDrawSignal, DRAW_SIGNAL_DEFAULTS,
   recentScoreChange, isDrawSelection, readSpike, SPIKE_DEFAULTS,
   computeStake, kellyFraction, tierStake, STAKE_MODE,
+  POST_SCORE_GATES,
 };
 
