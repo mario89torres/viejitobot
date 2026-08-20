@@ -1,8 +1,8 @@
-# Playdoit Monitor
+# BOT Monitor
 
-Sistema de monitoreo de momios en vivo de [Playdoit.mx](https://www.playdoit.mx/) con bot de Telegram, histórico de snapshots, scoring de confianza, firewall de jugadas y un pipeline de aprendizaje con grupo de control.
+Sistema de monitoreo de momios en vivo de una casa de apuestas, con bot de Telegram, histórico de snapshots, scoring de confianza, firewall de jugadas y un pipeline de aprendizaje con grupo de control.
 
-> **Aviso legal**: consume la API del sportsbook (Altenar) que usa Playdoit. El uso automatizado puede violar los términos de servicio. Úsalo bajo tu propio riesgo. No constituye consejo de apuestas, y el bot no coloca apuestas ni debe automatizarse para hacerlo.
+> **Aviso legal**: consume la API JSON del proveedor del sportsbook. El uso automatizado puede violar los términos de servicio. Úsalo bajo tu propio riesgo. No constituye consejo de apuestas, y el bot no coloca apuestas ni debe automatizarse para hacerlo.
 
 ---
 
@@ -48,7 +48,7 @@ El modelo aprendido **pasa su regla de adopción** desde el 2026-08-19 (ver [Mod
               └───────────────────────────────────────┘
 ```
 
-**Fuente de datos**: consume directamente la API JSON del proveedor del sportsbook (Altenar, `sb2frontend-altenar2.biahosted.com`) en lugar de raspar el DOM. Más rápido, más estable, y entrega los momios ya en decimal.
+**Fuente de datos**: consume directamente la API JSON del proveedor del sportsbook en lugar de raspar el DOM. El host concreto vive en `src/fetcher.js`. Más rápido, más estable, y entrega los momios ya en decimal.
 
 ### Módulos
 
@@ -71,7 +71,7 @@ El modelo aprendido **pasa su regla de adopción** desde el 2026-08-19 (ver [Mod
 | `src/singleInstance.js` | Lock de instancia única (`.bot.lock`). |
 | `src/ratelimit.js` | Ventana deslizante, tope `MAX_REQ_PER_MIN`. |
 | `src/validate.js` | Contrasta resultados liquidados contra marcador oficial. |
-| `src/betlink.js` | Enlaces directos a la jugada en Playdoit. |
+| `src/betlink.js` | Enlaces directos a la jugada en la casa. |
 | `index.js` | Modo alternativo: top N por intervalos (`--once` para un ciclo). |
 | `probe*.js` | Exploración del desarrollo inicial. Se pueden borrar. |
 
@@ -279,7 +279,7 @@ El IC95% roza el cero ([−0.0009, +0.0096]) y la hipótesis "el mercado importa
 
 `src/sharp.js`: The Odds API con prioridad Pinnacle → Betfair. Solo mercados h2h. **Consumo bajo demanda**: el matching usa el endpoint `/events` (gratuito); se gasta 1 crédito al capturar la entrada y 1 al cierre. ~2 créditos por pick matcheado.
 
-**Métrica primaria de decisión**: `CLV_sharp = prob_shin(cierre sharp) / prob_shin(entrada Altenar) − 1`. **Solo el CLV contra la línea sharp cuenta como evidencia de edge**; el CLV contra el cierre de Altenar (línea blanda) es diagnóstico.
+**Métrica primaria de decisión**: `CLV_sharp = prob_shin(cierre sharp) / prob_shin(entrada de la casa) − 1`. **Solo el CLV contra la línea sharp cuenta como evidencia de edge**; el CLV contra el cierre de la propia casa (línea blanda) es diagnóstico.
 
 | Condición | Veredicto |
 |---|---|
@@ -328,10 +328,10 @@ El grupo de control **espera `CONTROL_SETTLE_MIN` minutos** antes de liquidar. S
 
 ## Notas operativas
 
-- El bot corre como tarea programada de Windows (`PlaydoitMonitorBot`). `scripts/run-bot.cmd` lo envuelve en un bucle que lo relanza a los 10 s de cualquier salida y exporta `BOT_SUPERVISED=1`, que es lo que permite `/reboot`. Log en `bot.log`, rotado a `bot.log.old`.
+- El bot corre como tarea programada de Windows. `scripts/run-bot.cmd` lo envuelve en un bucle que lo relanza a los 10 s de cualquier salida y exporta `BOT_SUPERVISED=1`, que es lo que permite `/reboot`. Log en `bot.log`, rotado a `bot.log.old`.
 - **Reiniciar**: `scripts\restart-bot.cmd`, o `/reboot` desde Telegram. Un `kill` a secas no basta si el proceso está atascado — el supervisor lo relanza a los 10 s y vuelve a caer en lo mismo; hay que matar primero el `cmd.exe` supervisor.
 - Node se toma de `C:\Users\Invitadow\node` a propósito: `C:\nvm4w\nodejs` apunta al perfil de **otro** usuario y cualquier `nvm use` rompería `better-sqlite3`, que es nativo.
-- La API se consulta con `User-Agent` de navegador y `Referer` de playdoit.mx, con 500 ms entre deportes y tope `MAX_REQ_PER_MIN`.
+- La API se consulta con `User-Agent` y `Referer` de navegador, con 500 ms entre deportes y tope `MAX_REQ_PER_MIN`.
 - El sampler corre cada `SAMPLE_MINUTES` (**1 min** en producción) y alimenta la BD aunque no uses comandos: el factor de línea mejora con historial.
 
 ---
