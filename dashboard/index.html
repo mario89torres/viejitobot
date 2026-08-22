@@ -523,24 +523,52 @@ tbody tr.r-pending td:first-child { box-shadow: inset 3px 0 0 var(--c-warn); }
    resultados, así que teñirlas competiría con las que sí lo son.
    El color sale de los tokens semánticos vía color-mix, no de hex sueltos, así
    que sigue el tema claro/oscuro y nunca se confunde con el acento estructural. */
-.matrix-card.m-win {
-  border-left: 3px solid var(--c-good);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--c-good) 25%, transparent),
-              0 2px 14px color-mix(in srgb, var(--c-good) 22%, transparent);
+/* La intensidad vive en variables que contienen la SOMBRA ENTERA, no solo el
+   porcentaje. No es capricho: con `color-mix(... var(--pct), transparent)` el
+   navegador NO reevalua el box-shadow al cambiar la variable en caliente —
+   medido: --sombra-anillo pasaba a 70% pero el box-shadow seguia en 0.55. Como
+   el panel tiene interruptor de tema, al alternar se quedarian las sombras del
+   tema anterior. Metiendo la sombra completa en la variable, la invalidacion
+   funciona como debe.
+   El tema CLARO necesita mas intensidad que el oscuro: sobre fondo claro un halo
+   de color se lee como sombra suave, no como brillo, asi que con los mismos
+   porcentajes el cambio no se percibe. */
+.matrix-card {
+  --sombra-win: 0 0 0 1px color-mix(in srgb, var(--c-good) 55%, transparent),
+                0 3px 18px 2px color-mix(in srgb, var(--c-good) 45%, transparent);
+  --sombra-win-hover: 0 0 0 1px color-mix(in srgb, var(--c-good) 80%, transparent),
+                      0 6px 26px 4px color-mix(in srgb, var(--c-good) 68%, transparent);
+  --sombra-loss: 0 0 0 1px color-mix(in srgb, var(--c-bad) 55%, transparent),
+                 0 3px 18px 2px color-mix(in srgb, var(--c-bad) 45%, transparent);
+  --sombra-loss-hover: 0 0 0 1px color-mix(in srgb, var(--c-bad) 80%, transparent),
+                       0 6px 26px 4px color-mix(in srgb, var(--c-bad) 68%, transparent);
 }
-.matrix-card.m-win:hover {
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--c-good) 45%, transparent),
-              0 4px 20px color-mix(in srgb, var(--c-good) 38%, transparent);
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) .matrix-card {
+    --sombra-win: 0 0 0 1px color-mix(in srgb, var(--c-good) 70%, transparent),
+                  0 3px 18px 2px color-mix(in srgb, var(--c-good) 60%, transparent);
+    --sombra-win-hover: 0 0 0 1px color-mix(in srgb, var(--c-good) 92%, transparent),
+                        0 6px 26px 4px color-mix(in srgb, var(--c-good) 82%, transparent);
+    --sombra-loss: 0 0 0 1px color-mix(in srgb, var(--c-bad) 70%, transparent),
+                   0 3px 18px 2px color-mix(in srgb, var(--c-bad) 60%, transparent);
+    --sombra-loss-hover: 0 0 0 1px color-mix(in srgb, var(--c-bad) 92%, transparent),
+                         0 6px 26px 4px color-mix(in srgb, var(--c-bad) 82%, transparent);
+  }
 }
-.matrix-card.m-loss {
-  border-left: 3px solid var(--c-bad);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--c-bad) 25%, transparent),
-              0 2px 14px color-mix(in srgb, var(--c-bad) 22%, transparent);
+:root[data-theme="light"] .matrix-card {
+  --sombra-win: 0 0 0 1px color-mix(in srgb, var(--c-good) 70%, transparent),
+                0 3px 18px 2px color-mix(in srgb, var(--c-good) 60%, transparent);
+  --sombra-win-hover: 0 0 0 1px color-mix(in srgb, var(--c-good) 92%, transparent),
+                      0 6px 26px 4px color-mix(in srgb, var(--c-good) 82%, transparent);
+  --sombra-loss: 0 0 0 1px color-mix(in srgb, var(--c-bad) 70%, transparent),
+                 0 3px 18px 2px color-mix(in srgb, var(--c-bad) 60%, transparent);
+  --sombra-loss-hover: 0 0 0 1px color-mix(in srgb, var(--c-bad) 92%, transparent),
+                       0 6px 26px 4px color-mix(in srgb, var(--c-bad) 82%, transparent);
 }
-.matrix-card.m-loss:hover {
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--c-bad) 45%, transparent),
-              0 4px 20px color-mix(in srgb, var(--c-bad) 38%, transparent);
-}
+.matrix-card.m-win { border-left: 3px solid var(--c-good); box-shadow: var(--sombra-win); }
+.matrix-card.m-win:hover { box-shadow: var(--sombra-win-hover); }
+.matrix-card.m-loss { border-left: 3px solid var(--c-bad); box-shadow: var(--sombra-loss); }
+.matrix-card.m-loss:hover { box-shadow: var(--sombra-loss-hover); }
 /* Anulada (push) y en juego: sin sombra de color, solo un borde que las
    distingue. m-pending no tenía NINGUNA regla — el JS emitía la clase y el CSS
    la ignoraba, así que un pick en juego se veía idéntico a uno sin resultado. */
