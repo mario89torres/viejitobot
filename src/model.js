@@ -80,17 +80,32 @@ const HEURISTIC_WEIGHTS = {
 // real y no simple capacidad extra del modelo.
 //
 // LIMITACIÓN CONOCIDA (medida, no sospechada): is_ganador sólo casa con
-// "Resultado Final (Tiempo Regular)" — el 2551 de filas dominante — y NO con
-// "1x2", "Ganador", "Ganador (incl. prórroga)" ni "Ganador (incl. super over)",
-// que son la misma apuesta con otro nombre. Esas caen al bucket de referencia
-// (sin ninguna flag) junto a hándicaps y doble oportunidad. Son 51 de 2310
-// picks emitidos = 2.2%, así que el +0.0044 medido YA incluye este defecto: la
-// ganancia es real a pesar de él, no gracias a él. Ampliar el regex es un
-// experimento aparte y hay que correrlo con el mismo rigor (control de ruido,
-// picks-only, 4/4 folds), no como un retoque — cada variante que se prueba
-// sobre el mismo dataset gasta grados de libertad.
+// "Resultado Final (Tiempo Regular)" y NO con "1x2", "Ganador", "Ganador (incl.
+// prórroga)" ni "Ganador (incl. super over)", que son la misma apuesta con otro
+// nombre. Esas caen al bucket de referencia (sin ninguna flag) junto a
+// hándicaps y doble oportunidad.
 // Lo que NO es: un train/serve skew. Producción y entrenamiento usan ESTA
 // función, así que ambos lados fragmentan idéntico.
+//
+// SE PROBÓ CUBRIRLA Y NO SIRVIÓ (2026-08-22, scripts/experiment-market-coverage.py).
+// Parecía la explicación del fallo con datos frescos: el modelo empataba donde
+// tenía features (N=111, −0.0001) y perdía fuerte donde no (N=23, −0.0297), y
+// esa bolsa había pasado del 6.5% al 15.1%. Se implementaron is_handicap,
+// hcp_line, is_ganador_alt e is_doble, se reexportó el dataset y se midió sobre
+// picks emitidos (N_oos=549):
+//   actual (mercado base)   +0.0023  3/4 folds
+//   + handicap              +0.0023  3/4     delta +0.0000
+//   + ganador_alt           +0.0026  3/4     delta +0.0003
+//   + doble                 +0.0009  2/4     delta −0.0014
+//   + TODO                  +0.0013  3/4     delta −0.0010
+//   CONTROL: ruido          +0.0018  3/4     delta −0.0004
+// Los deltas de las candidatas son del tamaño que mueve el RUIDO, y añadirlas
+// todas EMPEORA. Revertidas: no se envía código que no se gana su sitio. El
+// script queda para repetirlo con más datos.
+//
+// Y OJO CON EL DATO DE FONDO: con 3 días más de datos la ventaja del propio
+// mercado base bajó de +0.0044 (4/4 folds) a +0.0023 (3/4). Encoge según crece
+// el dataset, que es lo que se espera de un resultado con sesgo de selección.
 const deaccModel = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 
 /**
