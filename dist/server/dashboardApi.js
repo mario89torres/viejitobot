@@ -353,15 +353,6 @@ function createDashboardServer(port = 3001) {
                 res.end(JSON.stringify({ count: liveFiltered.length, live: liveFiltered }));
                 return;
             }
-            // 4.b API Global Draws (Minuto 75+ — Universo completo de partidos de fútbol con Empate Estructural)
-            if (url === '/api/global-draws') {
-                res.setHeader('Content-Type', 'application/json; charset=utf-8');
-                const { scanGlobalDraws75 } = require(path.join(__dirname, '..', 'globalDrawScanner'));
-                const draws = scanGlobalDraws75();
-                res.writeHead(200);
-                res.end(JSON.stringify({ count: draws.length, draws }));
-                return;
-            }
             // 5. API Pick Timeline — Detalle de snapshots e historial completo de un pick específico
             if (url.startsWith('/api/pick-timeline')) {
                 res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -528,7 +519,6 @@ function createDashboardServer(port = 3001) {
         const targetChatId = vipChannelId || personalChatId;
         if (token && targetChatId) {
             const { sendProfitLockAlert, sendStructuralDrawAlert, sendSniperAlert } = require(path.join(__dirname, '..', '..', 'src', 'telegram'));
-            const { checkAndBroadcastGlobalDraws } = require(path.join(__dirname, '..', 'globalDrawScanner'));
             // Un Empate Estructural solo se anuncia con el marcador empatado de verdad.
             const isScoreTie = (score) => {
                 if (!score)
@@ -542,9 +532,7 @@ function createDashboardServer(port = 3001) {
             };
             setInterval(async () => {
                 try {
-                    // 1. Escanear todo el universo de partidos de fútbol en min 75+ (Global Draw Scanner)
-                    await checkAndBroadcastGlobalDraws(token, targetChatId);
-                    // 2. Escanear picks en desarrollo para Profit Lock / Sniper / Structural Draw
+                    // Escanear picks en desarrollo para Profit Lock / Sniper / Structural Draw
                     const liveRes = await fetch(`http://localhost:${port}/api/live`).then(r => r.json());
                     if (!liveRes?.live)
                         return;

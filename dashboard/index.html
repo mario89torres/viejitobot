@@ -665,10 +665,6 @@ tbody tr.r-pending td:first-child { box-shadow: inset 3px 0 0 var(--c-warn); }
       <span>Live Radar</span>
       <span class="badge" id="liveBadge">0</span>
     </div>
-    <div class="rail-item" data-tab="scanner" onclick="switchTab('scanner')">
-      <span>Scanner</span>
-      <span class="badge" id="scannerBadge">0</span>
-    </div>
     <div class="rail-item" data-tab="history" onclick="switchTab('history')">
       <span>History</span>
     </div>
@@ -752,21 +748,6 @@ tbody tr.r-pending td:first-child { box-shadow: inset 3px 0 0 var(--c-warn); }
     <div class="alert-summary" id="alertSummary"></div>
     <div class="live-grid" id="liveGrid">
       <div class="empty-state"><div class="empty-icon">📡</div>Sin picks activos en este momento</div>
-    </div>
-  </div>
-
-  <!-- ═══════════ TAB 3: GLOBAL SCANNER ═══════════ -->
-  <div class="panel" id="panel-scanner">
-    <div class="section-title">⚡ Scanner Global de Empates Estructurales (Min 75+)</div>
-    <div class="scanner-stats" id="scannerStats"></div>
-    <div class="tbl-wrap">
-      <table id="scannerTable">
-        <thead><tr>
-          <th>Evento</th><th>Marcador</th><th>Minuto</th><th>Mercado</th><th>Selección</th>
-          <th>Varianza σ²</th><th>Cuota Media</th><th>Cuota Actual</th><th>Muestras</th>
-        </tr></thead>
-        <tbody id="scannerBody"></tbody>
-      </table>
     </div>
   </div>
 
@@ -919,8 +900,8 @@ function switchTab(name) {
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') closeModal();
   if (document.getElementById('modalOverlay').classList.contains('open')) return;
-  if (e.key >= '1' && e.key <= '5') {
-    const tabs = ['command', 'live', 'scanner', 'history', 'firewall'];
+  if (e.key >= '1' && e.key <= '4') {
+    const tabs = ['command', 'live', 'history', 'firewall'];
     switchTab(tabs[parseInt(e.key) - 1]);
   }
 });
@@ -1136,51 +1117,6 @@ async function loadLive() {
   } catch (e) { console.error('Live load error:', e); }
 }
 
-// ═══════════ GLOBAL SCANNER ═══════════
-async function loadScanner() {
-  try {
-    const res = await fetch(API + '/api/global-draws');
-    const { count, draws } = await res.json();
-    document.getElementById('scannerBadge').textContent = count;
-    if (count > 0) document.getElementById('scannerBadge').classList.add('badge-alert');
-
-    // Stats
-    const avgVar = draws.length ? (draws.reduce((s, d) => s + (d.variance || 0), 0) / draws.length) : 0;
-    document.getElementById('scannerStats').innerHTML = `
-      <div class="scanner-stat"><div class="val">${count}</div><div style="color:var(--fg3);font-size:11px">Candidatos</div></div>
-      <div class="scanner-stat"><div class="val">${fmt(avgVar, 4)}</div><div style="color:var(--fg3);font-size:11px">Varianza promedio</div></div>
-    `;
-
-    // Sort by variance ascending
-    draws.sort((a, b) => (a.variance || 0) - (b.variance || 0));
-
-    const bodyEl = document.getElementById('scannerBody');
-    if (!draws.length) {
-      bodyEl.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:48px 20px;color:var(--fg3)">
-        <div style="font-size:36px;margin-bottom:10px">⚡</div>
-        <div style="font-weight:700;font-size:15px;color:var(--fg)">Scanner Global de Empates Activo (Minuto 75+)</div>
-        <div style="font-size:12px;color:var(--fg3);max-width:500px;margin:6px auto 0">Monitoreando partidos de fútbol en tiempo real. Cuando una cuota de empate en marcador empatado entre en meseta estabilizada (σ ≤ 0.035), aparecerá aquí automáticamente.</div>
-      </td></tr>`;
-      return;
-    }
-
-    bodyEl.innerHTML = draws.map(d => {
-      const vClass = d.variance < 0.01 ? 'var-low' : d.variance < 0.02 ? 'var-mid' : 'var-high';
-      const timeStr = typeof d.elapsed_min === 'number' ? `${d.elapsed_min}'` : (d.live_time || '—');
-      return `<tr>
-        <td class="col-event" style="font-family:var(--font)">${esc(d.event)}</td>
-        <td class="col-score">${esc(d.score || '—')}</td>
-        <td>${esc(timeStr)}</td>
-        <td style="color:var(--fg3)">${esc(d.market || '—')}</td>
-        <td style="color:var(--yellow)">${esc(d.selection || '—')}</td>
-        <td class="col-var" style="color:${vClass}">${fmt(d.variance, 4)}</td>
-        <td>@ ${fmt(d.mean_odd, 3)}</td>
-        <td style="color:var(--orange);font-weight:600">@ ${fmt(d.current_odd, 3)}</td>
-        <td>${d.sample_count || '—'}</td>
-      </tr>`;
-    }).join('');
-  } catch (e) { console.error('Scanner load error:', e); }
-}
 
 // ═══════════ PICK HISTORY ═══════════
 let acceptedData = [];
@@ -1440,7 +1376,6 @@ function closeModal() {
 async function init() {
   loadCommand();
   loadLive();
-  loadScanner();
   loadHistory();
   loadFirewall();
   loadControlGroup();
@@ -1452,7 +1387,6 @@ init();
 setInterval(() => {
   loadCommand();
   loadLive();
-  loadScanner();
   loadHistory();
   loadFirewall();
   loadControlGroup();
