@@ -521,13 +521,46 @@ function isBlockedOver(r) {
   return blockOversIn().some(d => s.includes(d));
 }
 
-// DNB (Empate No Acción) exige mayor convención (conf >= 0.75 y edge >= 0.05)
-function isWeakDNB(r) {
+function esDNB(r) {
   const m = (r.market || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
-  if (m.includes('empate no accion') || m.includes('draw no bet') || m.includes('dnb')) {
-    if (r.conf !== undefined && r.conf < 0.75) return true;
-    if (r.edge !== undefined && r.edge < 0.05) return true;
-  }
+  return m.includes('empate no accion') || m.includes('draw no bet') || m.includes('dnb');
+}
+
+// DNB (Empate No Acción). Por defecto solo se exige mayor convicción
+// (conf >= 0.75 y edge >= 0.05); con BLOCK_DNB=1 se veta el mercado ENTERO.
+//
+// POR QUÉ SE PUEDE VETAR ENTERO (medido el 2026-08-22, N=488 liquidados):
+//
+// 1. El 62.0% terminan en EMPATE, o sea push: el stake vuelve y el pick no
+//    produce nada. De 1006.8u desplegadas en DNB, 558.6u devuelven cero. En la
+//    ventana reciente ese push sube al 80%.
+// 2. Ese 62% NO es una señal, es el PRECIO. La cuota mediana del empate en ese
+//    instante es 1.63, cuyo equilibrio está en 61.3%. Acertamos 61.3+0.7. El
+//    margen de la casa se come la diferencia.
+// 3. Cambiar el target a Empate directo tampoco sirve: contra los picks
+//    emitidos de la misma ventana da −3.0pp, IC95% [−12.1, +7.5], P(mejor)=27.5%.
+//
+// LO QUE ESTO NO ES: una mejora de rentabilidad. DNB es PLANO, ≈0 u/pick en
+// todas las ventanas (−0.0235 histórico, −0.0027 desde 08-12, −0.0283 desde
+// 08-19), y sobre el histórico completo su diferencia con el resto NI SIQUIERA
+// es significativa (IC [−0.213, +0.083], P=13%). Vetarlo no gana dinero
+// esperado.
+//
+// Y OJO con el argumento que parece obvio y es FALSO: no libera ranura de
+// emisión. AUTO_PICK_MAX_PER_HOUR=100 y el máximo real en una hora fue 36, con
+// mediana 3; el tope no se tocó ni una vez en 136 horas. Quitar DNB no hace que
+// se emita otra cosa en su lugar, simplemente se emite menos.
+//
+// Lo que SÍ gana: ~20% menos capital desplegado para el mismo P/L, y ~18% menos
+// apuestas colocadas — que importa por el riesgo de limitación de cuenta.
+// Es una decisión de eficiencia y exposición, no de rentabilidad.
+//
+// Volver atrás: BLOCK_DNB=0.
+function isWeakDNB(r) {
+  if (!esDNB(r)) return false;
+  if (process.env.BLOCK_DNB === '1') return true;
+  if (r.conf !== undefined && r.conf < 0.75) return true;
+  if (r.edge !== undefined && r.edge < 0.05) return true;
   return false;
 }
 
