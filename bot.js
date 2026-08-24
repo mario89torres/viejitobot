@@ -6,12 +6,13 @@ require('dotenv').config();
 if (!require('./src/singleInstance').acquire()) process.exit(1);
 const { fetchAllLive, fetchSportLive } = require('./src/fetcher');
 const { normalize } = require('./src/normalize');
-const { saveSnapshot, logPicks, logRejected, getUnsettledPicks, getStats,
+const { saveSnapshot, logPicks, logRejected, logModelPicks, getUnsettledPicks, getStats,
         setSharpEntry, setSharpStatus, pruneSnapshots,
         isDuplicatePick, countPicksSince,
         addSubscriber, getSubscriber, getActiveSubscribers, getExpiredSubscribers, setSubscriberStatus } = require('./src/db');
 const { processSettlements } = require('./src/results');
 const { topPicks } = require('./src/analyze');
+const { modelPicks } = require('./src/confidence');
 const { sendTelegram, formatMessage } = require('./src/telegram');
 const { safestPicks, rankPicks, auditRejections, goldenPick, parlayCombos, SCORE_VERSION } = require('./src/confidence');
 const { isElite } = require('./src/firewall');
@@ -407,7 +408,7 @@ async function handleParlay(args, chatId) {
     msg += `<i>Combinaciones +EV detectadas en vivo: ${combos.length}</i>\n`;
   }
   msg += `<i>Criterio: exige edge > 0 en cada pata (partidos distintos) y aplica corrección por varianza (γ=0.97). ` +
-    `Estos combos no se registran en /stats.</i>`;
+`Estos combos no se registran en /stats.</i>`;
 
   await sendTelegram(TOKEN, chatId, msg, MAIN_KEYBOARD);
 }
@@ -516,7 +517,7 @@ async function handleValidar(args, chatId) {
   msg += `Verificables (liga cubierta): <b>${r.checked}</b> en ${r.leagues} liga(s)\n`;
   if (!r.checked) {
     msg += `\n<i>Ninguno pudo verificarse: sus ligas no tienen fuente oficial disponible. ` +
-           `La liquidación por último marcador visto sigue sin contraste.</i>`;
+`La liquidación por último marcador visto sigue sin contraste.</i>`;
     return reply(chatId, msg);
   }
   const pctOk = (100 * r.ok / r.checked).toFixed(0);
@@ -533,7 +534,7 @@ async function handleValidar(args, chatId) {
     }
   } else if (r.mismatch.length) {
     msg += `\n<i>Hay marcadores distintos, pero ninguno cambia el resultado del pick ` +
-           `(diferencias posteriores a la decisión).</i>\n`;
+`(diferencias posteriores a la decisión).</i>\n`;
     for (const m of r.mismatch.slice(0, 4)) {
       msg += `• ${esc(m.event.slice(0, 30))}: ${esc(m.final_score)} → ${esc(m.oficial)}\n`;
     }
@@ -1174,15 +1175,30 @@ const AUTO_PICKS = String(process.env.AUTO_PICKS || 'false').toLowerCase() === '
 const AUTO_PICK_MAX_PER_HOUR = Number(process.env.AUTO_PICK_MAX_PER_HOUR || 6);
 const AUTO_PICK_NOTIFY = String(process.env.AUTO_PICK_NOTIFY || 'true').toLowerCase() === 'true';
 
-// 🔥 marca los picks donde el modelo aprendido —el que penaliza seguir el steam—
-// muestra confianza alta. Medido sobre los picks con ambos scores (n=54):
-// conf_learned >= 0.80 rindió +27.4% (n=15) frente a -12.7% de aquellos donde
-// el modelo es menos optimista que el heurístico. Muestra pequeña: la marca es
-// orientativa, no una recomendación de stake.
-const MODEL_STRONG_CONF = Number(process.env.MODEL_STRONG_CONF || 0.80);
-function isModelStrong(p) {
-  return p.confLearned !== null && p.confLearned !== undefined &&
-         p.confLearned >= MODEL_STRONG_CONF && p.confLearned > p.confHeuristic;
+// BADGES. La regla que los gobierna: un badge DESCRIBE el pick, no promete
+// rendimiento. Cada uno lleva su N, su ventana y su incertidumbre en el texto.
+//
+// El badge 🔥 se retiró el 2026-08-24. Marcaba los picks donde el modelo
+// aprendido superaba al heurístico y afirmaba "su tercil alto rindió +30%
+// histórico". Tres motivos para quitarlo:
+//   1. Ese +30% venía de n=15.
+//   2. Sobre 255 picks frescos el modelo resultó EMPATADO con el heurístico
+//      (Brier −0.0012, P(mejor)=39.8%), así que la promesa ya no se sostenía.
+//   3. Exigía conf_learned >= 0.82 y no se disparó NI UNA VEZ en esos 255: era
+//      código muerto que, de haberse activado, habría vendido un +30%
+//      inexistente a suscriptores de pago.
+//
+// Ninguno de los badges que quedan llega al 95% de confianza, y decirlo forma
+// parte del badge: el lector merece saber que es contexto medido, no garantía.
+const RECTA_FINAL_MIN = Number(process.env.RECTA_FINAL_MIN || 0.90);
+const MOV_CUOTA_MIN = Number(process.env.MOV_CUOTA_MIN || 0.50);
+
+// ⏱️ Partido en su recta final. Medido sobre picks liquidados sin DNB, con corte
+// temporal en 2026-08-12:  TRAIN N=293 ROI +16.9%  →  TEST N=94 ROI +21.2%.
+// Es el segmento más fuerte y el único consistente en ambos periodos. Contra su
+// misma ventana: +11.3pp, IC95% [−3.4, +24.1], P(mejor)=93.3% — no llega al 95%.
+function esRectaFinal(p) {
+  return p.progress != null && p.progress >= RECTA_FINAL_MIN;
 }
 
 // Grupo de control para entrenar: guarda una MUESTRA de los candidatos que se
@@ -1214,11 +1230,60 @@ function captureRejectedControls(rows) {
       // guardaba siempre NULL desde que existe esta tabla (2026-08-09).
       fProbJusta: r.base, fAvance: r.progress, fAvanceModel: r.fAvance,
       fSituacion: r.scoreFactor, fLinea: r.lineFactor, fApertura: r.fApertura,
-      confHeuristic: r.confHeuristic, scoreVersion: SCORE_VERSION,
+      confHeuristic: r.confHeuristic, confLearned: r.confLearned, scoreVersion: SCORE_VERSION,
     })));
     if (n) console.log(`[control] ${n} candidatos rechazados guardados (de ${muestras.length} muestreados)`);
   } catch (e) {
     console.error('[control] no se pudo guardar el grupo de control:', e.message);
+  }
+}
+
+// Picks que emitiria el modelo aprendido si decidiera el. NO se apuestan: se
+// registran y se avisan para poder comparar los dos decisores sobre la misma
+// realidad, en vez de discutirlo.
+//
+// SOLO al chat del dueno, nunca al canal VIP. Los picks que unicamente ve el
+// modelo salen de una poblacion sobre la que no hay NI UNA observacion, y sobre
+// lo que si se puede medir el modelo filtra al reves (-17u sobre 255 picks
+// frescos). Mandarselos a suscriptores de pago seria vender algo sin validar.
+const MODEL_PICKS = process.env.MODEL_PICKS === '1';
+
+async function emitirPicksModelo(rows) {
+  if (!MODEL_PICKS) return;
+  try {
+    const picks = modelPicks(rows, {
+      minOdds: Number(process.env.MIN_ODDS || 1.35),
+      minEdge: Number(process.env.MIN_EDGE || 0.03),
+      minConf: Number(process.env.MIN_CONF || 0.70),
+      n: Number(process.env.MODEL_PICKS_N || 3),
+    });
+    if (!picks.length) return;
+    const ts = new Date().toISOString();
+    const n = logModelPicks(picks.map(p => ({
+      ts, eventId: p.eventId, event: p.event, sport: p.sport, champ: p.champ,
+      market: p.market, selection: p.selection, oddDecimal: p.oddDecimal,
+      confLearned: p.confLearned, confHeuristic: p.confHeuristic, edgeLearned: p.edge,
+      tambienHeuristico: p.tambienHeuristico,
+      fProbJusta: p.base, fAvance: p.progress, fAvanceModel: p.fAvance,
+      fSituacion: p.scoreFactor, fLinea: p.lineFactor, fApertura: p.fApertura,
+      scoreVersion: SCORE_VERSION,
+    })));
+    if (!n) return; // ya estaban registrados; no volver a avisar
+    console.log(`[modelo] ${n} picks del modelo registrados`);
+
+    const soloModelo = picks.filter(p => !p.tambienHeuristico).length;
+    let msg = '\u{1F916} <b>Picks del MODELO aprendido</b> — no apostados, solo registro\n';
+    msg += `<i>${n} registrado${n === 1 ? '' : 's'} · ${soloModelo} que el heurístico NO emitiría</i>\n\n`;
+    for (const p of picks) {
+      msg += `${p.tambienHeuristico ? '\u{1F91D}' : '\u{1F916}'} <b>${esc(p.event)}</b> <i>(${esc(p.sport)})</i>\n`;
+      msg += `${esc(p.market)}: <b>${esc(p.selection)}</b> @ <b>${p.oddDecimal.toFixed(2)}</b>\n`;
+      msg += `modelo <b>${pct(p.confLearned)}</b> · heurístico ${pct(p.confHeuristic)}`;
+      msg += p.tambienHeuristico ? ' · <i>ambos coinciden</i>\n\n' : ' · <i>solo el modelo</i>\n\n';
+    }
+    try { await sendTelegram(TOKEN, CHAT_ID, msg); }
+    catch (e) { console.error('[modelo] aviso:', e.message); }
+  } catch (e) {
+    console.error('[modelo] no se pudieron registrar los picks del modelo:', e.message);
   }
 }
 
@@ -1271,16 +1336,30 @@ async function autoPicks(rows) {
   for (let i = 0; i < picks.length; i++) {
     const p = picks[i];
     const flag = getCountryFlag(p.champ, p.event, p.sport);
-    msg += `${isElite(p) ? '🛡️ ' : ''}${isModelStrong(p) ? '🔥 ' : ''}${flag} <b>#${ids[i]}</b> · <b>${esc(p.event)}</b> <i>(${esc(p.sport)}${p.champ ? ` — ${esc(p.champ)}` : ''})</i>\n`;
+    msg += `${isElite(p) ? '🛡️ ' : ''}${esRectaFinal(p) ? '⏱️ ' : ''}${flag} <b>#${ids[i]}</b> · <b>${esc(p.event)}</b> <i>(${esc(p.sport)}${p.champ ? ` — ${esc(p.champ)}` : ''})</i>\n`;
     if (p.score) msg += `Marcador: ${esc(p.score)}${p.liveTime ? ` — ${esc(p.liveTime)}` : ''}\n`;
     msg += `${esc(p.market)}: 🎯 <b><u>${esc(p.selection)}</u></b> @ <b>${p.oddDecimal.toFixed(2)}</b> (${p.oddAmerican})\n`;
     msg += `Confianza: <b>${pct(p.conf)}</b> | Edge: <b>+${(100 * p.edge).toFixed(1)}%</b>`;
     msg += p.stake != null ? ` | Unidad: <b>${p.stake.toFixed(1)}u</b>\n` : '\n';
-    if (isModelStrong(p)) {
-      msg += `<i>🔥 el modelo aprendido le da ${pct(p.confLearned)} — su tercil alto rindió +30% histórico</i>\n`;
+    // Movimiento de la cuota: es un HECHO, no un pronóstico. No necesita muestra
+    // ni intervalo de confianza porque no afirma nada sobre el futuro — solo dice
+    // lo que el mercado YA hizo desde que empezamos a seguir esta jugada.
+    //
+    // El umbral es 50% y no 5% por una razón medida: este bot apuesta tarde, y
+    // la caída MEDIANA de la cuota desde la apertura es del 39% (N=325). Con un
+    // 5% la línea saldría en el 94% de los picks, y algo que aparece casi
+    // siempre no informa de nada. Al 50% sale en un tercio, que es cuando el
+    // movimiento de verdad destaca sobre lo normal.
+    // Deliberadamente NO dice si eso es bueno o malo: no lo sabemos.
+    if (p.openingOdd > 1 && Math.abs(p.openingOdd - p.oddDecimal) / p.openingOdd >= MOV_CUOTA_MIN) {
+      const bajo = p.oddDecimal < p.openingOdd;
+      msg += `<i>${bajo ? '📉' : '📈'} la cuota ${bajo ? 'bajó' : 'subió'} de ${p.openingOdd.toFixed(2)} a ${p.oddDecimal.toFixed(2)} desde que seguimos el partido</i>\n`;
+    }
+    if (esRectaFinal(p)) {
+      msg += `<i>⏱️ recta final — ${(100 * p.progress).toFixed(0)}% del partido jugado. Este segmento rindió +21% en 94 picks desde el 12-ago; el margen es amplio (P=93%), así que es contexto medido y no una garantía.</i>\n`;
     }
     if (isElite(p)) {
-      msg += `<i>🛡️ tier ELITE del firewall — el único subconjunto que quedó positivo fuera de muestra (N=28, ROI +10%). Muestra chica: es una marca, no una recomendación de stake.</i>\n`;
+      msg += `<i>🛡️ tier ELITE del firewall — Under tardío con línea estable: +16.1% en 109 picks desde el 12-ago (P=87%). Marca orientativa, no una recomendación de stake.</i>\n`;
     }
     msg += '\n';
   }
@@ -1319,6 +1398,7 @@ async function sample() {
     await processSettlements(rows);
     computeFocusSports(sportResults, rows);
     await autoPicks(rows);
+    await emitirPicksModelo(rows);
     await checkExpiredSubscribers();
   } catch (e) {
     console.error('[sampler]', e.message);

@@ -817,6 +817,51 @@ function rankPicks(rows, { minOdds = Number(process.env.MIN_ODDS || 1.35), maxOd
 }
 
 /**
+ * Los picks que emitiria el MODELO aprendido si el decidiera (MODEL_MODE=learned),
+ * SIN emitirlos de verdad. Sirve para poder comparar los dos decisores sobre la
+ * misma realidad en vez de discutirlo.
+ *
+ * Decide con conf_learned y con el edge RECALCULADO a partir de ella
+ * (edge = conf_learned x momio - 1), porque asi es exactamente como se
+ * comportaria learned: `conf` alimenta las dos puertas de emision.
+ *
+ * Pero pasa por LAS MISMAS puertas y el mismo firewall que la emision real. Si
+ * le quitaramos las guardas, lo que midiriamos seria "modelo sin firewall"
+ * contra "heuristico con firewall", que no es la pregunta.
+ *
+ * Devuelve tambien `tambienHeuristico`: si el heuristico habria emitido esa
+ * misma jugada. Es la separacion que importa — donde ambos coinciden no hay
+ * nada que aprender, y donde SOLO lo ve el modelo esta la poblacion sin validar.
+ */
+function modelPicks(rows, { minOdds = Number(process.env.MIN_ODDS || 1.35), maxOdds = 3,
+                            minEdge = 0, minConf = 0, n = 3 } = {}) {
+  const excl = excludedSports();
+  const opts = { minConf, minEdge };
+  const seen = new Set();
+  const puntuadas = preScoreFilter(rows, excl, minOdds, maxOdds)
+    .map(r => ({ ...r, ...scoreRow(r) }))
+    .filter(r => r.confLearned !== null && r.confLearned !== undefined);
+
+  // Que habria emitido el heuristico, para marcar las coincidencias.
+  const delHeuristico = new Set(
+    puntuadas.filter(r => POST_SCORE_GATES.every(([, ok]) => ok(r, opts)))
+             .map(r => `${r.eventId}|${r.market}|${r.selection}`));
+
+  return puntuadas
+    // La fila que ven las puertas lleva la conf y el edge DEL MODELO.
+    .map(r => ({ ...r, conf: r.confLearned, edge: r.confLearned * r.oddDecimal - 1 }))
+    .filter(r => POST_SCORE_GATES.every(([, ok]) => ok(r, opts)))
+    .sort((a, b) => b.conf - a.conf)
+    .filter(r => {
+      if (seen.has(r.eventId)) return false;
+      seen.add(r.eventId);
+      return true;
+    })
+    .slice(0, n)
+    .map(r => ({ ...r, tambienHeuristico: delHeuristico.has(`${r.eventId}|${r.market}|${r.selection}`) ? 1 : 0 }));
+}
+
+/**
  * Grupo de control para entrenar: candidatos que se puntuaron pero NO se
  * emitieron, etiquetados con la puerta que los frenó.
  *
@@ -952,6 +997,6 @@ module.exports = {
   isSuspensionOrInstabilityInWindow, isRejectedBy5Guards, computeStructuralDrawSignal, DRAW_SIGNAL_DEFAULTS,
   recentScoreChange, isDrawSelection, readSpike, SPIKE_DEFAULTS,
   computeStake, kellyFraction, tierStake, STAKE_MODE,
-  POST_SCORE_GATES,
+  POST_SCORE_GATES, modelPicks,
 };
 

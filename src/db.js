@@ -60,6 +60,32 @@ db.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS idx_rejected_uniq
     ON rejected_picks(event_id, market, selection);
   CREATE INDEX IF NOT EXISTS idx_rejected_result ON rejected_picks(result);
+  -- Picks que emitiria el MODELO aprendido si decidiera el (MODEL_MODE=learned).
+  -- Tabla APARTE, no una fila mas en picks, y no por gusto: picks alimenta
+  -- todos los analisis de rendimiento, backtests y el propio entrenamiento.
+  -- Meter aqui jugadas que nadie apuesta las colaria en cada medicion futura —
+  -- es literalmente lo que paso con globalDrawScanner, que insertaba directo en
+  -- picks y contamino los backtests del firewall hasta que hubo que marcar
+  -- 224 filas con score_version=0 para poder excluirlas.
+  CREATE TABLE IF NOT EXISTS model_picks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    event_id INTEGER, event TEXT, sport TEXT, champ TEXT,
+    market TEXT, selection TEXT,
+    odd_decimal REAL,
+    conf_learned REAL, conf_heuristic REAL, edge_learned REAL,
+    -- 1 si el heuristico tambien lo habria emitido: separa las jugadas donde
+    -- ambos coinciden de las que SOLO ve el modelo, que son la poblacion sin
+    -- validar y el motivo de todo este ejercicio.
+    tambien_heuristico INTEGER NOT NULL DEFAULT 0,
+    f_prob_justa REAL, f_avance REAL, f_avance_model REAL,
+    f_situacion REAL, f_linea REAL, f_apertura REAL,
+    score_version INTEGER,
+    result TEXT, final_score TEXT, settled_ts TEXT
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_model_uniq
+    ON model_picks(event_id, market, selection);
+  CREATE INDEX IF NOT EXISTS idx_model_result ON model_picks(result);
 
   CREATE TABLE IF NOT EXISTS subscribers (
     telegram_id INTEGER PRIMARY KEY,
@@ -126,6 +152,13 @@ addColumn('picks', 'f_apertura', 'REAL');
 // Los picks anteriores al arreglo de f_linea quedan marcados como v1.
 addColumn('picks', 'score_version', 'INTEGER');
 db.prepare(`UPDATE picks SET score_version = 1 WHERE score_version IS NULL`).run();
+// conf_learned en el grupo de control (2026-08-24). Sin esta columna solo se
+// puede simular MEDIA de lo que haria MODEL_MODE=learned: se ve que picks
+// EMITIDOS dejaria de emitir, pero no cuales RECHAZADOS empezaria a emitir —
+// y esos son justo la poblacion sin validar que hace arriesgado activarlo.
+// Con la columna, dentro de unas semanas la simulacion es completa.
+addColumn('rejected_picks', 'conf_learned', 'REAL');
+
 
 // Cursor del prune: por dónde iba el escaneo. Vive entre llamadas para que
 // cada pasada avance en vez de re-mirar siempre las mismas filas viejas.
@@ -174,10 +207,10 @@ const logPicks = db.transaction((picks) => {
 const insertRejectedStmt = db.prepare(`
   INSERT OR IGNORE INTO rejected_picks (ts, event_id, event, sport, market, selection,
     odd_decimal, conf, edge, reject_rule, f_prob_justa, f_avance, f_avance_model,
-    f_situacion, f_linea, f_apertura, conf_heuristic, score_version)
+    f_situacion, f_linea, f_apertura, conf_heuristic, conf_learned, score_version)
   VALUES (@ts, @eventId, @event, @sport, @market, @selection,
     @oddDecimal, @conf, @edge, @rejectRule, @fProbJusta, @fAvance, @fAvanceModel,
-    @fSituacion, @fLinea, @fApertura, @confHeuristic, @scoreVersion)
+    @fSituacion, @fLinea, @fApertura, @confHeuristic, @confLearned, @scoreVersion)
 `);
 const logRejected = db.transaction((rows) => {
   let n = 0;
@@ -186,13 +219,39 @@ const logRejected = db.transaction((rows) => {
       eventId: null, event: null, sport: null, market: null, selection: null,
       oddDecimal: null, conf: null, edge: null, fProbJusta: null, fAvance: null,
       fAvanceModel: null, fSituacion: null, fLinea: null, fApertura: null,
-      confHeuristic: null, scoreVersion: null,
+      confHeuristic: null, confLearned: null, scoreVersion: null,
       ...r,
     });
     if (info.changes) n++;
   }
   return n;
 });
+const insertModelStmt = db.prepare(`
+  INSERT OR IGNORE INTO model_picks (ts, event_id, event, sport, champ, market, selection,
+    odd_decimal, conf_learned, conf_heuristic, edge_learned, tambien_heuristico,
+    f_prob_justa, f_avance, f_avance_model, f_situacion, f_linea, f_apertura, score_version)
+  VALUES (@ts, @eventId, @event, @sport, @champ, @market, @selection,
+    @oddDecimal, @confLearned, @confHeuristic, @edgeLearned, @tambienHeuristico,
+    @fProbJusta, @fAvance, @fAvanceModel, @fSituacion, @fLinea, @fApertura, @scoreVersion)
+`);
+const logModelPicks = db.transaction((rows) => {
+  let n = 0;
+  for (const r of rows) {
+    const info = insertModelStmt.run({
+      eventId: null, event: null, sport: null, champ: null, market: null, selection: null,
+      oddDecimal: null, confLearned: null, confHeuristic: null, edgeLearned: null,
+      tambienHeuristico: 0, fProbJusta: null, fAvance: null, fAvanceModel: null,
+      fSituacion: null, fLinea: null, fApertura: null, scoreVersion: null,
+      ...r,
+    });
+    if (info.changes) n++;
+  }
+  return n;
+});
+const unsettledModelStmt = db.prepare(`SELECT * FROM model_picks WHERE result IS NULL`);
+const settleModelStmt = db.prepare(
+  `UPDATE model_picks SET result = ?, final_score = ?, settled_ts = ? WHERE id = ?`);
+
 const unsettledRejectedStmt = db.prepare(`SELECT * FROM rejected_picks WHERE result IS NULL`);
 const settleRejectedStmt = db.prepare(`
   UPDATE rejected_picks SET result = ?, final_score = ?, settled_ts = ? WHERE id = ?
@@ -249,6 +308,10 @@ const sharpClosingStmt = db.prepare(`
 module.exports = {
   db, saveSnapshot, logPicks,
   logRejected,
+  logModelPicks,
+  getUnsettledModelPicks: () => unsettledModelStmt.all(),
+  settleModelPick: (id, result, finalScore) =>
+    settleModelStmt.run(result, finalScore, new Date().toISOString(), id),
   getUnsettledRejected: () => unsettledRejectedStmt.all(),
   settleRejected: (id, result, finalScore) =>
     settleRejectedStmt.run(result, finalScore, new Date().toISOString(), id),

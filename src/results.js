@@ -1,5 +1,6 @@
 const { getUnsettledPicks, getLastScore, getLastSeen, getClosingOdd, settlePick, setSharpClosing,
-        getUnsettledRejected, settleRejected } = require('./db');
+        getUnsettledRejected, settleRejected,
+        getUnsettledModelPicks, settleModelPick } = require('./db');
 const { gradePick, parsePick, decidedResult } = require('./markets');
 
 /**
@@ -211,7 +212,15 @@ async function processSettlements(rows) {
 const CONTROL_SETTLE_MIN = Number(process.env.CONTROL_SETTLE_MIN || 15);
 
 function settleRejectedGroup(liveEventIds) {
-  for (const r of getUnsettledRejected()) {
+  liquidarGrupo(liveEventIds, getUnsettledRejected, settleRejected);
+  // Los picks del modelo se liquidan con la MISMA espera y el mismo criterio.
+  // Si usaran una regla propia no serian comparables con los emitidos, que es
+  // lo unico para lo que existen.
+  liquidarGrupo(liveEventIds, getUnsettledModelPicks, settleModelPick);
+}
+
+function liquidarGrupo(liveEventIds, pendientes, liquidar) {
+  for (const r of pendientes()) {
     if (liveEventIds.has(r.event_id)) continue;
 
     // ¿Cuánto lleva el evento fuera del feed? Se mide contra su último
@@ -224,7 +233,7 @@ function settleRejectedGroup(liveEventIds) {
     const last = getLastScore(r.event_id);
     if (!last || !last.score) continue;
     const row = { market: r.market, selection: r.selection, event: r.event, sport: r.sport };
-    settleRejected(r.id, resultFor(row, last.score), last.score);
+    liquidar(r.id, resultFor(row, last.score), last.score);
   }
 }
 
