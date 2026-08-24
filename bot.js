@@ -13,6 +13,7 @@ const { saveSnapshot, logPicks, logRejected, logModelPicks, getUnsettledPicks, g
 const { processSettlements } = require('./src/results');
 const { topPicks } = require('./src/analyze');
 const { modelPicks } = require('./src/confidence');
+const { frase: fraseBadge } = require('./src/badgeStats');
 const { sendTelegram, formatMessage } = require('./src/telegram');
 const { safestPicks, rankPicks, auditRejections, goldenPick, parlayCombos, SCORE_VERSION } = require('./src/confidence');
 const { isElite } = require('./src/firewall');
@@ -1355,11 +1356,19 @@ async function autoPicks(rows) {
       const bajo = p.oddDecimal < p.openingOdd;
       msg += `<i>${bajo ? '📉' : '📈'} la cuota ${bajo ? 'bajó' : 'subió'} de ${p.openingOdd.toFixed(2)} a ${p.oddDecimal.toFixed(2)} desde que seguimos el partido</i>\n`;
     }
+    // Las cifras se interpolan VIVAS desde src/badgeStats.js, no van escritas
+    // aquí. Un número a mano envejece solo: el badge 🔥 acabó prometiendo un
+    // +30% sacado de n=15 que para entonces ya no existía. Si no hay muestra
+    // suficiente, frase() devuelve '' y el badge se pinta sin cifra.
     if (esRectaFinal(p)) {
-      msg += `<i>⏱️ recta final — ${(100 * p.progress).toFixed(0)}% del partido jugado. Este segmento rindió +21% en 94 picks desde el 12-ago; el margen es amplio (P=93%), así que es contexto medido y no una garantía.</i>\n`;
+      const f = fraseBadge('rectaFinal');
+      msg += `<i>⏱️ recta final — ${(100 * p.progress).toFixed(0)}% del partido jugado.`
+           + `${f ? ` ${f}.` : ''} Contexto medido sobre nuestro histórico, no una garantía.</i>\n`;
     }
     if (isElite(p)) {
-      msg += `<i>🛡️ tier ELITE del firewall — Under tardío con línea estable: +16.1% en 109 picks desde el 12-ago (P=87%). Marca orientativa, no una recomendación de stake.</i>\n`;
+      const f = fraseBadge('elite');
+      msg += `<i>🛡️ tier ELITE del firewall — Under tardío con línea estable.`
+           + `${f ? ` ${f}.` : ''} Marca orientativa, no una recomendación de stake.</i>\n`;
     }
     msg += '\n';
   }
