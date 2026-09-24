@@ -11,7 +11,21 @@
 const fs = require('fs');
 const path = require('path');
 
-const MODEL_PATH = path.join(__dirname, '..', 'model.json');
+const crypto = require('crypto');
+// MODEL_PATH existe para los TESTS, no para produccion.
+//
+// tests/model.test.js necesita cargar modelos de juguete, y para hacerlo
+// ESCRIBIA sobre el model.json real y lo restauraba en un finally. El 2026-09-04
+// ese restore fallo por contencion de fichero con el bot vivo y dejo el modelo
+// de produccion reducido a 171 bytes de juguete; la unica copia buena quedo en
+// la memoria del proceso en marcha, y hubo que reconstruir la calibracion desde
+// los conf_learned guardados (scripts/recuperar-calibracion-model.js).
+//
+// Con MODEL_PATH apuntando a un fichero temporal, el test no toca produccion.
+//
+// Ojo: definir MODEL_PATH en .env mueve el modelo de produccion. El default es
+// la ruta de siempre.
+const MODEL_PATH = process.env.MODEL_PATH || path.join(__dirname, '..', 'model.json');
 
 // Las features que EXISTEN. No confundir con las que el heurístico pondera:
 // f_situacion se sigue calculando y persistiendo (el firewall la usa en R5 y hay
@@ -139,22 +153,55 @@ function marketFeatures(row = {}) {
 const MARKET_FEATURES = ['is_under', 'is_over', 'is_btts', 'is_ganador', 'is_dnb', 'linea'];
 
 let model = null;
+let modelVersionId = null;
+
+// SELLO DE VERSIÓN DEL MODELO.
+//
+// conf_learned se persiste en picks, model_picks y rejected_picks aunque el
+// modelo no decida nada (MODEL_MODE=shadow). Cada reentrenamiento cambia la
+// escala de esa columna, y hasta 2026-08-25 no quedaba constancia de CUÁL
+// modelo la produjo: `score_version` versiona la fórmula heurística, no el
+// modelo aprendido. Consecuencia: un análisis que agrupe por conf_learned
+// cruzando dos modelos mezcla dos escalas distintas sin avisar. Pasó de forma
+// latente al cambiar la calibración de isotónica a Platt, que mueve el
+// significado de un mismo número.
+//
+// Formato: '<trained_at compacto>-<hash7>', p.ej. '20260825T183012Z-a3f9c1b'.
+// Lleva las dos mitades a propósito. El timestamp es legible y ordena; el hash
+// del CONTENIDO detecta lo que el timestamp no ve — un model.json editado a
+// mano conserva su trained_at pero cambia de hash.
+function calcularVersion(raw, m) {
+  const hash = crypto.createHash('sha1').update(raw).digest('hex').slice(0, 7);
+  if (!m || !m.trained_at) return hash;
+  const t = String(m.trained_at).replace(/[-:]/g, '').replace(/\.\d+/, '');
+  return `${t.replace(/\+0000$/, 'Z').replace(/\s/, 'T')}-${hash}`;
+}
+
 function reloadModel() {
   try {
-    const m = JSON.parse(fs.readFileSync(MODEL_PATH, 'utf8'));
+    const raw = fs.readFileSync(MODEL_PATH, 'utf8');
+    const m = JSON.parse(raw);
     if (typeof m.intercept !== 'number' || !m.coef || !m.calibration ||
         !Array.isArray(m.calibration.x) || !Array.isArray(m.calibration.y) ||
         m.calibration.x.length !== m.calibration.y.length || m.calibration.x.length < 2) {
       throw new Error('model.json con formato inválido');
     }
     model = m;
+    modelVersionId = calcularVersion(raw, m);
   } catch (e) {
     if (e.code !== 'ENOENT') console.error('[model] no se pudo cargar model.json:', e.message);
     model = null;
+    modelVersionId = null;
   }
   return model;
 }
 reloadModel();
+
+// null cuando no hay modelo cargado o está sin adoptar: en ese caso tampoco hay
+// conf_learned que sellar, así que la columna queda NULL de forma coherente.
+function modelVersion() {
+  return (!model || model.adopted === false) ? null : modelVersionId;
+}
 
 function getMode() {
   const m = (process.env.MODEL_MODE || 'shadow').toLowerCase();
@@ -207,7 +254,13 @@ function valorFeature(features, f) {
   return MARKET_FEATURES.includes(f) ? 0 : 0.5;
 }
 
-function learnedConf(features, sport) {
+// Devuelve el sigmoide SIN calibrar. Es el que conserva el orden fino: la
+// calibración isotónica es una escalera de 28 peldaños y aplasta tramos enteros
+// del crudo en un solo valor. Medido el 2026-08-25 sobre 18.967 candidatos, el
+// crudo va de 0.13 a 0.82, pero el 94.8% de lo que supera MIN_CONF=0.70 cae en
+// los peldaños 0.7025/0.7034 — indistinguibles entre sí. Para ORDENAR hay que
+// usar el crudo; para leerlo como probabilidad, el calibrado.
+function learnedRaw(features, sport) {
   if (!model || model.adopted === false) return null;
   const featList = Array.isArray(model.features) && model.features.length ? model.features : FEATURES;
   let z = model.intercept;
@@ -215,7 +268,12 @@ function learnedConf(features, sport) {
   const sc = model.sport_coef || {};
   const key = sc[sport] !== undefined ? sport : 'otros';
   z += sc[key] || 0;
-  const raw = sigmoid(z);
+  return sigmoid(z);
+}
+
+function learnedConf(features, sport) {
+  const raw = learnedRaw(features, sport);
+  if (raw === null) return null;
   const cal = interp(model.calibration, raw);
   return Math.min(1, Math.max(0, cal));
 }
@@ -226,11 +284,17 @@ function score(features, sport) {
   const mode = getMode();
   const confHeuristic = heuristicConf(features);
   const confLearned = mode === 'heuristic' ? null : learnedConf(features, sport);
+  // El crudo NO se persiste ni se muestra: sirve para desempatar el orden
+  // dentro de un peldaño de la calibración (ver learnedRaw).
+  const confLearnedRaw = mode === 'heuristic' ? null : learnedRaw(features, sport);
   const conf = mode === 'learned' && confLearned !== null ? confLearned : confHeuristic;
-  return { conf, confHeuristic, confLearned, mode };
+  // El sello se toma AQUÍ, no en la capa de escritura: así identifica al modelo
+  // que de verdad produjo este confLearned, aunque model.json se recargue en
+  // caliente (bot.js:/train) entre la puntuación y el INSERT.
+  return { conf, confHeuristic, confLearned, confLearnedRaw, mode, modelVersion: modelVersion() };
 }
 
 module.exports = {
-  score, heuristicConf, learnedConf, getMode, reloadModel, interp,
+  score, heuristicConf, learnedConf, learnedRaw, getMode, reloadModel, interp, modelVersion,
   marketFeatures, MARKET_FEATURES, FEATURES, HEURISTIC_WEIGHTS,
 };

@@ -78,7 +78,27 @@ MARKET_FEATURES = (
     ["is_under", "is_over", "is_btts", "is_ganador", "is_dnb", "linea"]
     if os.environ.get("MARKET_FEATURES", "1") != "0" else []
 )
-FEATURES = HEUR_FEATURES + ["f_apertura"] + MARKET_FEATURES
+# DROP_FEATURES: lista separada por comas de features que el MODELO no usa.
+#
+# Solo afecta a las entradas del modelo. HEUR_FEATURES y HEUR_WEIGHTS quedan
+# intactos a proposito: son la linea base contra la que se decide adoptar, y
+# tocarlos cambiaria el heuristico con el que se compara, no el modelo.
+#
+# Candidatas medidas el 2026-08-27 (bootstrap por cluster de evento, B=600,
+# IC95% que abarcan el cero): f_apertura [-0.0417, 0.1320], f_linea
+# [-0.0997, 0.0532], linea [-0.0204, 0.1191], is_dnb [-0.0171, 0.0535].
+# Podarlas quita ademas las dos features que leen el historico de snapshots
+# (f_apertura, f_linea), que es la unica superficie con riesgo de fuga temporal.
+# Por defecto se podan las cuatro. Medido el 2026-08-27 con DRY_RUN sobre el
+# mismo dataset: modelo completo Brier +0.0030 (3/4 folds), podado +0.0029 (3/4).
+# Misma cifra con 7 features en vez de 11. Es el default y no una opcion para
+# que un reentrenamiento futuro no lo revierta sin que nadie lo decida.
+# DROP_FEATURES="" restaura el modelo completo.
+_DROP_DEFAULT = "f_apertura,f_linea,linea,is_dnb"
+DROP_FEATURES = [f.strip() for f in os.environ.get("DROP_FEATURES", _DROP_DEFAULT).split(",") if f.strip()]
+FEATURES = [f for f in (HEUR_FEATURES + ["f_apertura"] + MARKET_FEATURES) if f not in DROP_FEATURES]
+if DROP_FEATURES:
+    print(f"[features] podadas: {', '.join(DROP_FEATURES)} -> el modelo usa {len(FEATURES)}")
 MIN_SAMPLES = 80          # mínimo absoluto para intentar entrenar
 SPORT_MIN = 50            # picks mínimos para dummy propia de deporte
 # train >= ISOTONIC_MIN -> isotonic; si no, sigmoid (Platt).
@@ -98,6 +118,71 @@ SPORT_MIN = 50            # picks mínimos para dummy propia de deporte
 # Barrido sin editar el script:
 #   ISOTONIC_MIN=300 python scripts/train_weights.py   # vuelve al comportamiento previo
 ISOTONIC_MIN = int(os.environ.get("ISOTONIC_MIN", 2000))
+
+# CAL_METHOD: sigmoid (Platt, por defecto) | isotonic | auto (usa ISOTONIC_MIN)
+#
+# 2026-08-25. El umbral de arriba se subió a 2000 el 09-ago "= sigmoid en todos
+# los tamaños actuales", medido con n=1576. El dataset creció a 17.904 y cruzó
+# ese umbral SIN QUE NADIE LO DECIDIERA: el modelo del 19-ago salió con
+# calibración isotónica otra vez, y con ella el problema que la isotónica tiene
+# y Platt no — es una ESCALERA.
+#
+# El daño medido en producción: de 200 puntos de la tabla exportada, la
+# isotónica solo produce 30 valores distintos, y no hay ninguno entre 0.6678 y
+# 0.7025. Como MIN_CONF=0.70 cae justo en ese hueco, el 94.8% de los picks que
+# pasaban la puerta salían con conf_learned IDÉNTICO — 173 picks con 0.7025 y
+# el crudo repartido entre 0.6835 y 0.7061. El modelo no podía ordenar nada.
+#
+# Comparativa sobre el dataset actual (n=17.904, walk-forward de 4 folds):
+#
+#            Brier     logloss   peor fold   valores distintos   pasa 0.70
+#   isotonic 0.22756   0.64691   0.66289      30 de 200           12.1%
+#   platt    0.22889   0.64963   0.67682     200 de 200           12.6%
+#   crudo    0.22362   0.63867   0.64510    2629                  12.6%
+#
+# El crudo gana las dos métricas propias: una regresión logística entrenada con
+# log-loss YA sale calibrada, y calibrarla otra vez sobre todo añade varianza.
+# Se elige sigmoid y no "ninguna" porque conserva el mecanismo por si el
+# clasificador cambia y deja de estar bien calibrado, con ECE idéntico al crudo
+# (0.0278 vs 0.0278) y sin cambiar el volumen que supera la puerta.
+# 2026-08-27: el default pasa de "sigmoid" a "none". Medido sobre el dataset
+# actual con walk-forward de 4 folds, contra el baseline que faltaba (la propia
+# cuota, 1/odd), este es el orden completo:
+#
+#   modelo SIN calibrar         Brier 0.22363   log-loss 0.63869   <- mejor
+#   mercado calibrado (1/odd)         0.22638            0.64450
+#   modelo + isotonica                0.22756            0.64691
+#   mercado crudo (1/odd)             0.22780            0.64767
+#   modelo + Platt                    0.22889            0.64963   <- peor
+#
+# Calibrar no solo no ayuda: hunde al modelo POR DEBAJO de usar la cuota a
+# secas. Una logistica entrenada con log-loss ya sale calibrada, y recalibrarla
+# sobre sus propias predicciones anade varianza sin corregir sesgo.
+# El modelo sin calibrar gana 4/4 folds en ambas metricas contra el mercado.
+#
+# MIN_CONF sigue siendo interpretable: la salida cruda de la logistica ES una
+# probabilidad, y mejor calibrada que cualquiera de las dos alternativas.
+# El volumen que supera 0.70 no cambia (12.6% crudo, 12.1% isotonica, 12.6% Platt).
+# DRY_RUN=1 evalua y exporta a model_candidate.json SIN tocar model.json, aunque
+# la regla de adopcion diga que si. Existe porque comparar calibradores en un
+# bucle sobre este script REEMPLAZA produccion en cada corrida que adopte: el
+# 2026-08-27 un barrido de tres metodos dejo en produccion el ultimo que corrio,
+# no el que la evidencia respaldaba.
+DRY_RUN = os.environ.get("DRY_RUN") == "1"
+
+# El default es "sigmoid", no "none". Sin calibrar gana en el AGREGADO (Brier
+# 0.22363 vs 0.22889) pero ese pool es 95% grupo de control: sobre los PICKS
+# EMITIDOS, que es la poblacion que recibe dinero, la regla de adopcion lo
+# RECHAZA (2/4 folds frente a 3/4 de sigmoid). Medido el 2026-08-27.
+# Es la trampa de agregacion contra la que existe la condicion origin='picks'.
+CAL_METHOD = os.environ.get("CAL_METHOD", "sigmoid").lower()
+
+
+def calibrador(n_filas):
+    """Método de calibración a usar. 'auto' reproduce el comportamiento previo."""
+    if CAL_METHOD == "auto":
+        return "isotonic" if n_filas >= ISOTONIC_MIN else "sigmoid"
+    return CAL_METHOD  # none | sigmoid | isotonic
 RETENTION_MIN = 0.60      # retención mínima de la mejora in-sample
 CAL_TABLE_POINTS = 200
 CLIP = (0.001, 0.999)
@@ -191,12 +276,18 @@ def unscale(pipe):
 
 
 def fit_calibrated(X, y, method):
+    raw = make_lr().fit(X, y)
+    if method == "none":
+        # Sin calibrar: el "calibrado" ES el crudo. Se devuelve el mismo objeto
+        # para que la comparativa por fold siga imprimiendo las dos columnas
+        # (brier_raw y brier_cal salen identicas, que es justo lo que se quiere
+        # ver cuando se decide no calibrar).
+        return raw, raw
     base = make_lr()
     min_class = int(min(np.bincount(y, minlength=2)))
     cv = max(2, min(5, min_class))
     cal = CalibratedClassifierCV(base, method=method, cv=cv)
     cal.fit(X, y)
-    raw = make_lr().fit(X, y)
     return raw, cal
 
 
@@ -280,7 +371,7 @@ def main():
             skipped += 1
             continue
 
-        method = "isotonic" if len(tr) >= ISOTONIC_MIN else "sigmoid"
+        method = calibrador(len(tr))
         X_tr = build_matrix(tr, sport_groups, ver_dummies)
         X_te = build_matrix(te, sport_groups, ver_dummies)
         raw, cal = fit_calibrated(X_tr, y_tr, method)
@@ -423,9 +514,13 @@ def main():
     cv = max(2, min(5, min_class))
     p_oof = cross_val_predict(make_lr(), X_all, y_all,
                               cv=cv, method="predict_proba")[:, 1]
-    final_method = "isotonic" if n >= ISOTONIC_MIN else "sigmoid"
+    final_method = calibrador(n)
     grid = np.linspace(0.0, 1.0, CAL_TABLE_POINTS)
-    if final_method == "isotonic":
+    if final_method == "none":
+        # Identidad: se exporta la tabla igualmente para no cambiar el formato que
+        # lee src/model.js, pero interp() devuelve entonces el valor crudo.
+        cal_y = grid.copy()
+    elif final_method == "isotonic":
         iso = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds="clip").fit(p_oof, y_all)
         cal_y = iso.predict(grid)
     else:
@@ -488,7 +583,7 @@ def main():
             },
         },
     }
-    out = ROOT / ("model.json" if adopted else "model_candidate.json")
+    out = ROOT / ("model.json" if (adopted and not DRY_RUN) else "model_candidate.json")
     out.write_text(json.dumps(model, indent=1), encoding="utf-8")
     print(f"\nModelo exportado a {out.name}" + ("" if adopted else " (NO adoptado: no reemplaza a model.json)"))
     if adopted:

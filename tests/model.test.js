@@ -2,9 +2,18 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
-const { score, heuristicConf, learnedConf, getMode, reloadModel, interp, HEURISTIC_WEIGHTS } = require('../src/model');
 
-const MODEL_PATH = path.join(__dirname, '..', 'model.json');
+// NO SE TOCA EL model.json DE PRODUCCION. Este test carga modelos de juguete, y
+// antes los escribia sobre el real restaurandolo en un finally. El 2026-09-04 el
+// restore fallo por contencion con el bot vivo y destruyo el modelo de
+// produccion: hubo que reconstruirlo desde los conf_learned de la BD.
+//
+// MODEL_PATH se fija ANTES de requerir src/model.js, que lee la ruta al cargarse.
+const os = require('os');
+const MODEL_PATH = path.join(os.tmpdir(), `bot-monitor-model-test-${process.pid}.json`);
+process.env.MODEL_PATH = MODEL_PATH;
+
+const { score, heuristicConf, learnedConf, getMode, reloadModel, interp, HEURISTIC_WEIGHTS } = require('../src/model');
 const F = { f_prob_justa: 0.8, f_avance: 0.6, f_situacion: 0.7, f_linea: 0.5 };
 
 function withEnv(key, val, fn) {
