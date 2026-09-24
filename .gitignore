@@ -52,3 +52,4 @@ draw_universe_*.json
 snapshots_pre_vacuum_*
 model_pre_*.json
 .bot.lock
+.dashboard.lock
