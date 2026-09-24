@@ -1,61 +1,74 @@
 /**
  * src/betlink.js
  * ─────────────────────────────────────────────────────────────
- * Generador de enlaces para Playdoit:
- *   1. Deep Link por evento (Default / Sin login):
- *      https://www.playdoit.mx/#/sport/${sportId}/event/${eventId}
- *   2. ShareCode 1-Click Bet (Si existe PLAYDOIT_COOKIE en .env):
- *      POST a Altenar API -> https://www.playdoit.mx?shareCode=${code}
- * ─────────────────────────────────────────────────────────────
+ * Deep link a un evento de Playdoit:
+ *   https://www.playdoit.mx/#page=event&eventId={eventId}&sportId={sportId}
+ *
+ * Es un fragmento hash, se resuelve del lado del cliente. El betslip no viaja
+ * en el URL, asi que el enlace llega a nivel EVENTO, no a nivel seleccion:
+ * quien recibe la alerta elige la seleccion a mano. Es deliberado — el ultimo
+ * clic lo da una persona.
+ *
+ * NO HAY RAMA AUTENTICADA. Hubo una que hacia POST a AddBetCode con la cookie
+ * de sesion (PLAYDOIT_COOKIE) para generar un shareCode de un clic. Se quito el
+ * 2026-09-03 por tres razones:
+ *   1. Estaba muerta: PLAYDOIT_COOKIE no estaba definida.
+ *   2. Estaba muerta dos veces: leia p.odd_id / p.selection_id, y la tabla
+ *      `picks` no persiste ningun id de seleccion — normalize.js guarda NOMBRES
+ *      de mercado y seleccion, no ids. No podia dispararse desde un pick.
+ *   3. Era un arma cargada: bastaba con rellenar una variable de entorno para
+ *      que el bot empezara a hacer peticiones autenticadas con la cookie de la
+ *      cuenta, sin ningun otro cambio de codigo.
+ * Si algun dia hace falta, que vuelva con un interruptor explicito y con los
+ * ids de seleccion realmente persistidos, no adivinados.
  */
+const { db } = require('./db');
 
-const BASE = 'https://sb2frontend-altenar2.biahosted.com/api/widget';
-const COMMON = 'culture=es-ES&timezoneOffset=360&integration=playdoit2&deviceType=1&numFormat=en-GB&countryCode=MX';
+const BASE = 'https://www.playdoit.mx/';
+
+// EL sportId NO VIVE EN `picks`. La tabla guarda `event_id` y `sport` (el
+// nombre), pero no `sport_id`, y el deep link lo necesita. La version anterior
+// resolvia esto con `|| 66` — el id de Futbol — asi que todo pick de tenis,
+// beisbol o baloncesto salia con un enlace al deporte equivocado. Hay 25
+// deportes distintos en el feed.
+//
+// `snapshots` SI guarda sport_id, y todo pick emitido viene de un snapshot de
+// su evento, asi que la busqueda acierta salvo que la retencion ya haya podado
+// el evento. Se cachea porque un ciclo de alertas repite eventos.
+const cacheSport = new Map();
+
+function sportIdDeEvento(eventId) {
+  if (eventId == null) return null;
+  if (cacheSport.has(eventId)) return cacheSport.get(eventId);
+  let id = null;
+  try {
+    const row = db.prepare(
+      'SELECT sport_id FROM snapshots WHERE event_id = ? AND sport_id IS NOT NULL LIMIT 1'
+    ).get(eventId);
+    id = row ? row.sport_id : null;
+  } catch { /* BD ocupada: se devuelve null y el enlace sale sin sportId */ }
+  if (id != null) cacheSport.set(eventId, id);
+  return id;
+}
 
 /**
- * Genera la URL para apostar en Playdoit.
- * @param {Object} p - Pick u oportunidad (event_id, sport_id, odd_id)
- * @returns {Promise<string>} URL lista para clic
+ * URL del evento para una alerta.
+ *
+ * @param {Object} p pick u oportunidad; acepta snake_case y camelCase
+ * @returns {string} URL lista para clic
  */
-async function generateBetLink(p) {
-  const cookie = process.env.PLAYDOIT_COOKIE;
-  const oddId = p.odd_id || p.oddId || p.selection_id;
+function generateBetLink(p) {
+  const eventId = p.event_id ?? p.eventId;
+  if (eventId == null) return BASE;
 
-  // Opción 2 (Opcional): Si hay cookie de sesión, generar shareCode 1-Click Bet
-  if (cookie && oddId) {
-    try {
-      const res = await fetch(`${BASE}/AddBetCode?${COMMON}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Cookie': cookie,
-          'Referer': 'https://www.playdoit.mx/',
-          'Origin': 'https://www.playdoit.mx',
-          'integration': 'playdoit2',
-        },
-        body: JSON.stringify({ odds: [oddId] })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        const code = data.code || data.shareCode || data.betCode;
-        if (code) {
-          return `https://www.playdoit.mx?shareCode=${code}`;
-        }
-      }
-    } catch (e) {
-      console.warn(`[betlink] Falló generación de shareCode con cookie: ${e.message}`);
-    }
-  }
+  const sportId = p.sport_id ?? p.sportId ?? sportIdDeEvento(eventId);
 
-  // Opción 1 (Default): Deep Link directo al evento en vivo de Playdoit
-  const eventId = p.event_id || p.eventId;
-  const sportId = p.sport_id || p.sportId || 66;
-
-  if (eventId) {
-    return `https://www.playdoit.mx/#/sport/${sportId}/event/${eventId}`;
-  }
-
-  return 'https://www.playdoit.mx/';
+  // Sin sportId se emite el enlace igual, solo con eventId. Es preferible a
+  // inventarse un deporte: un id equivocado abre otra cosa, y uno ausente deja
+  // que el router resuelva lo que pueda.
+  return sportId == null
+    ? `${BASE}#page=event&eventId=${eventId}`
+    : `${BASE}#page=event&eventId=${eventId}&sportId=${sportId}`;
 }
 
 module.exports = { generateBetLink };
