@@ -47,4 +47,29 @@ async function fetchAllLive() {
   return results;
 }
 
-module.exports = { fetchAllLive, fetchSportLive, getLiveSports };
+// Detalle de UN evento. Es la unica via a los mercados que el overview no
+// trae — corners, tarjetas, especiales por jugador — y cuesta una llamada por
+// partido, frente a una por deporte del overview. Solo lo usa el piloto de
+// corners (src/corners.js), que trae su propio tope e intervalo.
+//
+// `retries = 1`: si el detalle de un partido falla, se salta y ya. Reintentar
+// multiplicaria las llamadas de un camino que ya es el caro, y el piloto puede
+// perder muestras sin consecuencia — no decide nada.
+async function fetchEventDetails(eventId) {
+  return getJson(`${BASE}/GetEventDetails?${COMMON}&eventId=${eventId}`, 1);
+}
+
+// Calendario PRE-PARTIDO de un deporte: todos los eventos programados (no solo
+// los que ya estan en vivo), con mercados y cuotas incluidos en la misma
+// respuesta — una sola llamada trae TODO lo pre-partido de ese deporte (31
+// dias hacia adelante en futbol, medido el 2026-09-22), a diferencia del
+// piloto de corners que necesita una llamada por partido. Misma forma que
+// GetLiveOverview (`markets`, `odds`, `events`, `champs`, `competitors`), asi
+// que normalize() la procesa sin cambios — solo que aqui `ev.startDate` es
+// futuro y `ev.status === 0` (no iniciado). Piloto de solo lectura
+// (src/prematchScanner.js): no emite ni decide nada.
+async function fetchPrematch(sportId) {
+  return getJson(`${BASE}/GetEvents?${COMMON}&sportId=${sportId}`, 1);
+}
+
+module.exports = { fetchAllLive, fetchSportLive, getLiveSports, fetchEventDetails, fetchPrematch };

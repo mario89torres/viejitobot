@@ -98,14 +98,34 @@ async function captureSharpClosing(pick) {
  *     liquidar con eso sería liquidar por un parpadeo.
  */
 const AUSENCIAS_MIN = Number(process.env.EARLY_SETTLE_MISSES || 3);
-const ausencias = new Map(); // pickId -> ciclos consecutivos sin ver la selección
+// Un contador de ausencias POR GRUPO. Los ids de picks, model_picks y
+// rejected_picks colisionan entre si, asi que un mapa unico haria que el pick
+// #817 de la sombra heredara las ausencias del #817 emitido y se liquidara
+// antes de tiempo — el error exacto contra el que existe esta guarda.
+const ausenciasPorGrupo = {
+  picks: new Map(),
+  model: new Map(),
+  rejected: new Map(),
+};
 
-function settleDecidedEarly(rows, liveEventIds) {
+/**
+ * Recorre UN grupo de pendientes y liquida los que ya estan decididos.
+ *
+ * Se aplica a los tres grupos con el MISMO criterio, y eso no es cosmetico:
+ * los picks emitidos, los de la sombra y los del control solo sirven si se
+ * comparan entre si, y liquidarlos con reglas distintas los vuelve
+ * incomparables (ver el bloque de settleRejectedGroup y los +159u fantasma).
+ * Antes solo `picks` tenia liquidacion temprana: la sombra y el control
+ * esperaban a que el partido entero saliera del feed mas 15 minutos, asi que
+ * un Under 3.5 con el marcador 3-2 seguia "pendiente" media hora.
+ */
+function settleDecidedEarlyGroup(grupo, pendientes, liquidar, rows, liveEventIds) {
+  const ausencias = ausenciasPorGrupo[grupo];
   const vivos = new Set(rows.map(r => `${r.eventId}|${r.market}|${r.selection}`));
   const scorePorEvento = new Map();
   for (const r of rows) if (r.score) scorePorEvento.set(r.eventId, r.score);
 
-  for (const pick of getUnsettledPicks()) {
+  for (const pick of pendientes()) {
     // Si el evento ya no está en vivo, de esto se encarga la escalera normal.
     if (!liveEventIds.has(pick.event_id)) { ausencias.delete(pick.id); continue; }
 
@@ -123,12 +143,26 @@ function settleDecidedEarly(rows, liveEventIds) {
     const result = decidedResult(row, score);
     if (!result) continue; // aún puede cambiar: se espera al final
 
+    liquidar(pick, result, score);
+    ausencias.delete(pick.id);
+    console.log(`[settle:early:${grupo}] ${pick.event} | ${pick.selection} -> ${result} (${score}, mercado cerrado)`);
+  }
+}
+
+function settleDecidedEarly(rows, liveEventIds) {
+  // Emitidos: ademas del resultado se captura la cuota de cierre (base del CLV).
+  settleDecidedEarlyGroup('picks', getUnsettledPicks, (pick, result, score) => {
     const closing = getClosingOdd(pick.event_id, pick.market, pick.selection);
     settlePick(pick.id, result, score, 'early_decided',
       closing ? closing.odd_decimal : null, closing ? closing.ts : null);
-    ausencias.delete(pick.id);
-    console.log(`[settle:early] ${pick.event} | ${pick.selection} -> ${result} (${score}, mercado cerrado)`);
-  }
+  }, rows, liveEventIds);
+
+  // Sombra del modelo y grupo de control: no tienen columnas de cierre.
+  settleDecidedEarlyGroup('model', getUnsettledModelPicks,
+    (pick, result, score) => settleModelPick(pick.id, result, score), rows, liveEventIds);
+
+  settleDecidedEarlyGroup('rejected', getUnsettledRejected,
+    (pick, result, score) => settleRejected(pick.id, result, score), rows, liveEventIds);
 }
 
 async function processSettlements(rows) {

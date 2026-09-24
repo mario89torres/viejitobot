@@ -1,6 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const { parsePick, gradePick } = require('../src/markets');
+// Antes que src/confidence: ver tests/helpers/db-temporal.js.
+const { sembrarGuardas } = require('./helpers/db-temporal');
 const { rankPicks, isOverPick } = require('../src/confidence');
 
 const ev = 'Kalsdorf vs. SC Bruck';
@@ -38,6 +40,7 @@ test('BLOCK_OVERS_IN veta los "más de X"', () => {
     oddDecimal: 1.45, oddAmerican: '-', fairProb: 0.85, suspended: 0,
   });
   const rows = [mk(1, 'Más de 2.5', 'Total 2.5'), mk(2, 'Menos de 2.5', 'Total 2.5'), mk(3, 'E3A', 'Resultado Final')];
+  sembrarGuardas(rows);
   const prev = process.env.BLOCK_OVERS_IN;
   try {
     process.env.BLOCK_OVERS_IN = 'futbol';
@@ -74,9 +77,13 @@ test('el veto de overs NO se extrapola a otros deportes', () => {
 test('veto por falta de certidumbre: mercados no interpretables no se emiten', () => {
   const { rankPicks, goldenPick, isUncertain } = require('../src/confidence');
   const ts = new Date().toISOString();
+  // Marcador 1-0 y no 2-0: la guardia 4 (colchon de goles) veta un "Menos de
+  // 2.5" en cuanto se llevan 2, y aqui se prueba la interpretabilidad del
+  // mercado, no el colchon. Con 2-0 la fila valida caeria por el motivo
+  // equivocado y el test mentiria.
   const mk = (id, market, sel) => ({
     ts, sport: 'Fútbol', sportId: 66, champ: 'T', eventId: id, event: `E${id}A vs. E${id}B`,
-    score: '2-0', liveTime: "80'", minute: 80, setNum: null, market, selection: sel,
+    score: '1-0', liveTime: "80'", minute: 80, setNum: null, market, selection: sel,
     oddDecimal: 1.45, oddAmerican: '-', fairProb: 0.85, suspended: 0,
   });
   assert.strictEqual(isUncertain({ marketType: null }), true);
@@ -91,6 +98,7 @@ test('veto por falta de certidumbre: mercados no interpretables no se emiten', (
     mk(3, 'Resultado Final', 'E3A'),     // válido
     mk(4, 'Total 2.5', 'Menos de 2.5'),  // válido
   ];
+  sembrarGuardas(rows);
   const got = rankPicks(rows, { minConf: 0, minEdge: 0, n: 10 }).map(p => p.market);
   assert.deepStrictEqual(got.sort(), ['Resultado Final', 'Total 2.5']);
   const g = goldenPick(rows, { minConf: 0, minOdds: 1.05, minEdge: -9 });

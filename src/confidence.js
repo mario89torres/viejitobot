@@ -33,6 +33,40 @@ const openStmt = db.prepare(`
   ORDER BY ts ASC LIMIT 1
 `);
 
+// CACHE DE LA CUOTA DE APERTURA. Es la consulta mas cara del sistema.
+//
+// Medido el 2026-08-28: 7.20 ms por llamada, el 86% del coste de scoreRow
+// (8.32 ms). El indice de snapshots es (event_id, ts), asi que ORDER BY ts ASC
+// obliga a buscar el evento y escanear hacia delante TODAS sus filas filtrando
+// mercado y seleccion en memoria, sobre una tabla de 113 millones de filas.
+//
+// Por que se puede cachear sin riesgo: la apertura es, por definicion, la
+// PRIMERA observacion de esa combinacion. Una vez vista no cambia nunca.
+//
+// Efecto: el ciclo del sampler puntua el conjunto de candidatos tres veces
+// (auditRejections, safestPicks, modelPicks). Con ~2.000 filas por ciclo eso
+// eran ~52 s de CPU BLOQUEANTE, y Node es de un solo hilo: durante esos 52 s
+// el poll de Telegram no responde. De ahi que los mensajes tardaran.
+//
+// Solo se cachean los aciertos. Un fallo (todavia no hay snapshot sin
+// suspender) SI puede cambiar en el proximo ciclo.
+//
+// Nota sobre la poda: pruneSnapshots borra filas viejas de eventos sin picks.
+// Si borra la fila de apertura, la BD devolveria una posterior. El cache
+// conserva la original, que es lo correcto.
+const OPEN_CACHE_MAX = Number(process.env.OPEN_CACHE_MAX || 200000);
+const openCache = new Map();
+function openingOddFor(eventId, market, selection) {
+  const k = `${eventId}|${market}|${selection}`;
+  const hit = openCache.get(k);
+  if (hit !== undefined) return hit;
+  const row = openStmt.get(eventId, market, selection);
+  if (!row) return null;                    // no se cachea el fallo
+  if (openCache.size >= OPEN_CACHE_MAX) openCache.clear();  // tope simple: sin fugas
+  openCache.set(k, row.odd_decimal);
+  return row.odd_decimal;
+}
+
 // Drift relativo apertura→actual mapeado a [0,1] sin saturación dura:
 // >0.5 = la línea bajó desde la primera observación (el mercado se movió a
 // favor del pick); 0.5 = sin movimiento. relDelta/(1+|relDelta|) es suave y
@@ -405,8 +439,7 @@ function scoreRow(row) {
 
   const { lineFactor, lineDelta, points } = lineTrend(row);
 
-  const openRow = openStmt.get(row.eventId, row.market, row.selection);
-  const openingOdd = openRow ? openRow.odd_decimal : null;
+  const openingOdd = openingOddFor(row.eventId, row.market, row.selection);
   const fApertura = aperturaFactor(openingOdd, row.oddDecimal);
 
   // El conf mostrado depende de MODEL_MODE (src/model.js); el heurístico
@@ -424,7 +457,7 @@ function scoreRow(row) {
     f_linea: lineFactor, f_apertura: fApertura,
     ...marketFeatures(row),
   };
-  const { conf, confHeuristic, confLearned } = modelScore(features, row.sport);
+  const { conf, confHeuristic, confLearned, confLearnedRaw, modelVersion, mode: modelMode } = modelScore(features, row.sport);
   // edge estimado al momento de emitir: valor esperado por unidad apostada
   const edge = conf * row.oddDecimal - 1;
   const isHighConviction = ((confLearned || conf) >= 0.80) &&
@@ -436,7 +469,7 @@ function scoreRow(row) {
     fApertura,
   });
   return {
-    conf, confHeuristic, confLearned, edge, stake, stakeMode: STAKE_MODE, isHighConviction,
+    conf, confHeuristic, confLearned, confLearnedRaw, modelVersion, modelMode, edge, stake, stakeMode: STAKE_MODE, isHighConviction,
     // `progress` es el avance CRUDO (lo usan el firewall y los mensajes);
     // `fAvance` es el que realmente entra al modelo. Se devuelven los dos para
     // poder persistir el servido sin romper a quien depende del crudo.
@@ -648,6 +681,39 @@ const blockOversIn = () => (process.env.BLOCK_OVERS_IN ?? 'futbol')
  * 5. Guardia 5: Snapshot Maturity Check (Mínimo 4-5 snapshots activos observados)
  * ─────────────────────────────────────────────────────────────────────────────
  */
+// Analisis retrospectivo del 2026-09-12 sobre el grupo de control: de las 5
+// guardias, solo la 5 mostro evidencia clara de proteger contra picks
+// perdedores (n=47, -12.6% ROI en lo que bloqueaba); 1 y 3 salieron
+// neutrales o con muestra insuficiente (n=30 y n=12), y 2 y 4 sin evidencia
+// a favor. Se apagaron 1-4 ese mismo dia dejando solo la 5 activa.
+//
+// La 5 se apago horas despues, el mismo dia, junto con quitar la escritura
+// duplicada de getFreshRows() (bot.js): /parlay, /golden, /seguras, /top y
+// /deportes volvian a guardar su propia foto de las cuotas en vivo ademas de
+// la que ya guarda el sampler de fondo cada minuto, y esa escritura extra
+// (sincrona, cara con la BD bajo contencion) era buena parte de la lentitud
+// que se reportaba en esos comandos. Quitar la escritura duplicada deja a
+// esos comandos dependiendo del historial que el sampler de fondo ya viene
+// llenando solo, sin el suyo propio — la Guardia 5 exigia 4+ snapshots
+// ACTIVOS muy recientes para el mercado exacto, algo que antes se garantizaba
+// en parte con esa escritura extra. Decision explicita del usuario: aceptar
+// perder esa proteccion (la unica con evidencia real) a cambio de comandos
+// mas rapidos, en vez de mantener la escritura solo para sostenerla.
+//
+// GUARDIA 4 REACTIVADA el mismo dia, horas despues. El n=0 del analisis
+// retrospectivo NO significaba "nunca hace falta" — significaba que la
+// guardia ya estaba activa en el pasado y filtraba estos casos ANTES de que
+// pudieran generar datos que medir; ausencia de evidencia, no evidencia de
+// ausencia. Se confirmo en vivo: con las 5 apagadas, salio un auto-pick real
+// (#7781, Santos vs. Cruzeiro, Under 2.5 con marcador 2-0 al 81') que
+// GUARDIA_4 existe exactamente para bloquear — un gol mas y el pick pierde
+// sin importar cuanto edge tuviera. Las guardias 1, 2, 3 y 5 siguen apagadas.
+const GUARDIA_1_ACTIVA = false;
+const GUARDIA_2_ACTIVA = false;
+const GUARDIA_3_ACTIVA = false;
+const GUARDIA_4_ACTIVA = true;
+const GUARDIA_5_ACTIVA = false;
+
 function isRejectedBy5Guards(r) {
   if (!r) return false;
   // Si el pick ya está resuelto o guardado (win/loss/push), no evaluar ventana live histórica
@@ -669,66 +735,115 @@ function isRejectedBy5Guards(r) {
     `).all(eventId, market, selection);
 
     const activeSnaps = allSnaps.filter(s => s.suspended === 0);
-    if (activeSnaps.length < 4) {
+    if (GUARDIA_5_ACTIVA && activeSnaps.length < 4) {
       return true; // RECHAZADO: Mercado inmaduro (<4 snapshots activos)
     }
 
-    // ── GUARDIA 2: Silencio de Feed (Latencia > 15s) ──
-    const lastSnapTs = new Date(activeSnaps[0].ts).getTime();
-    const elapsedSec = (Date.now() - lastSnapTs) / 1000;
-    if (elapsedSec > 15) {
-      return true; // RECHAZADO: Silencio sospechoso de feed (>15s sin update)
-    }
-
-    // ── GUARDIA 1: Calma de Marcador (Score Shock Guard 90s) ──
-    const scoreSince = new Date(Date.now() - 90 * 1000).toISOString();
-    const scoreSnaps = db.prepare(`
-      SELECT score, ts
-      FROM snapshots
-      WHERE event_id = ? AND ts >= ?
-      ORDER BY ts ASC
-    `).all(eventId, scoreSince);
-
-    if (scoreSnaps.length > 1) {
-      const firstScore = scoreSnaps[0].score;
-      const lastScore = scoreSnaps.at(-1).score;
-      if (firstScore && lastScore && firstScore !== lastScore) {
-        return true; // RECHAZADO: Hubo cambio de marcador en los últimos 90s
+    // ── GUARDIA 2: Silencio de Feed (Latencia > 15s) — DESACTIVADA ──
+    // Apagada el 2026-09-12 tras el analisis retrospectivo sobre el grupo de
+    // control: de 1300 candidatos liquidados que esta guardia habria
+    // bloqueado (brecha >15s, ya usando r.ts del batch en vez de Date.now()
+    // — ver GUARDIA_2_ACTIVA mas abajo para el porque de ese cambio previo),
+    // el resultado real fue 72.0% WR y +7.1% ROI — MEJOR que el 70.6% WR /
+    // +2.7% ROI de los picks que si se emiten. La guardia estaba filtrando
+    // candidatos de igual o mejor calidad que los que ya se apuestan, no
+    // protegiendo de nada. El codigo se deja intacto (no se borra) por si el
+    // patron cambia y hace falta revisarla con una muestra fresca —
+    // reactivar es solo volver GUARDIA_2_ACTIVA a true.
+    if (GUARDIA_2_ACTIVA) {
+      // "Ahora" es el ts del propio BATCH (r.ts, sellado una sola vez por
+      // normalize() al momento de recibir el feed — antes de cualquier
+      // escritura a la BD), no Date.now(). Con Date.now() esta guardia no
+      // medía silencio del FEED sino latencia de NUESTRO pipeline: saveSnapshot
+      // puede tardar decenas de segundos a veces (contención de la BD,
+      // documentada aparte), y para cuando el scoring corre sobre ese mismo
+      // ciclo, Date.now() ya está bien por delante del ts real del snapshot —
+      // aunque el dato en si siga fresco. Encontrado el 2026-09-12: un pick con
+      // 74% de confianza y +10.7% de edge (Storhamar vs. Frolunda) rechazado
+      // por "silencio de feed" con una brecha real de 115s, toda ella tiempo de
+      // escritura, no de mercado.
+      const ahora = r.ts ? new Date(r.ts).getTime() : Date.now();
+      const lastSnapTs = new Date(activeSnaps[0].ts).getTime();
+      const elapsedSec = (ahora - lastSnapTs) / 1000;
+      if (elapsedSec > 15) {
+        return true; // RECHAZADO: Silencio sospechoso de feed (>15s sin update)
       }
     }
 
-    // ── GUARDIA 3: Estabilidad de Línea (Ventana 60s) ──
-    const windowSince = new Date(Date.now() - 60 * 1000).toISOString();
-    const windowSnaps = db.prepare(`
-      SELECT odd_decimal, suspended, ts
-      FROM snapshots
-      WHERE event_id = ? AND market = ? AND selection = ? AND ts >= ?
-      ORDER BY ts ASC
-    `).all(eventId, market, selection, windowSince);
+    // "Ahora" para las ventanas de tiempo de las guardias 1 y 3: el ts del
+    // propio batch (r.ts), no Date.now() — mismo motivo que la Guardia 2 (ver
+    // arriba): evaluar contra el reloj real mide cuanto tardo NUESTRO
+    // pipeline en llegar a puntuar esta fila, no que tan reciente es el dato.
+    const ahoraGuardas = r.ts ? new Date(r.ts).getTime() : Date.now();
 
-    if (windowSnaps.some(s => s.suspended === 1)) {
-      return true; // RECHAZADO: Hubo suspensión en la ventana de 60s
-    }
+    // ── GUARDIA 1: Calma de Marcador (Score Shock Guard 90s) — DESACTIVADA ──
+    // Analisis del 2026-09-12: n=30, WR 70.4%, ROI +2.5% — practicamente
+    // identico al 70.6%/+2.7% de los picks que si se emiten. No demuestra
+    // proteger de nada por encima del ruido normal.
+    if (GUARDIA_1_ACTIVA) {
+      const scoreSince = new Date(ahoraGuardas - 90 * 1000).toISOString();
+      const scoreSnaps = db.prepare(`
+        SELECT score, ts
+        FROM snapshots
+        WHERE event_id = ? AND ts >= ? AND ts <= ?
+        ORDER BY ts ASC
+      `).all(eventId, scoreSince, r.ts || new Date(ahoraGuardas).toISOString());
 
-    const currentOdd = r.oddDecimal || r.odd_decimal;
-    const windowOdds = windowSnaps.filter(s => s.odd_decimal > 0).map(s => s.odd_decimal);
-    if (currentOdd && windowOdds.length > 0) {
-      const minOdd = Math.min(...windowOdds);
-      if (minOdd > 0 && (currentOdd - minOdd) / minOdd > 0.10) {
-        return true; // RECHAZADO: Cuota subió >10% en el último minuto
+      if (scoreSnaps.length > 1) {
+        const firstScore = scoreSnaps[0].score;
+        const lastScore = scoreSnaps.at(-1).score;
+        if (firstScore && lastScore && firstScore !== lastScore) {
+          return true; // RECHAZADO: Hubo cambio de marcador en los últimos 90s
+        }
       }
     }
 
-    // ── GUARDIA 4: Colchón de Margen Seguro (Safe Margin Buffer) ──
-    const parsed = parsePick(r);
-    if (parsed && parsed.type === 'total' && !parsed.over && parsed.line !== undefined) {
-      const currentScore = r.score || (activeSnaps.length > 0 ? activeSnaps[0].score : null);
-      if (currentScore) {
-        const parts = currentScore.split('-').map(Number);
-        if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
-          const totalGoals = parts[0] + parts[1];
-          if (totalGoals >= parsed.line - 0.5) {
-            return true; // RECHAZADO: Colchón de goles agotado (ej: 2 goles en Under 2.5)
+    // ── GUARDIA 3: Estabilidad de Línea (Ventana 60s) — DESACTIVADA ──
+    // Analisis del 2026-09-12: n=12, WR 50%, ROI -26.1% — la señal mas
+    // fuerte de las 4, pero la muestra es demasiado chica (12 casos) para
+    // confiar. Se apaga hasta acumular mas datos y poder revisarla en serio.
+    if (GUARDIA_3_ACTIVA) {
+      const windowSince = new Date(ahoraGuardas - 60 * 1000).toISOString();
+      const windowSnaps = db.prepare(`
+        SELECT odd_decimal, suspended, ts
+        FROM snapshots
+        WHERE event_id = ? AND market = ? AND selection = ? AND ts >= ? AND ts <= ?
+        ORDER BY ts ASC
+      `).all(eventId, market, selection, windowSince, r.ts || new Date(ahoraGuardas).toISOString());
+
+      if (windowSnaps.some(s => s.suspended === 1)) {
+        return true; // RECHAZADO: Hubo suspensión en la ventana de 60s
+      }
+
+      const currentOdd = r.oddDecimal || r.odd_decimal;
+      const windowOdds = windowSnaps.filter(s => s.odd_decimal > 0).map(s => s.odd_decimal);
+      if (currentOdd && windowOdds.length > 0) {
+        const minOdd = Math.min(...windowOdds);
+        if (minOdd > 0 && (currentOdd - minOdd) / minOdd > 0.10) {
+          return true; // RECHAZADO: Cuota subió >10% en el último minuto
+        }
+      }
+    }
+
+    // ── GUARDIA 4: Colchón de Margen Seguro (Safe Margin Buffer) — REACTIVADA ──
+    // Se apago junto con las demas el 2026-09-12 por n=0 en el analisis
+    // retrospectivo (nunca fue la causa registrada de un rechazo), pero eso
+    // media ausencia de datos, no ausencia de utilidad: con las 5 apagadas
+    // salio un auto-pick real (#7781, Under 2.5 con 2-0 al minuto 81 — un gol
+    // mas y pierde sin importar el edge) que es exactamente el patron que
+    // esta guardia existe para bloquear. Reactivada el mismo dia, horas
+    // despues, tras verlo en vivo.
+    if (GUARDIA_4_ACTIVA) {
+      const parsed = parsePick(r);
+      if (parsed && parsed.type === 'total' && !parsed.over && parsed.line !== undefined) {
+        const currentScore = r.score || (activeSnaps.length > 0 ? activeSnaps[0].score : null);
+        if (currentScore) {
+          const parts = currentScore.split('-').map(Number);
+          if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+            const totalGoals = parts[0] + parts[1];
+            if (totalGoals >= parsed.line - 0.5) {
+              return true; // RECHAZADO: Colchón de goles agotado (ej: 2 goles en Under 2.5)
+            }
           }
         }
       }
@@ -759,6 +874,18 @@ const POST_SCORE_GATES = [
   ['firewall', (r) => !isFirewallBlocked(r)],
   ['min_conf', (r, o) => o.minConf <= 0 || r.conf >= o.minConf],
   ['min_edge', (r, o) => { const th = edgeThresholdFor(r, o.minEdge); return th <= 0 || r.edge >= th; }],
+  // TECHO DE EDGE (2026-09-12). Analisis retrospectivo sobre 4156 picks
+  // liquidados: el edge NO ordena de forma monotona — la banda 2-6% rinde
+  // mejor que cualquier otra (+5.9% ROI en dias ocupados), y la cola >20%
+  // pierde dinero en TODOS los regimenes de volumen (dias ocupados -0.7%
+  // ROI n=292; dias flojos -30.6% ROI n=5). Un edge enorme casi siempre
+  // significa que el modelo discrepa mucho del mercado, y en promedio el
+  // mercado tiene razon. Backtest de dos alternativas: techo fijo en 20% vs
+  // techo escalado por volumen del dia — el fijo gano en ganancia total
+  // (176.0u vs 156.6u) por no sacrificar los picks buenos de edge 10-20% en
+  // dias flojos, que el escalado bloqueaba igual que en dias ocupados.
+  // Decision explicita del usuario: techo fijo, no escalado.
+  ['max_edge', (r, o) => { const cap = o.maxEdge ?? Number(process.env.MAX_EDGE ?? 0.20); return cap <= 0 || r.edge < cap; }],
   // VETO DEL MODELO (2026-08-19). El modelo aprendido NO sustituye al
   // heurístico: sólo puede QUITAR picks que el heurístico habría emitido, nunca
   // añadir.
@@ -793,6 +920,22 @@ const modelVetoMinConf = () =>
 // Filtros previos al scoring. Separados a propósito: rechazan por razones
 // estructurales (suspendido, deporte excluido, momio fuera de rango) y no
 // producen un control interesante — nunca habrían sido apuestas plausibles.
+// Tope de cuota para EMITIR. Era 3 hardcodeado en cada funcion; ahora es
+// configurable porque es una palanca medida, no una constante.
+//
+// 2026-08-27, sobre 2.973 picks liquidados: el tramo 2.20+ tiene un margen
+// sobre el equilibrio de +0.4pp (el resto del sistema esta entre +2.3 y +4.1)
+// y un ROI de -21.5%. Cortarlo sube WR y ROI a la vez:
+//   WR  70.53% -> 71.57%   ROI 3.69% -> 4.45%
+//   IC95% de la diferencia de ROI [0.06, 1.48], P(mejor)=98.4%
+// Replicado fuera de muestra: el tramo rinde -30.1% en la primera mitad de la
+// serie y -25.2% en la segunda, con 26% de acierto en ambas.
+//
+// OJO: auditRejections NO usa este tope, usa 3 fijo. Es deliberado — el grupo
+// de control tiene que seguir observando la banda excluida, o esta decision
+// deja de ser medible y reversible.
+const PICK_MAX_ODDS = Number(process.env.PICK_MAX_ODDS || 3);
+
 function preScoreFilter(rows, excl, minOdds, maxOdds) {
   return rows
     .filter(r => !r.suspended)
@@ -800,11 +943,38 @@ function preScoreFilter(rows, excl, minOdds, maxOdds) {
     .filter(r => r.oddDecimal >= minOdds && r.oddDecimal <= maxOdds);
 }
 
-function rankPicks(rows, { minOdds = Number(process.env.MIN_ODDS || 1.35), maxOdds = 3, minEdge = 0, minConf = 0, n = 3 } = {}) {
-  const seen = new Set();
+/**
+ * Puntua UNA VEZ el conjunto de candidatos, para que los consumidores del ciclo
+ * lo compartan en vez de repetir el trabajo.
+ *
+ * El ciclo del sampler llama a auditRejections, safestPicks y modelPicks, y
+ * cada uno puntuaba TODAS las filas por su cuenta: tres pasadas identicas.
+ * Medido el 2026-08-28 con ~2.000 filas por ciclo, eran ~43 s de CPU
+ * BLOQUEANTE por ciclo, y Node es de un solo hilo: mientras dura, el poll de
+ * Telegram no responde.
+ *
+ * El rango de cuota es el MAS ANCHO de todos los consumidores a proposito
+ * (auditRejections usa 3.0 y el resto PICK_MAX_ODDS=2.2). Lo compartido tiene
+ * que ser un SUPERCONJUNTO: cada consumidor vuelve a filtrar por el suyo.
+ * Lo mismo con el filtro de e-sports, que solo aplica autoPicks.
+ */
+function scoreCandidates(rows, { minOdds = Number(process.env.MIN_ODDS || 1.35),
+                                 maxOdds = Math.max(PICK_MAX_ODDS, 3) } = {}) {
   const excl = excludedSports();
+  return preScoreFilter(rows, excl, minOdds, maxOdds).map(r => ({ ...r, ...scoreRow(r) }));
+}
+
+// Reaprovecha `scored` si viene; si no, puntua. Cada consumidor acota por SU
+// rango de cuota, que puede ser mas estrecho que el del conjunto compartido.
+function tomar(rows, scored, minOdds, maxOdds) {
+  const base = scored || scoreCandidates(rows, { minOdds, maxOdds });
+  return base.filter(r => r.oddDecimal >= minOdds && r.oddDecimal <= maxOdds);
+}
+
+function rankPicks(rows, { minOdds = Number(process.env.MIN_ODDS || 1.35), maxOdds = PICK_MAX_ODDS, minEdge = 0, minConf = 0, n = 3, scored = null } = {}) {
+  const seen = new Set();
   const opts = { minConf, minEdge };
-  let out = preScoreFilter(rows, excl, minOdds, maxOdds).map(r => ({ ...r, ...scoreRow(r) }));
+  let out = tomar(rows, scored, minOdds, maxOdds);
   for (const [, ok] of POST_SCORE_GATES) out = out.filter(r => ok(r, opts));
   return out
     .sort((a, b) => b.conf - a.conf)
@@ -833,25 +1003,38 @@ function rankPicks(rows, { minOdds = Number(process.env.MIN_ODDS || 1.35), maxOd
  * misma jugada. Es la separacion que importa — donde ambos coinciden no hay
  * nada que aprender, y donde SOLO lo ve el modelo esta la poblacion sin validar.
  */
-function modelPicks(rows, { minOdds = Number(process.env.MIN_ODDS || 1.35), maxOdds = 3,
-                            minEdge = 0, minConf = 0, n = 3 } = {}) {
-  const excl = excludedSports();
-  const opts = { minConf, minEdge };
+function modelPicks(rows, { minOdds = Number(process.env.MIN_ODDS || 1.35), maxOdds = PICK_MAX_ODDS,
+                            minEdge = 0, minConf = 0, n = 3, scored = null,
+                            // Techo de edge PROPIO del modelo, distinto del MAX_EDGE del
+                            // heuristico. Backtest del 2026-09-16 sobre 4057 picks learned
+                            // liquidados: el bucket >=20% de edge_learned rinde +28.2% (n=8,
+                            // muestra chica) y 15-20% +9.4% — nada parecido al colapso que sí
+                            // se ve en el heuristico (>=20% ahi: WR 36%, ROI -16.6%). Aplicarle
+                            // el mismo MAX_EDGE=0.08 le cortaria justo las colas que en este
+                            // modelo SI rinden. Pedido explicito del usuario: separar los topes.
+                            maxEdge = Number(process.env.MAX_EDGE_LEARNED ?? process.env.MAX_EDGE ?? 0.20) } = {}) {
+  const optsHeuristico = { minConf, minEdge }; // sin override: representa lo que el heuristico REAL emitiria
+  const optsModelo = { minConf, minEdge, maxEdge };
   const seen = new Set();
-  const puntuadas = preScoreFilter(rows, excl, minOdds, maxOdds)
-    .map(r => ({ ...r, ...scoreRow(r) }))
+  const puntuadas = tomar(rows, scored, minOdds, maxOdds)
     .filter(r => r.confLearned !== null && r.confLearned !== undefined);
 
   // Que habria emitido el heuristico, para marcar las coincidencias.
   const delHeuristico = new Set(
-    puntuadas.filter(r => POST_SCORE_GATES.every(([, ok]) => ok(r, opts)))
+    puntuadas.filter(r => POST_SCORE_GATES.every(([, ok]) => ok(r, optsHeuristico)))
              .map(r => `${r.eventId}|${r.market}|${r.selection}`));
 
   return puntuadas
     // La fila que ven las puertas lleva la conf y el edge DEL MODELO.
     .map(r => ({ ...r, conf: r.confLearned, edge: r.confLearned * r.oddDecimal - 1 }))
-    .filter(r => POST_SCORE_GATES.every(([, ok]) => ok(r, opts)))
-    .sort((a, b) => b.conf - a.conf)
+    .filter(r => POST_SCORE_GATES.every(([, ok]) => ok(r, optsModelo)))
+    // Se ORDENA por el crudo, no por conf. La calibración isotónica aplasta el
+    // 94.8% de lo que pasa la puerta en dos peldaños identicos (0.7025/0.7034),
+    // asi que ordenar por conf era ordenar por nada: los 3 que salian eran los
+    // 3 primeros que devolvia el filtro. El crudo conserva el orden fino.
+    // La PUERTA sigue usando el calibrado, que es lo unico interpretable como
+    // probabilidad; el crudo solo desempata dentro del peldaño.
+    .sort((a, b) => (b.confLearnedRaw ?? b.conf) - (a.confLearnedRaw ?? a.conf))
     .filter(r => {
       if (seen.has(r.eventId)) return false;
       seen.add(r.eventId);
@@ -859,6 +1042,80 @@ function modelPicks(rows, { minOdds = Number(process.env.MIN_ODDS || 1.35), maxO
     })
     .slice(0, n)
     .map(r => ({ ...r, tambienHeuristico: delHeuristico.has(`${r.eventId}|${r.market}|${r.selection}`) ? 1 : 0 }));
+}
+
+/**
+ * MODEL_RESCUE — el experimento inverso al veto.
+ *
+ * El veto deja que el modelo QUITE picks que el heuristico emitiria. Esto deja
+ * que RESCATE picks que el heuristico tira, y solo por una razon concreta:
+ * fallar `min_conf` y nada mas.
+ *
+ * Por que esta poblacion y no otra. Medido el 2026-08-26 con walk-forward
+ * (entrenar antes del 20-ago, puntuar despues; bootstrap por EVENTO porque el
+ * control tiene 2.06 filas por partido):
+ *
+ *   rechazados por min_conf, top 30% del modelo:  n=1679 (1391 ev)  ROI  +7.18%  IC95% [+2.81, +11.51]
+ *   rechazados por min_conf, resto 70%:           n=3918 (2244 ev)  ROI -13.15%  IC95% [-16.53,  -9.69]
+ *   picks emitidos, misma ventana (referencia):   n= 314 ( 312 ev)  ROI  +6.96%  IC95% [-0.48, +14.37]
+ *
+ * O sea: el heuristico esta tirando una bolsa que el modelo sabe partir, y su
+ * mejor tercio rinde como lo que si emitimos, con mucho mas volumen.
+ *
+ * PERO ese numero es OBSERVACIONAL: nadie aposto esos picks, no pasaron por el
+ * escalonado ni por el tope horario, y su precio es el del muestreo. Esta
+ * funcion existe para convertirlo en un experimento de verdad, con dinero, y
+ * por eso los picks salen MARCADOS (source='rescue') y con stake minimo.
+ *
+ * Exige fallar EXACTAMENTE una puerta, igual que auditRejections: un candidato
+ * que ademas choca con el firewall o con min_edge no pertenece a la poblacion
+ * medida y rescatarlo seria extrapolar.
+ *
+ * OJO AL UMBRAL. `minLearned` es un cuantil (el p70) de la distribucion de
+ * conf_learned del modelo EN PRODUCCION — 0.5332 para el modelo del 2026-08-25.
+ * Cada reentrenamiento mueve esa escala y el umbral deja de ser el p70. Hay que
+ * recalcularlo al adoptar un modelo nuevo; si no, el "top 30%" pasa a ser otra
+ * cosa sin avisar.
+ */
+function rescuePicks(rows, { minOdds = Number(process.env.MIN_ODDS || 1.35), maxOdds = PICK_MAX_ODDS,
+                             minEdge = 0, minConf = 0, minLearned = 0, n = 2, scored = null } = {}) {
+  if (minLearned <= 0) return [];
+  const opts = { minConf, minEdge };
+  const out = [];
+  for (const r of tomar(rows, scored, minOdds, maxOdds)) {
+    if (r.confLearned == null || r.confLearned < minLearned) continue;
+    const failed = POST_SCORE_GATES.filter(([, ok]) => !ok(r, opts));
+    if (failed.length !== 1 || failed[0][0] !== 'min_conf') continue;
+    out.push(r);
+  }
+  // MUESTREO ALEATORIO, no "los mejores". Es contraintuitivo y es deliberado.
+  //
+  // El +7.18% medido describe el TOP 30% ENTERO, y las filas que lo midieron
+  // salieron del muestreo aleatorio de auditRejections. Quedarse con los 2 de
+  // mayor score por ciclo no reproduce esa poblacion: es una nata mucho mas
+  // fina, del orden del decil superior. Y el decil superior rinde PEOR — el ROI
+  // no es monotono en el score (medido 2026-08-26, n=5597 fuera de muestra):
+  //
+  //   decil 9 (el mas alto)  WR 68.2%  ROI  +3.84%
+  //   decil 8                WR 62.7%  ROI  +6.41%
+  //   decil 7                WR 58.9%  ROI +11.30%
+  //
+  // El modelo ordena la PROBABILIDAD; el dinero esta donde esa probabilidad no
+  // esta del todo en el precio. Descremar el top convertiria el experimento en
+  // una apuesta por el tramo peor pagado, y ademas mediria algo distinto de lo
+  // que se quiso validar.
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  const seen = new Set();
+  return out
+    .filter(r => {
+      if (seen.has(r.eventId)) return false;
+      seen.add(r.eventId);
+      return true;
+    })
+    .slice(0, n);
 }
 
 /**
@@ -873,12 +1130,11 @@ function modelPicks(rows, { minOdds = Number(process.env.MIN_ODDS || 1.35), maxO
  *
  * No toca el camino de producción: se llama aparte, sobre las mismas filas.
  */
-function auditRejections(rows, { minOdds = Number(process.env.MIN_ODDS || 1.35), maxOdds = 3, minEdge = 0, minConf = 0, limit = 10 } = {}) {
-  const excl = excludedSports();
+// maxOdds = 3 FIJO, no PICK_MAX_ODDS: ver el comentario de PICK_MAX_ODDS.
+function auditRejections(rows, { minOdds = Number(process.env.MIN_ODDS || 1.35), maxOdds = 3, minEdge = 0, minConf = 0, limit = 10, scored = null } = {}) {
   const opts = { minConf, minEdge };
   const out = [];
-  for (const base of preScoreFilter(rows, excl, minOdds, maxOdds)) {
-    const r = { ...base, ...scoreRow(base) };
+  for (const r of tomar(rows, scored, minOdds, maxOdds)) {
     const failed = POST_SCORE_GATES.filter(([, ok]) => !ok(r, opts));
     if (failed.length !== 1) continue; // ni emitido (0) ni lejano (>1)
     out.push({ row: r, rule: failed[0][0] });
@@ -896,12 +1152,13 @@ function auditRejections(rows, { minOdds = Number(process.env.MIN_ODDS || 1.35),
 // MIN_EDGE (.env, default 0 = desactivado) filtra por edge estimado mínimo;
 // MIN_CONF (.env, default 0 = desactivado) exige un piso de confianza — sube
 // la tasa de acierto a costa de volumen. Ambos reducen la emisión.
-function safestPicks(rows, n = 3) {
+function safestPicks(rows, n = 3, scored = null) {
   return rankPicks(rows, {
     minOdds: Number(process.env.MIN_ODDS || 1.35),
     minEdge: Number(process.env.MIN_EDGE || 0.03),
     minConf: Number(process.env.MIN_CONF || 0.70),
     n,
+    scored,
   });
 }
 
@@ -912,8 +1169,15 @@ function safestPicks(rows, n = 3) {
 function goldenPick(rows, {
   minConf = Number(process.env.GOLDEN_MIN_CONF || 0.70),
   minOdds = Number(process.env.GOLDEN_MIN_ODDS || 1.15),
-  maxOdds = 3,
+  maxOdds = PICK_MAX_ODDS,
   minEdge = Math.max(Number(process.env.MIN_EDGE || 0), 0),
+  // Mismo techo de edge que autoPicks (ver POST_SCORE_GATES 'max_edge'), y con
+  // mas razon aqui: goldenPick ordena por MAYOR edge y se queda con el
+  // primero, asi que sin este techo el "pick dorado" seria justo el sesgo que
+  // el analisis retrospectivo del 2026-09-12 encontro — la cola de edge >20%
+  // pierde dinero en todos los regimenes de volumen. Extendido a /golden y
+  // /parlay a pedido explicito del usuario, mismo dia.
+  maxEdge = Number(process.env.MAX_EDGE ?? 0.20),
 } = {}) {
   const excl = excludedSports();
   const candidates = rows
@@ -926,7 +1190,7 @@ function goldenPick(rows, {
     .filter(r => !isBlockedMarket(r))
     .filter(r => !isRejectedBy5Guards(r))
     .filter(r => !isFirewallBlocked(r))
-    .filter(r => r.conf >= minConf && r.edge > 0 && r.edge >= minEdge)
+    .filter(r => r.conf >= minConf && r.edge > 0 && r.edge >= minEdge && (maxEdge <= 0 || r.edge < maxEdge))
     .sort((a, b) => b.edge - a.edge);
   return candidates[0] || null;
 }
@@ -936,6 +1200,11 @@ function parlayCombos(rows, {
   minOdds = Number(process.env.PARLAY_MIN_ODDS || 1.08),
   maxOdds = Number(process.env.PARLAY_MAX_ODDS || 1.45),
   minEdge = Math.max(Number(process.env.MIN_EDGE || 0), 0.01),
+  // Mismo techo de edge que autoPicks y goldenPick (ver comentario junto a
+  // goldenPick) — una pata de parlay con edge >20% tiene el mismo problema
+  // que un pick suelto: casi siempre es el modelo discrepando con el mercado,
+  // no valor real.
+  maxEdge = Number(process.env.MAX_EDGE ?? 0.20),
 } = {}) {
   const excl = excludedSports();
   const candidates = rows
@@ -946,7 +1215,7 @@ function parlayCombos(rows, {
     .filter(r => !isUncertain(r))
     .filter(r => !isBlockedOver(r))
     .filter(r => !isBlockedMarket(r))
-    .filter(r => r.conf >= minConf && r.edge > 0 && r.edge >= minEdge);
+    .filter(r => r.conf >= minConf && r.edge > 0 && r.edge >= minEdge && (maxEdge <= 0 || r.edge < maxEdge));
 
   const byEvent = new Map();
   for (const c of candidates) {
@@ -997,6 +1266,7 @@ module.exports = {
   isSuspensionOrInstabilityInWindow, isRejectedBy5Guards, computeStructuralDrawSignal, DRAW_SIGNAL_DEFAULTS,
   recentScoreChange, isDrawSelection, readSpike, SPIKE_DEFAULTS,
   computeStake, kellyFraction, tierStake, STAKE_MODE,
-  POST_SCORE_GATES, modelPicks,
+  STAKE_TIER_BASE, STAKE_TIER_MID, STAKE_TIER_HIGH,
+  POST_SCORE_GATES, modelPicks, rescuePicks, scoreCandidates,
 };
 

@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { computeStake, kellyFraction } = require('../src/confidence');
+const { computeStake, kellyFraction, STAKE_TIER_HIGH } = require('../src/confidence');
 
 test('kellyFraction: casos conocidos', () => {
   // edge=0 (conf*odd=1): fracción de Kelly es 0
@@ -153,8 +153,10 @@ const ctx = (selection, fApertura = null, marketType = 'total') => ({ selection,
 
 test('tiered: escalona por línea del Under', () => {
   // Under línea baja = donde vive el edge (+9.8% ROI con IC sobre cero).
-  assert.strictEqual(computeStake(0.72, 1.45, 'tiered', false, ctx('Menos de 1.5')), 1.8);
-  assert.strictEqual(computeStake(0.72, 1.45, 'tiered', false, ctx('Menos de 2.5')), 1.8);
+  // Se comprueba la REGLA (que caen en el escalon alto), no la cifra: el techo
+  // se configura por entorno y produccion lo baja a 1.2 desde 2026-08-27.
+  assert.strictEqual(computeStake(0.72, 1.45, 'tiered', false, ctx('Menos de 1.5')), STAKE_TIER_HIGH);
+  assert.strictEqual(computeStake(0.72, 1.45, 'tiered', false, ctx('Menos de 2.5')), STAKE_TIER_HIGH);
   assert.strictEqual(computeStake(0.72, 1.45, 'tiered', false, ctx('Menos de 3.5')), 1.2);
   // Todo lo demás al escalón base.
   assert.strictEqual(computeStake(0.72, 1.45, 'tiered', false, ctx('No', null, null)), 0.6);

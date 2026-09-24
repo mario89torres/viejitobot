@@ -6,6 +6,9 @@ const assert = require('node:assert');
 // el .env de la máquina y pasaría o fallaría según la config local.
 process.env.FIREWALL_ENABLED = 'true';
 process.env.FIREWALL_BLOCK_OVERS = 'true';
+// 0.40 es un valor de PRUEBA fijado aqui a proposito, para verificar el
+// mecanismo de la regla con independencia de la configuracion desplegada.
+// Produccion usa 0.75 desde 2026-08-27 (ver .env para la medicion).
 process.env.FIREWALL_MIN_AVANCE = '0.40';
 process.env.FIREWALL_MAX_ODDS = '3.0';
 process.env.FIREWALL_MAX_SITUACION = '0.99';

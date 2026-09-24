@@ -1,12 +1,19 @@
 const test = require('node:test');
 const assert = require('node:assert');
+// Antes que src/confidence: ver tests/helpers/db-temporal.js.
+const { sembrarGuardas } = require('./helpers/db-temporal');
 const { goldenPick } = require('../src/confidence');
 
 // filas sintéticas con fairProb alto para controlar la confianza resultante
 const ts = new Date().toISOString();
+  // Marcador 1-0 y no 2-0: con 2-0 el evaluador de situacion devuelve 1.0
+  // ("situacion perfecta") y la regla R5 del firewall veta la fila — con razon,
+  // es un falso positivo sistematico que rinde -12.4%. Con 1-0 la conf sale
+  // IDENTICA (0.842 con fairProb 0.90 al minuto 85), asi que los pisos que
+  // prueba este archivo siguen midiendo lo mismo sobre una fila emitible.
 const mk = (id, odd, fairProb) => ({
   ts, sport: 'Fútbol', sportId: 66, champ: 'T', eventId: id,
-  event: `Equipo${id}A vs. Equipo${id}B`, score: '2-0', liveTime: "85'",
+  event: `Equipo${id}A vs. Equipo${id}B`, score: '1-0', liveTime: "85'",
   minute: 85, setNum: null, market: 'Ganador del partido', selection: `Equipo${id}A`,
   oddDecimal: odd, oddAmerican: '-', fairProb, suspended: 0,
 });
@@ -14,9 +21,10 @@ const mk = (id, odd, fairProb) => ({
 test('goldenPick maximiza edge entre candidatos con confianza suficiente', () => {
   const rows = [
     mk(1, 1.20, 0.95), // conf alta, edge moderado
-    mk(2, 1.45, 0.90), // conf alta, momio mayor → edge máximo esperado
+    mk(2, 1.35, 0.90), // conf alta, momio mayor → edge máximo esperado (1.35, no 1.45: con 1.45 el edge sale >20% y lo corta el techo de edge nuevo)
     mk(3, 2.80, 0.40), // edge alto solo si la conf lo permitiera (no llega al piso)
   ];
+  sembrarGuardas(rows);
   const p = goldenPick(rows, { minConf: 0.70, minOdds: 1.15, minEdge: 0 });
   assert.ok(p, 'debe encontrar pick');
   assert.strictEqual(p.eventId, 2);
@@ -26,15 +34,18 @@ test('goldenPick maximiza edge entre candidatos con confianza suficiente', () =>
 test('goldenPick veta la banda de momios tóxica y respeta el piso de confianza', () => {
   // momio 1.05: aunque la conf sea altísima, queda fuera por minOdds
   const low = [mk(1, 1.05, 0.99)];
+  sembrarGuardas(low);
   assert.strictEqual(goldenPick(low, { minConf: 0.70, minOdds: 1.15, minEdge: 0 }), null);
   // conf insuficiente: fuera aunque el edge diera positivo
   const weak = [mk(2, 2.00, 0.35)];
+  sembrarGuardas(weak);
   assert.strictEqual(goldenPick(weak, { minConf: 0.70, minOdds: 1.15, minEdge: 0 }), null);
 });
 
 test('goldenPick exige edge positivo (y respeta MIN_EDGE)', () => {
   // conf ~0.7-0.8 con momio 1.16 → edge negativo o marginal → null con minEdge alto
   const rows = [mk(1, 1.16, 0.80)];
+  sembrarGuardas(rows);
   const relaxed = goldenPick(rows, { minConf: 0.70, minOdds: 1.15, minEdge: 0 });
   const strict = goldenPick(rows, { minConf: 0.70, minOdds: 1.15, minEdge: 0.15 });
   if (relaxed) assert.ok(relaxed.edge > 0, 'si emite, el edge debe ser positivo');
@@ -43,6 +54,7 @@ test('goldenPick exige edge positivo (y respeta MIN_EDGE)', () => {
 
 test('goldenPick ignora suspendidos y devuelve null sin candidatos', () => {
   const rows = [{ ...mk(1, 1.30, 0.95), suspended: 1 }];
+  sembrarGuardas(rows);
   assert.strictEqual(goldenPick(rows, { minConf: 0.70, minOdds: 1.15, minEdge: 0 }), null);
   assert.strictEqual(goldenPick([], {}), null);
 });

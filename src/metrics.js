@@ -264,9 +264,14 @@ function computeHealth() {
 // Solo cuenta picks con stake asignado (desde que se activó el dimensionamiento
 // por unidades); los anteriores quedan fuera en vez de asumirles una unidad
 // que nunca se decidió — mezclarlos ensuciaría staked/profit.
+// Los RESCATES (source='rescue') quedan fuera del rendimiento principal.
+// Son un experimento con stake minimo sobre una poblacion sin validar: si
+// entraran aqui, /unidades y los KPIs del panel mezclarian dos cosas que
+// existen precisamente para medirse por separado. Se leen con rescueStats().
 const stakedSettledStmt = db.prepare(`
   SELECT ts, stake, stake_mode, odd_decimal, result, sport, source FROM picks
   WHERE stake IS NOT NULL AND result IN ('win','loss')
+    AND COALESCE(source,'') != 'rescue'
 `);
 
 // Día local de Ciudad de México (UTC-6) al que pertenece un pick. Agrupar por
@@ -274,9 +279,37 @@ const stakedSettledStmt = db.prepare(`
 // de partidos: los resultados de una misma tarde caerían en dos días distintos.
 const diaLocal = ts => new Date(Date.parse(ts) - 6 * 3600e3).toISOString().slice(0, 10);
 const stakedPendingStmt = db.prepare(`
-  SELECT COUNT(*) n, COALESCE(SUM(stake),0) u FROM picks WHERE stake IS NOT NULL AND result IS NULL
+  SELECT COUNT(*) n, COALESCE(SUM(stake),0) u FROM picks
+  WHERE stake IS NOT NULL AND result IS NULL AND COALESCE(source,'') != 'rescue'
 `);
-const stakeFirstStmt = db.prepare(`SELECT MIN(ts) t FROM picks WHERE stake IS NOT NULL`);
+const stakeFirstStmt = db.prepare(
+  `SELECT MIN(ts) t FROM picks WHERE stake IS NOT NULL AND COALESCE(source,'') != 'rescue'`);
+
+// Rendimiento de los rescates, aparte y contra su referencia natural: los picks
+// emitidos de la MISMA ventana. Compararlos con su propio pasado o con el
+// historico completo daria una respuesta falsa — el regimen se mueve.
+const rescueStmt = db.prepare(`
+  SELECT ts, stake, odd_decimal, result, conf, conf_learned, conf_heuristic
+  FROM picks WHERE source = 'rescue' AND result IN ('win','loss')
+`);
+const rescueRefStmt = db.prepare(`
+  SELECT stake, odd_decimal, result FROM picks
+  WHERE COALESCE(source,'') != 'rescue' AND stake IS NOT NULL
+    AND result IN ('win','loss') AND ts >= ?
+`);
+
+function rescueStats() {
+  const rows = rescueStmt.all();
+  if (!rows.length) return { n: 0 };
+  const roi = (rs) => {
+    const st = rs.reduce((a, r) => a + r.stake, 0);
+    const pl = rs.reduce((a, r) => a + (r.result === 'win' ? r.stake * (r.odd_decimal - 1) : -r.stake), 0);
+    return { n: rs.length, wins: rs.filter(r => r.result === 'win').length, staked: st, profit: pl,
+             roi: st ? (pl / st) * 100 : null };
+  };
+  const desde = rows.reduce((m, r) => (r.ts < m ? r.ts : m), rows[0].ts);
+  return { ...roi(rows), desde, referencia: roi(rescueRefStmt.all(desde)) };
+}
 
 const { isExcluded, excludedSports, isBlockedOver, isBlockedMarket } = require('./confidence');
 
@@ -397,9 +430,79 @@ function stakePicksByDate(dateStr) {
   };
 }
 
+const allModelPicksStmt = db.prepare(`
+  SELECT id, ts, event_id, event, sport, market, selection, odd_decimal, result, final_score, settled_ts, tambien_heuristico
+  FROM model_picks
+  WHERE result IN ('win','loss')
+  ORDER BY ts ASC
+`);
+
+// Version de stakePicksByDate() para la sombra del modelo aprendido
+// (model_picks, nunca se apuesta de verdad). Sin `stake` propio en la tabla
+// — no es dinero real — asi que se usa 1u plana por pick, suficiente para el
+// reporte "Unidades Hoy" del lado learned que pidio el usuario el
+// 2026-09-12: no hace falta el detalle de sesion pre/post-ajustes que si
+// aplica al heuristico en produccion, porque el modelo aprendido no ha
+// tenido ese tipo de cambios de configuracion.
+function modelPicksByDate(dateStr) {
+  const targetDate = (!dateStr || dateStr === 'hoy')
+    ? diaLocal(new Date().toISOString())
+    : (dateStr === 'ayer'
+        ? diaLocal(new Date(Date.now() - 24 * 3600e3).toISOString())
+        : dateStr);
+
+  const excl = excludedSports();
+  const rows = allModelPicksStmt.all()
+    .filter(r => !isExcluded(r.sport, excl));
+  const dayPicks = rows
+    .filter(r => diaLocal(r.ts) === targetDate)
+    .map(r => ({ ...r, stake: 1, profit: r.result === 'win' ? (r.odd_decimal - 1) : -1 }))
+    .sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
+
+  const n = dayPicks.length;
+  const wins = dayPicks.filter(p => p.result === 'win').length;
+  const staked = n; // 1u plana por pick
+  const profit = dayPicks.reduce((s, p) => s + p.profit, 0);
+  const roi = staked > 0 ? (100 * profit / staked) : null;
+  const wr = n > 0 ? (100 * wins / n) : null;
+
+  return { date: targetDate, picks: dayPicks, n, wins, staked, profit, roi, wr };
+}
+
+// Version de stakeStats().byDay para la sombra del modelo aprendido. Se
+// agrega junto con modelPicksByDate() (mismo patron: 1u plana, sin stake
+// propio) para el boton "Modelo ML" de /unidades hoy en Telegram, que
+// necesita el mismo desglose dia-por-dia que ya tiene el lado heuristico.
+function modelStakeStats() {
+  const excl = excludedSports();
+  const rows = allModelPicksStmt.all().filter(r => !isExcluded(r.sport, excl));
+  if (!rows.length) return { n: 0, byDay: [] };
+
+  const byDay = {};
+  for (const r of rows) {
+    const dia = diaLocal(r.ts);
+    const d = (byDay[dia] = byDay[dia] || { n: 0, wins: 0, staked: 0, profit: 0 });
+    const pl = r.result === 'win' ? (r.odd_decimal - 1) : -1;
+    d.n++; d.staked++; d.profit += pl;
+    if (r.result === 'win') d.wins++;
+  }
+  let acum = 0;
+  const dias = Object.entries(byDay).sort(([a], [b]) => a.localeCompare(b)).map(([dia, d]) => {
+    acum += d.profit;
+    return {
+      dia, n: d.n, wr: 100 * d.wins / d.n,
+      staked: d.staked, profit: d.profit,
+      roi: d.staked > 0 ? 100 * d.profit / d.staked : null,
+      acumulado: acum,
+    };
+  });
+  return { n: rows.length, byDay: dias };
+}
+
 module.exports = {
+  rescueStats,
   brierScore, logLoss, reliability, clvForPick, devigProbAt, computeMetrics, compareScores,
   clvSharpForPick, spearman, semaphore, edgeStats, healthEval, computeHealth, stakeStats,
-  stakePicksByDate, diaLocal,
+  stakePicksByDate, modelPicksByDate, modelStakeStats, diaLocal,
 };
 
