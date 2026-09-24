@@ -4,20 +4,35 @@ require('dotenv').config();
 // Ver src/singleInstance.js para el porqué (dos cuentas de Windows, getUpdates
 // en conflicto y picks duplicados sobre la misma BD).
 if (!require('./src/singleInstance').acquire()) process.exit(1);
-const { fetchAllLive, fetchSportLive } = require('./src/fetcher');
+const { fetchAllLive, fetchSportLive, fetchEventDetails, fetchPrematch } = require('./src/fetcher');
+const { extraerStats, partidoTerminado, derivarEtiquetas, conteoEstimadoDeMercado } = require('./src/matchStats');
+const { fetchLiveCorners, fetchEventFinal } = require('./src/fotmobScraper');
+const { matchFotmobEvent, eventosDeHoy } = require('./src/fotmobMatch');
+// Mismo calculo que usa el dashboard para "dosFuentes" (ver src/fotmobLive.js):
+// compartido para no arriesgar que un fix (p.ej. el bug de signo de
+// `sugerida`, 2026-09-10) solo se aplique a una de las dos copias.
+const { computeDosFuentes } = require('./src/fotmobLive');
+const { escanearLiga: escanearLigaPrematch } = require('./src/prematchValue');
+const { xgDeEvento } = require('./src/prematchXg');
 const { normalize } = require('./src/normalize');
-const { saveSnapshot, logPicks, logRejected, logModelPicks, getUnsettledPicks, getStats,
+const { programar: programarSondeos } = require('./src/execProbe');
+const { db, saveSnapshot, saveStatSnapshot, saveStatResults, saveFotmobSnapshot, getFotmobCornerLatest,
+        saveForecastSnapshot, saveExecProbe, savePrematchSnapshot, savePrematchValueScan, savePrematchXg,
+        getStatEventosPendientes, getStatMuestras, logPicks, logRejected, logModelPicks, getUnsettledPicks, getStats,
         setSharpEntry, setSharpStatus, pruneSnapshots,
-        isDuplicatePick, countPicksSince,
+        isDuplicatePick, isDuplicateModelPick, countPicksSince, getPendingPicksDetailed,
+        hasPickForEvent, findPick, getRescueEligible,
+        getPendingModelPicksDetailed,
         addSubscriber, getSubscriber, getActiveSubscribers, getExpiredSubscribers, setSubscriberStatus } = require('./src/db');
 const { processSettlements } = require('./src/results');
 const { topPicks } = require('./src/analyze');
 const { modelPicks } = require('./src/confidence');
 const { frase: fraseBadge } = require('./src/badgeStats');
-const { sendTelegram, formatMessage } = require('./src/telegram');
-const { safestPicks, rankPicks, auditRejections, goldenPick, parlayCombos, SCORE_VERSION } = require('./src/confidence');
+const { sendTelegram, formatMessage, enlaceHtml } = require('./src/telegram');
+const { generateBetLink } = require('./src/betlink');
+const { safestPicks, rankPicks, auditRejections, goldenPick, parlayCombos, rescuePicks, scoreCandidates, SCORE_VERSION } = require('./src/confidence');
 const { isElite } = require('./src/firewall');
-const { computeMetrics, compareScores, edgeStats, computeHealth, stakeStats, stakePicksByDate } = require('./src/metrics');
+const { computeMetrics, compareScores, edgeStats, computeHealth, stakeStats, stakePicksByDate, modelPicksByDate, rescueStats } = require('./src/metrics');
 const { getMode, reloadModel } = require('./src/model');
 const sharp = require('./src/sharp');
 const { execFile, spawn } = require('child_process');
@@ -65,6 +80,8 @@ const HELP = `Comandos disponibles:
 /validar 6h — solo las últimas 6 horas (menos picks; el costo es por liga, no por pick)
 /train — exporta el dataset y reentrena el modelo (walk-forward + calibración)
 /reboot — reinicia el bot (solo admin; vuelve en ~10 s)
+/pendientes — picks aún sin liquidar y cómo va cada uno (marcador, minuto y movimiento de cuota)
+/fotmob — córners de partidos EN VIVO, playdoit vs conteo real de FotMob (solo admin)
 /deportes — deportes en vivo ahora
 /help — esta ayuda e interfaz de botones`;
 
@@ -78,10 +95,20 @@ function isOwner(chatId) {
   return String(chatId) === CHAT_ID;
 }
 
+// Usada por los comandos interactivos (/top, /seguras, /golden, /parlay,
+// /deportes) para traer una foto fresca de las cuotas en vivo. YA NO escribe
+// esa foto a la BD (saveSnapshot) — el sampler de fondo (sample(), mas abajo)
+// ya guarda exactamente lo mismo cada SAMPLE_MINUTES por su cuenta, asi que
+// la escritura de aqui era una foto duplicada, sincrona y cara con la BD bajo
+// contencion (documentada aparte): el 2026-09-12 se midio en 12-55+ segundos
+// justo cuando alguien pedia /parlay o /golden, siendo buena parte de la
+// lentitud que se reportaba en esos comandos. Quitarla los deja dependiendo
+// del historial que el sampler de fondo llena solo, sin retrasar la
+// respuesta con una escritura que en 1 minuto mas iba a existir de todas
+// formas.
 async function getFreshRows() {
   const sportResults = await fetchAllLive();
   const rows = normalize(sportResults);
-  if (rows.length) saveSnapshot(rows);
   return { rows, sports: sportResults.map(r => r.sport) };
 }
 
@@ -229,7 +256,7 @@ async function handleSeguras(args, chatId) {
     ts: p.ts, eventId: p.eventId, event: p.event, sport: p.sport,
     market: p.market, selection: p.selection, oddDecimal: p.oddDecimal, conf: p.conf,
     fProbJusta: p.base, fAvance: p.progress, fAvanceModel: p.fAvance, fSituacion: p.scoreFactor, fLinea: p.lineFactor,
-    confHeuristic: p.confHeuristic, confLearned: p.confLearned, edge: p.edge, source: 'seguras',
+    confHeuristic: p.confHeuristic, confLearned: p.confLearned, modelVersion: p.modelVersion, modelMode: p.modelMode, edge: p.edge, source: 'seguras',
     openingOdd: p.openingOdd, fApertura: p.fApertura, scoreVersion: p.scoreVersion,
     stake: p.stake, stakeMode: p.stakeMode,
   })));
@@ -241,10 +268,22 @@ async function handleSeguras(args, chatId) {
   let msg = `<b>🛡️ Top ${picks.length} más seguras</b>\n<i>${now}</i>\n\n`;
   for (const [i, p] of picks.entries()) {
     const flag = getCountryFlag(p.champ, p.event, p.sport);
-    msg += `<b>${i + 1}. ${flag}</b> ${esc(p.event)} <i>(${esc(p.sport)}${p.champ ? ` — ${esc(p.champ)}` : ''})</i>\n`;
+    // Ya emitido: se MARCA, no se oculta. Ocultarlo haria que /seguras mintiera
+    // sobre cual es el top 3 real; mostrarlo sin avisar invita a apostarlo dos
+    // veces. El #id deja pedir su ficha con /pick <id>.
+    const yaEmitido = findPick(p.eventId, p.market, p.selection);
+    // JERARQUIA: el pick (que apostar) es lo PRIMARIO, va primero y en
+    // negrita; el partido es CONTEXTO, va despues sin negrita (antes ambos
+    // competian por el mismo peso visual y el ranking 1/2/3 quedaba pegado al
+    // nombre del partido en vez de a la jugada en si).
+    msg += `${i + 1}. 🎯 <b>${esc(p.market)}: ${esc(p.selection)} @ ${p.oddDecimal.toFixed(2)}</b> <i>(${p.oddAmerican})</i>\n`;
+    msg += `   ${flag} ${esc(p.event)} <i>(${esc(p.sport)}${p.champ ? ` — ${esc(p.champ)}` : ''})</i>\n`;
+    if (yaEmitido) {
+      const estado = yaEmitido.result ? `ya liquidado (${yaEmitido.result})` : 'sigue abierto';
+      msg += `   <i>\u{267B} Ya emitido como #${yaEmitido.id} — ${estado}. No lo repitas.</i>\n`;
+    }
     if (p.score) msg += `   Marcador: ${esc(p.score)}${p.liveTime ? ` — ${esc(p.liveTime)}` : ''}\n`;
-    msg += `   ${esc(p.market)}: <b>${esc(p.selection)}</b> @ ${p.oddDecimal.toFixed(2)} (${p.oddAmerican})\n`;
-    msg += `   Confianza: <b>${pct(p.conf)}</b> | prob. implícita ${pct(p.base)} | avance ${pct(p.progress)}\n`;
+    msg += `   Confianza ${pct(p.conf)} · prob. implícita ${pct(p.base)} · avance ${pct(p.progress)}\n`;
     if (p.stake != null) msg += `   Unidad sugerida: <b>${p.stake.toFixed(1)}u</b>\n`;
     if (p.lead !== null) msg += `   Ventaja del pick: ${p.lead > 0 ? `+${p.lead}` : p.lead}\n`;
     if (p.lineDelta !== null) {
@@ -261,46 +300,56 @@ async function handleSeguras(args, chatId) {
 async function handleStats(chatId) {
   const { buckets, pending } = getStats();
   if (!buckets.length && !pending) return reply(chatId, 'Aún no hay picks registrados. Usa /seguras para empezar a acumular historial.');
-  let msg = '<b>📊 Rendimiento de /seguras</b>\n\n';
-  let tw = 0, tl = 0;
-  for (const b of buckets) {
-    const n = b.wins + b.losses;
-    msg += `Confianza ${b.bucket}: <b>${b.wins}/${n}</b> (${Math.round(100 * b.wins / n)}% acierto)\n`;
-    tw += b.wins; tl += b.losses;
-  }
-  if (tw + tl) msg += `\nTotal: <b>${tw}/${tw + tl}</b> (${Math.round(100 * tw / (tw + tl))}%)\n`;
-  msg += `Pendientes de resolver: ${pending}`;
 
   const m = computeMetrics();
+
+  // La tarjeta principal es la GRAFICA: un diagrama de confiabilidad se lee
+  // de un vistazo (¿los puntos siguen la diagonal?) donde la tabla <pre> de
+  // antes obligaba a comparar columna por columna. El caption trae solo el
+  // headline (Brier/LogLoss/ECE) — el resto (buckets de /seguras, heuristico
+  // vs aprendido, edge) va en un mensaje de texto aparte: un caption de foto
+  // en Telegram tiene tope de 1024 caracteres, muy corto para todo lo que
+  // este comando ya reporta.
   if (m.n) {
-    msg += `\n\n<b>📐 Calibración</b> (N=${m.n})\n`;
-    if (m.n < 50) msg += `⚠️ <i>muestra insuficiente para conclusiones</i>\n`;
-    msg += `Brier: <b>${m.brier.toFixed(4)}</b> | Log loss: <b>${m.logLoss.toFixed(4)}</b> | ECE: <b>${m.ece.toFixed(4)}</b>\n`;
-    msg += `<pre>bin      n     conf  real  gap\n`;
-    for (const b of m.bins) {
-      const label = `${b.lo.toFixed(1)}-${b.hi.toFixed(1)}`.padEnd(9);
-      if (!b.n) { msg += `${label}0     —     —     —\n`; continue; }
-      const gap = `${b.gap >= 0 ? '+' : ''}${(100 * b.gap).toFixed(0)}%`;
-      msg += `${label}${String(b.n).padEnd(6)}${pct(b.avgConf).padEnd(6)}${pct(b.winRate).padEnd(6)}${gap}\n`;
-    }
-    msg += `</pre>`;
-    msg += m.clvN
+    const { sendCalibrationChart } = require('./src/telegram');
+    let caption = `<b>📐 Calibración</b> (N=${m.n})\n`;
+    if (m.n < 50) caption += `⚠️ <i>muestra insuficiente para conclusiones</i>\n`;
+    caption += `Brier: <b>${m.brier.toFixed(4)}</b> · Log loss: <b>${m.logLoss.toFixed(4)}</b> · ECE: <b>${m.ece.toFixed(4)}</b>\n`;
+    caption += m.clvN
       ? `CLV medio: <b>${m.clvAvg >= 0 ? '+' : ''}${(100 * m.clvAvg).toFixed(2)}%</b> (n=${m.clvN})`
       : `CLV: aún sin datos de mercado suficientes`;
+    try { await sendCalibrationChart(TOKEN, chatId, m.bins, caption); }
+    catch (e) { console.error('[stats] fallo la grafica de calibracion:', e.message); }
+  }
+
+  // Acierto por bucket de confianza: barras en vez de tres lineas sueltas de
+  // texto — un vistazo dice si el acierto sube con la confianza (deberia) o
+  // esta plano, que es justo lo que el analisis del 2026-09-12 encontro
+  // (Spearman conf<->resultado practicamente cero en todo el historico).
+  let tw = 0, tl = 0;
+  for (const b of buckets) { tw += b.wins; tl += b.losses; }
+  if (buckets.length) {
+    const { sendBucketsChart } = require('./src/telegram');
+    const captionBuckets = (tw + tl)
+      ? `<b>📊 Total: ${tw}/${tw + tl}</b> (${Math.round(100 * tw / (tw + tl))}% acierto) · Pendientes: ${pending}`
+      : `Pendientes de resolver: ${pending}`;
+    try { await sendBucketsChart(TOKEN, chatId, buckets, captionBuckets); }
+    catch (e) { console.error('[stats] fallo la grafica de buckets:', e.message); }
   }
 
   const cmp = compareScores();
   if (cmp) {
-    msg += `\n\n<b>🤖 Heurístico vs aprendido</b> (n=${cmp.n}, modo: ${getMode()})\n`;
-    msg += `<pre>          brier   logloss ece\n`;
-    msg += `heurist.  ${cmp.heuristic.brier.toFixed(4)}  ${cmp.heuristic.logLoss.toFixed(4)}  ${cmp.heuristic.ece.toFixed(4)}\n`;
-    msg += `aprendido ${cmp.learned.brier.toFixed(4)}  ${cmp.learned.logLoss.toFixed(4)}  ${cmp.learned.ece.toFixed(4)}</pre>`;
+    const { sendHeuristicVsLearnedChart } = require('./src/telegram');
+    const captionCmp = `<b>🤖 Heurístico vs aprendido</b> <i>(modo: ${getMode()})</i>`;
+    try { await sendHeuristicVsLearnedChart(TOKEN, chatId, cmp, captionCmp); }
+    catch (e) { console.error('[stats] fallo la grafica heuristico vs aprendido:', e.message); }
   }
 
+  let msg = '';
   const es = edgeStats();
   if (es) {
     const fmtPct = v => `${v >= 0 ? '+' : ''}${(100 * v).toFixed(2)}%`;
-    msg += `\n\n<b>🎯 Edge (CLV sharp)</b>\n`;
+    msg += `<b>🎯 Edge (CLV sharp)</b>\n`;
     if (!sharp.status().enabled) msg += `<i>Fuente sharp desactivada (falta ODDS_API_KEY)</i>\n`;
     if (es.nAttempted) {
       msg += `Match sharp: ${es.nMatched}/${es.nAttempted} (${Math.round(100 * es.matchRate)}%)\n`;
@@ -317,7 +366,7 @@ async function handleStats(chatId) {
     if (es.rhoEdgeClv !== null) msg += `Spearman edge↔CLV_sharp: ${es.rhoEdgeClv.toFixed(2)}\n`;
     msg += `\n🚦 <b>${es.semaphore}</b>`;
   }
-  await reply(chatId, msg);
+  if (msg) await reply(chatId, msg);
 }
 
 // ---------- /golden: un solo pick, la mejor relación seguridad/pago ----------
@@ -342,7 +391,7 @@ async function handleGolden(args, chatId) {
       ts: p.ts, eventId: p.eventId, event: p.event, sport: p.sport,
       market: p.market, selection: p.selection, oddDecimal: p.oddDecimal, conf: p.conf,
       fProbJusta: p.base, fAvance: p.progress, fAvanceModel: p.fAvance, fSituacion: p.scoreFactor, fLinea: p.lineFactor,
-      confHeuristic: p.confHeuristic, confLearned: p.confLearned, edge: p.edge, source: 'golden',
+      confHeuristic: p.confHeuristic, confLearned: p.confLearned, modelVersion: p.modelVersion, modelMode: p.modelMode, edge: p.edge, source: 'golden',
       openingOdd: p.openingOdd, fApertura: p.fApertura, scoreVersion: p.scoreVersion,
       stake: p.stake, stakeMode: p.stakeMode,
     }]);
@@ -352,11 +401,19 @@ async function handleGolden(args, chatId) {
   const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const now = new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City' });
   const flag = getCountryFlag(p.champ, p.event, p.sport);
+  const yaEmitido = findPick(p.eventId, p.market, p.selection);
   let msg = `<b>🥇 Pick dorado</b>\n<i>${now}</i>\n\n`;
-  msg += `${flag} <b>${esc(p.event)}</b> <i>(${esc(p.sport)}${p.champ ? ` — ${esc(p.champ)}` : ''})</i>\n`;
+  if (yaEmitido) {
+    const estado = yaEmitido.result ? `ya liquidado (${yaEmitido.result})` : 'sigue abierto';
+    msg += `<i>\u{267B} Ya emitido como <b>#${yaEmitido.id}</b> — ${estado}. No lo repitas.</i>\n\n`;
+  }
+  // JERARQUIA: el pick es lo PRIMARIO (negrita, primero); partido y marcador
+  // son CONTEXTO (sin negrita, despues); confianza/edge son diagnostico.
+  msg += `🎯 <b>${esc(p.market)}: ${esc(p.selection)} @ ${p.oddDecimal.toFixed(2)}</b> <i>(${p.oddAmerican})</i>\n`;
+  msg += `${flag} ${esc(p.event)} <i>(${esc(p.sport)}${p.champ ? ` — ${esc(p.champ)}` : ''})</i>\n`;
   if (p.score) msg += `Marcador: ${esc(p.score)}${p.liveTime ? ` — ${esc(p.liveTime)}` : ''}\n`;
-  msg += `${esc(p.market)}: <b>${esc(p.selection)}</b> @ ${p.oddDecimal.toFixed(2)} (${p.oddAmerican})\n\n`;
-  msg += `Confianza: <b>${pct(p.conf)}</b> | Edge estimado: <b>+${(100 * p.edge).toFixed(1)}%</b>\n`;
+  msg += '\n';
+  msg += `Confianza ${pct(p.conf)} · Edge estimado +${(100 * p.edge).toFixed(1)}%\n`;
   if (p.stake != null) msg += `Unidad sugerida: <b>${p.stake.toFixed(1)}u</b>\n`;
   msg += `Pago: 100 → ${(100 * p.oddDecimal).toFixed(0)}\n`;
   if (p.lead !== null) msg += `Ventaja del pick: ${p.lead > 0 ? `+${p.lead}` : p.lead}\n`;
@@ -392,18 +449,20 @@ async function handleParlay(args, chatId) {
 
   let msg = `<b>🎰 Parlay Robusto (+EV)</b>\n<i>${now}</i>\n\n`;
   msg += `<b>Patas seleccionadas (${best.legCount} patas +EV):</b>\n`;
+  // JERARQUIA: cada pata es PRIMARIO por su pick (mercado:seleccion@cuota),
+  // no por el nombre del partido; y del combo, el edge compuesto es el
+  // resultado que decide si vale la pena — momio y prob. conjunta son el
+  // detalle que lo sustenta.
   for (const [i, p] of best.legs.entries()) {
     const legFlag = getCountryFlag(p.champ, p.event, p.sport);
-    msg += `<b>${i + 1}. ${legFlag} ${esc(p.event)}</b> <i>(${esc(p.sport)})</i>\n`;
+    msg += `${i + 1}. 🎯 <b>${esc(p.market)}: ${esc(p.selection)} @ ${p.oddDecimal.toFixed(2)}</b>\n`;
+    msg += `   ${legFlag} ${esc(p.event)} <i>(${esc(p.sport)})</i>\n`;
     if (p.score) msg += `   Marcador: ${esc(p.score)}${p.liveTime ? ` — ${esc(p.liveTime)}` : ''}\n`;
-    msg += `   ${esc(p.market)}: 🎯 <b><u>${esc(p.selection)}</u></b> @ ${p.oddDecimal.toFixed(2)}\n`;
-    msg += `   Confianza: <b>${pct(p.conf)}</b> | Edge individual: <b>+${(100 * p.edge).toFixed(1)}%</b>\n\n`;
+    msg += `   Confianza ${pct(p.conf)} · Edge individual +${(100 * p.edge).toFixed(1)}%\n\n`;
   }
 
-  msg += `<b>Análisis del Combo:</b>\n`;
-  msg += `• Momio total: <b>${best.totalOdd.toFixed(2)}</b>\n`;
-  msg += `• Prob. conjunta ajustada: <b>${pct(best.adjProb)}</b>\n`;
-  msg += `• Edge compuesto: <b>+${(100 * best.edge).toFixed(1)}%</b> 🎯 (+EV verificado)\n\n`;
+  msg += `<b>🎯 Edge compuesto: +${(100 * best.edge).toFixed(1)}%</b> <i>(+EV verificado)</i>\n`;
+  msg += `Momio total: ${best.totalOdd.toFixed(2)} · Prob. conjunta ajustada: ${pct(best.adjProb)}\n\n`;
 
   if (combos.length > 1) {
     msg += `<i>Combinaciones +EV detectadas en vivo: ${combos.length}</i>\n`;
@@ -471,7 +530,12 @@ async function handleReboot(chatId) {
   // El await importa: process.exit() corta el envío en curso, así que el aviso
   // tiene que estar entregado ANTES de salir o el usuario se queda sin saber
   // si el comando llegó.
-  await reply(chatId, '♻️ <b>Reiniciando…</b> el supervisor relanza el bot en ~10 s.');
+  // El panel YA NO cae con el bot: corre desacoplado (detached) y el bot
+  // relanzado lo adopta por el lock, asi que la pestaña abierta sigue viva y las
+  // alertas automaticas no se cortan. Antes moria con cada reinicio y habia que
+  // avisar de mandar /dashboard.
+  const avisoPanel = dashboardAlive() ? '\n\nEl panel sigue vivo; no se corta.' : '';
+  await reply(chatId, '♻️ <b>Reiniciando…</b> el supervisor relanza el bot en ~10 s.' + avisoPanel);
   console.log(`[reboot] solicitado desde Telegram (chat ${chatId}); saliendo para que el supervisor relance`);
   setTimeout(() => process.exit(0), 250);
 }
@@ -622,7 +686,36 @@ async function handleUnidades(args = [], chatId) {
 
   if (args.length > 0) {
     const sub = norm(args[0]);
-    if (sub === 'hoy' || sub === 'ayer' || /^\d{4}-\d{2}-\d{2}$/.test(sub)) {
+
+    // "Unidades Hoy" bifurca: heuristico (en produccion, apuesta real) vs
+    // learned (modelo aprendido, solo sombra — nunca se apuesta). Antes
+    // mezclarlos hubiera confundido "lo que se gano" con "lo que el modelo
+    // habria ganado si decidiera el" bajo el mismo boton. Pedido explicito
+    // del usuario el 2026-09-12: preguntar primero con botones inline, en vez
+    // de mandar directo el reporte del heuristico como hacia antes.
+    // Fila 2: en vez de un reporte de texto propio, mandan una CAPTURA de la
+    // seccion equivalente del dashboard (History > Tabla / History > Modelo
+    // ML) — pedido explicito del usuario el 2026-09-13. Distinto de las
+    // filas de arriba: ahi se calcula el numero en bot.js, aqui se abre el
+    // dashboard de verdad con Playwright y se recorta esa seccion, asi que
+    // lo que se ve en Telegram es EXACTAMENTE lo que se veria abriendo el
+    // panel — no una reconstruccion aparte que podria desviarse.
+    if (sub === 'hoy') {
+      return sendTelegram(TOKEN, chatId, '📋 <b>Unidades Hoy</b> — ¿qué reporte quieres ver?', {
+        inline_keyboard: [
+          [
+            { text: '📊 Heurístico (producción)', callback_data: 'unidades_hoy:heuristico' },
+            { text: '🔮 Learned (shadow)', callback_data: 'unidades_hoy:learned' },
+          ],
+          [
+            { text: '📋 Tabla (dashboard)', callback_data: 'unidades_hoy:tabla_img' },
+            { text: '🤖 Modelo ML (dashboard)', callback_data: 'unidades_hoy:modelo_img' },
+          ],
+        ],
+      });
+    }
+
+    if (sub === 'ayer' || /^\d{4}-\d{2}-\d{2}$/.test(sub)) {
       const res = stakePicksByDate(sub);
       if (!res.n) return reply(chatId, `No hay picks liquidados para el día <b>${esc(res.date)}</b>.`);
 
@@ -667,26 +760,30 @@ async function handleUnidades(args = [], chatId) {
     return reply(chatId, 'Aún no hay picks con unidad de apuesta asignada. Se asignan desde que se activó el dimensionamiento por unidades (2026-07-30).');
   }
   const modeName = { flat: 'plano (1u fija)', half_kelly: 'medio Kelly', kelly: 'Kelly completo' }[s.mode] || s.mode;
+
+  // Tarjeta principal: la GRAFICA de banca acumulada + P/L diario. La tabla
+  // <pre> dia-por-dia de antes daba el numero de cada dia pero no la
+  // TENDENCIA (¿la banca sube en general, o el ultimo tramo es una racha
+  // dentro de una caida mas larga?) — eso se ve de un vistazo en la curva.
+  // El caption trae solo el headline (ROI/ganancia); el resto (picks/modo,
+  // por deporte, rescates) va en un mensaje de texto aparte por el mismo
+  // motivo que en /stats: 1024 caracteres de tope en un caption de foto.
+  if (s.n && s.byDay.length) {
+    const { sendUnitsBankChart } = require('./src/telegram');
+    const caption = `<b>💰 ROI: ${s.roi >= 0 ? '+' : ''}${s.roi.toFixed(2)}%</b> · <b>${fmtU(s.profit)}</b>\n` +
+      `<i>${s.byDay.filter(d => d.profit > 0).length} de ${s.byDay.length} días en positivo</i>`;
+    try { await sendUnitsBankChart(TOKEN, chatId, s.byDay, caption); }
+    catch (e) { console.error('[unidades] fallo la grafica de banca:', e.message); }
+  }
+
   let msg = `<b>💰 Rendimiento por unidades</b>\n`;
   if (s.since) msg += `<i>desde ${new Date(s.since).toLocaleDateString('es-MX', { timeZone: 'America/Mexico_City' })}</i>\n\n`;
   if (!s.n) {
     msg += `Sin picks liquidados todavía.\n`;
   } else {
-    msg += `Picks liquidados: <b>${s.n}</b> (acierto ${s.wr.toFixed(1)}%) | modo: ${modeName}\n`;
-    msg += `Unidades apostadas: <b>${s.staked.toFixed(2)}u</b> | apuesta media: ${s.avgStake.toFixed(2)}u\n`;
-    msg += `Unidades ganadas: <b>${fmtU(s.profit)}</b>\n`;
-    msg += `<b>ROI sobre lo apostado: ${s.roi >= 0 ? '+' : ''}${s.roi.toFixed(2)}%</b>\n`;
-
-    const recentDays = s.byDay.slice(-7);
-    const dayTag = s.byDay.length > 7 ? ` (últimos 7 días)` : '';
-    msg += `\n<b>Día por día</b>${dayTag} (banca = acumulado)\n`;
-    msg += `<pre>día    n   acierto  apost   ganado   banca\n`;
-    for (const d of recentDays) {
-      msg += `${d.dia.slice(5)}  ${String(d.n).padStart(3)}   ${(d.wr.toFixed(0) + '%').padStart(4)}  ${(d.staked.toFixed(1) + 'u').padStart(6)}  ${fmtU(d.profit).padStart(7)}  ${fmtU(d.acumulado).padStart(7)}\n`;
-    }
-    msg += `</pre>`;
-    const pos = s.byDay.filter(d => d.profit > 0).length;
-    msg += `<i>${pos} de ${s.byDay.length} días en positivo</i> | 💡 <i>Usa /unidades hoy para el detalle</i>\n`;
+    msg += `Picks liquidados: ${s.n} (acierto ${s.wr.toFixed(1)}%) · modo: ${modeName}\n`;
+    msg += `Unidades apostadas: ${s.staked.toFixed(2)}u · apuesta media: ${s.avgStake.toFixed(2)}u\n`;
+    msg += `💡 <i>Usa /unidades hoy para el detalle del día</i>\n`;
 
     if (s.bySport.length > 1) {
       msg += `\n<b>Por deporte</b>\n<pre>deporte          apostado  ganado   ROI\n`;
@@ -697,16 +794,475 @@ async function handleUnidades(args = [], chatId) {
     }
   }
   if (s.pendingN) msg += `\nPendientes de liquidar: ${s.pendingN} picks (${s.pendingUnits.toFixed(2)}u en juego)`;
+
+  // Los rescates van APARTE y contra su referencia natural: los picks emitidos
+  // de la misma ventana. Contra el historico completo la comparacion mentiria,
+  // porque el regimen se mueve.
+  const r = rescueStats();
+  if (r.n) {
+    msg += `\n\n<b>\u{1F6DF} Rescates del modelo</b> <i>(experimento, fuera del total de arriba)</i>\n`;
+    msg += `Picks: <b>${r.wins}/${r.n}</b> | apostado ${r.staked.toFixed(2)}u | ${fmtU(r.profit)}`;
+    msg += (r.roi != null ? ` (ROI ${r.roi >= 0 ? '+' : ''}${r.roi.toFixed(1)}%)` : '') + `\n`;
+    const ref = r.referencia;
+    if (ref && ref.n) {
+      msg += `<i>Emitidos en la misma ventana: ${ref.wins}/${ref.n}`;
+      msg += (ref.roi != null ? ` (ROI ${ref.roi >= 0 ? '+' : ''}${ref.roi.toFixed(1)}%)` : '') + `</i>\n`;
+    }
+  }
   await reply(chatId, msg);
 }
 
+// Las dos ramas de la bifurcacion de "Unidades Hoy" (ver el boton inline en
+// handleUnidades). Funciones propias, no reutilizan los helpers internos de
+// handleUnidades (closures atadas a esa llamada) — mas simple que exponerlos.
+async function enviarUnidadesHoyHeuristico(chatId) {
+  const esc = str => String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const fmtU = v => `${v >= 0 ? '+' : ''}${v.toFixed(2)}u`;
+  const res = stakePicksByDate('hoy');
+  if (!res.n) return reply(chatId, `📊 <b>Heurístico (producción)</b>\n\nAún no hay picks liquidados hoy.`);
+
+  let msg = `📊 <b>Heurístico (producción) — Unidades Hoy</b>\n`;
+  msg += `<i>${esc(res.date)}</i>\n\n`;
+  msg += `<b>ROI: ${res.roi >= 0 ? '+' : ''}${res.roi.toFixed(2)}%</b> · <b>${fmtU(res.profit)}</b>\n`;
+  msg += `Picks: ${res.wins}/${res.n} (${res.wr.toFixed(0)}% acierto) · Apostado: ${res.staked.toFixed(2)}u\n`;
+  return reply(chatId, msg);
+}
+
+async function enviarUnidadesHoyLearned(chatId) {
+  const esc = str => String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const fmtU = v => `${v >= 0 ? '+' : ''}${v.toFixed(2)}u`;
+  const res = modelPicksByDate('hoy');
+  if (!res.n) return reply(chatId, `🔮 <b>Learned (shadow)</b>\n\nAún no hay picks del modelo aprendido liquidados hoy.`);
+
+  let msg = `🔮 <b>Learned (shadow) — Unidades Hoy</b>\n`;
+  msg += `<i>${esc(res.date)} · nunca se apuesta, solo registro</i>\n\n`;
+  msg += `<b>ROI: ${res.roi >= 0 ? '+' : ''}${res.roi.toFixed(2)}%</b> · <b>${fmtU(res.profit)}</b> <i>(1u plana por pick)</i>\n`;
+  msg += `Picks: ${res.wins}/${res.n} (${res.wr.toFixed(0)}% acierto)\n`;
+  return reply(chatId, msg);
+}
+
+// Las otras dos ramas de "Unidades Hoy": imagen con los ultimos picks,
+// dibujada DESDE CODIGO (Pillow) en vez de capturar el dashboard con
+// Playwright. Se probo primero la version con screenshot (src/dashboardShot.js,
+// retirado) y se descarto: mas lenta (levanta Chromium completo), fragil
+// (depende de que el dashboard este vivo y de que sus selectores no
+// cambien), y sin acotar el DOM a mano producia imagenes de decenas de
+// miles de pixeles. Aqui los datos salen directo de la BD, se le pasan al
+// script de Python ya recortados, y no hace falta ni el dashboard ni un
+// navegador.
+//
+// Sin la tabla de estadisticas por dia (se quito a pedido del usuario el
+// 2026-09-13: ya la tiene el dashboard, aqui solo interesa el detalle
+// pick-a-pick). TODOS los picks LIQUIDADOS de HOY (dia CDMX) para cada
+// modelo, sin pendientes — pedido explicito del usuario el 2026-09-13,
+// reemplaza la version anterior de "ultimos 20 sin importar el dia". Sin
+// tope de cantidad: si un dia trae mas de lo normal (se ha visto hasta 467
+// en un solo dia), la imagen sale mas larga, pero eso es preferible a
+// cortar informacion que se pidio completa.
+function rangoHoyCDMX() {
+  const diaCDMX = new Date(Date.now() - 6 * 3600e3).toISOString().slice(0, 10);
+  const inicio = new Date(`${diaCDMX}T06:00:00.000Z`); // 00:00 CDMX = 06:00 UTC
+  const fin = new Date(inicio.getTime() + 24 * 3600e3);
+  return { inicio: inicio.toISOString(), fin: fin.toISOString() };
+}
+
+async function renderPicksTableImagen(titulo, liquidados, enJuego, modo, meta = {}) {
+  const fs = require('fs');
+  const path = require('path');
+  const tmpDir = path.join(__dirname, 'scratch');
+  if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+  const entrada = path.join(tmpDir, `_unidades_hoy_${process.pid}.json`);
+  const salida = path.join(tmpDir, `_unidades_hoy_${process.pid}.png`);
+  // Sin emoji en el titulo de la IMAGEN: Segoe UI/Arial no traen esos
+  // glifos y salen como un cuadro vacio. El emoji si va en el caption de
+  // Telegram (texto normal, ese si lo renderiza bien).
+  const tituloSinEmoji = titulo.replace(/\p{Extended_Pictographic}/gu, '').trim();
+  fs.writeFileSync(entrada, JSON.stringify({
+    titulo: tituloSinEmoji, liquidados, enJuego, modo,
+    modelo: meta.modelo, pagina: meta.pagina, totalPaginas: meta.totalPaginas, reportId: meta.reportId,
+    stats: meta.stats || null,
+  }));
+  try {
+    await execFileP('python', [path.join(__dirname, 'scripts', 'render-picks-table.py'), entrada, salida],
+      { timeout: 15000, windowsHide: true });
+    return salida;
+  } finally {
+    fs.unlink(entrada, () => {});
+  }
+}
+
+function filaAImagenPick(p) {
+  // Minuto del partido al momento del pick: model_picks guarda entry_minute
+  // crudo, pero picks (heuristico) solo guarda f_avance normalizado (0-1) —
+  // ver el comentario en db.js sobre por que no se guarda el minuto crudo
+  // ahi. Se aproxima asumiendo partido de 90' (el grueso del volumen es
+  // futbol); es una estimacion, no el dato exacto que si tiene el modelo.
+  let minuto = null;
+  if (p.entry_minute != null) minuto = Math.round(p.entry_minute);
+  else if (p.f_avance != null) minuto = Math.round(p.f_avance * 90);
+
+  return {
+    id: p.id,
+    fecha: new Date(p.ts).toLocaleDateString('es-MX', { timeZone: 'America/Mexico_City', day: '2-digit', month: '2-digit' }),
+    hora: new Date(p.ts).toLocaleTimeString('es-MX', { timeZone: 'America/Mexico_City', hour: '2-digit', minute: '2-digit', hour12: false }),
+    evento: p.event || '', mercado: p.market || '', seleccion: p.selection || '',
+    cuota: p.odd_decimal, resultado: p.result, pl: p.pl,
+    // Marcador final del partido — pedido explicito del usuario el
+    // 2026-09-13, distinto de "resultado" (WIN/LOSS, ya estaba): esto es el
+    // score real, para poder juzgar el pick sin tener que ir a buscarlo
+    // aparte.
+    marcador: p.final_score || null,
+    minuto, edge: p.edge != null ? p.edge : null,
+  };
+}
+
+async function enviarUnidadesHoyImagenDashboard(chatId, view, titulo) {
+  const esc = str => String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const { sendPhotoFile } = require('./src/telegram');
+  try {
+    const { inicio, fin } = rangoHoyCDMX();
+    let liquidadosRows;
+    if (view === 'table') {
+      liquidadosRows = db.prepare(`
+        SELECT id, ts, event, market, selection, odd_decimal, result, final_score, edge, f_avance,
+               IFNULL(stake,1) AS stake,
+               CASE WHEN result = 'win' THEN IFNULL(stake,1) * (odd_decimal - 1)
+                    WHEN result = 'loss' THEN -IFNULL(stake,1) END AS pl
+        FROM picks WHERE stake IS NOT NULL AND result IN ('win','loss') AND ts >= ? AND ts < ?
+        ORDER BY ts DESC
+      `).all(inicio, fin);
+    } else {
+      liquidadosRows = db.prepare(`
+        SELECT id, ts, event, market, selection, odd_decimal, result, final_score,
+               edge_learned AS edge, entry_minute,
+               CASE WHEN result = 'win' THEN (odd_decimal - 1) WHEN result = 'loss' THEN -1 END AS pl
+        FROM model_picks WHERE result IN ('win','loss') AND ts >= ? AND ts < ?
+        ORDER BY ts DESC
+      `).all(inicio, fin);
+    }
+    const liquidados = liquidadosRows.map(filaAImagenPick);
+
+    // Estadisticas del encabezado: sobre TODO lo liquidado hoy, no solo la
+    // pagina que se este dibujando — pedido explicito del usuario. En el
+    // modelo aprendido (shadow) no hay stake real (nunca se apuesta), asi
+    // que se asume 1u por pick, igual que ya hace el pl de la query de
+    // arriba (odd_decimal - 1 / -1).
+    const wins = liquidadosRows.filter(r => r.result === 'win').length;
+    const losses = liquidadosRows.filter(r => r.result === 'loss').length;
+    const decididos = wins + losses;
+    const winrate = decididos ? (wins / decididos) * 100 : 0;
+    const plTotal = liquidadosRows.reduce((k, r) => k + (r.pl || 0), 0);
+    const apostado = view === 'table'
+      ? liquidadosRows.reduce((k, r) => k + (r.stake || 1), 0)
+      : decididos;
+    const roi = apostado ? (plTotal / apostado) * 100 : 0;
+
+    // Paginado: en un dia activo el modelo aprendido liquida cientos de
+    // picks (216 visto el 2026-09-13), y una sola imagen con todos termina
+    // tan alta que Telegram la comprime y sale pixelada — ilegible. Se
+    // parte en paginas de MAX_POR_PAGINA, cada una su propia imagen, en vez
+    // de una imagen gigante. Pedido explicito del usuario, mismo dia.
+    const MAX_POR_PAGINA = 30;
+    const paginas = [];
+    for (let i = 0; i < liquidados.length; i += MAX_POR_PAGINA) paginas.push(liquidados.slice(i, i + MAX_POR_PAGINA));
+    if (!paginas.length) paginas.push([]); // sin picks: manda una imagen vacia con el aviso de siempre
+
+    // ID del reporte: fecha CDMX + vista + timestamp corto, comun a todas
+    // las paginas de esta misma corrida — permite identificar cual imagen
+    // pertenece a cual "tanda" enviada, pedido explicito del usuario
+    // (encabezado institucional, 2026-09-13).
+    const diaCDMX = new Date(Date.now() - 6 * 3600e3).toISOString().slice(0, 10).replace(/-/g, '');
+    const reportId = `UH-${diaCDMX}-${view.toUpperCase()}-${Date.now().toString(36).toUpperCase()}`;
+    const modeloNombre = view === 'model' ? 'Modelo aprendido (shadow)' : 'Heurístico (producción)';
+    const fechaLegible = new Date(Date.now() - 6 * 3600e3).toLocaleDateString('es-MX', {
+      timeZone: 'America/Mexico_City', day: '2-digit', month: '2-digit', year: 'numeric',
+    });
+    const tituloImagen = view === 'model'
+      ? `Reporte de picks liquidados por el Modelo Learned — ${fechaLegible}`
+      : `Reporte de picks liquidados por Heurístico — ${fechaLegible}`;
+
+    const fs = require('fs');
+    for (const [i, pagina] of paginas.entries()) {
+      const paginaTag = paginas.length > 1 ? ` — página ${i + 1}/${paginas.length}` : '';
+      const png = await renderPicksTableImagen(tituloImagen, pagina, [], view, {
+        modelo: modeloNombre, pagina: i + 1, totalPaginas: paginas.length, reportId,
+        stats: { winrate, pl: plTotal, apostado, roi },
+      });
+      await sendPhotoFile(TOKEN, chatId, png, `${view === 'table' ? '📋' : '🤖'} <b>${esc(tituloImagen)}${paginaTag}</b>`);
+      fs.unlink(png, () => {});
+    }
+  } catch (e) {
+    // e.stderr trae el traceback real de Python (e.message solo dice
+    // "Command failed: ..."), indispensable para diagnosticar sin adivinar.
+    console.error(`[unidades-hoy-img:${view}]`, e.stderr || e.message);
+    await reply(chatId, `⚠️ No se pudo generar la imagen de ${esc(titulo)}. Detalle: ${esc(e.message)}`);
+  }
+}
+
+async function handlePendientes(chatId) {
+  const esc = str => String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const rows = getPendingPicksDetailed();
+  const sombra = getPendingModelPicksDetailed();
+
+  if (!rows.length && !sombra.length) {
+    return reply(chatId, '✅ <b>No hay picks pendientes.</b>\n\nTodo lo emitido está liquidado, y la sombra del modelo también.');
+  }
+
+  // El sampler ve cada evento cada SAMPLE_MINUTES. Si hace más de 25 min que no
+  // aparece, el partido ya no está en vivo: acabó y espera al liquidador, o el
+  // proveedor lo retiró. En ambos casos el marcador de abajo es el último visto,
+  // no el actual, y hay que decirlo en vez de fingir que es en vivo.
+  const STALE_MIN = 25;
+  const now = Date.now();
+  const MAX_SHOWN = 20;
+
+  const live = [];
+  const stale = [];
+  for (const p of rows) {
+    const ageMin = p.last_seen_ts ? (now - new Date(p.last_seen_ts).getTime()) / 60000 : Infinity;
+    (ageMin > STALE_MIN ? stale : live).push({ ...p, ageMin });
+  }
+
+  function renderOne(p, idx) {
+    const flag = getCountryFlag(p.champ, p.event, p.sport);
+    const hora = p.ts ? new Date(p.ts).toLocaleTimeString('es-MX', { timeZone: 'America/Mexico_City', hour: '2-digit', minute: '2-digit', hour12: false }) : '';
+
+    // Semáforo por movimiento de cuota: es lo único que sirve como termómetro
+    // transversal a todos los mercados. Cuota que baja = mercado moviéndose a
+    // favor de la selección. Sin cuota actual no se inventa un veredicto.
+    let estado = '⚪ sin lectura';
+    if (p.current_odd && p.odd_decimal) {
+      const delta = (p.current_odd - p.odd_decimal) / p.odd_decimal;
+      const pct = (delta * 100).toFixed(0);
+      if (delta <= -0.08) estado = `🟢 a favor (${pct}%)`;
+      else if (delta >= 0.08) estado = `🔴 en contra (+${pct}%)`;
+      else estado = `🟡 estable (${delta >= 0 ? '+' : ''}${pct}%)`;
+    }
+
+    // JERARQUIA: el semaforo (¿va a favor o en contra?) es lo PRIMARIO de un
+    // pick que ya esta en juego — es la unica pregunta que importa mientras
+    // se espera. El pick y el partido son contexto para identificarlo.
+    let out = `${idx + 1}. ${estado}\n`;
+    out += `   🎯 <b>${esc(p.market)}: ${esc(p.selection)} @ ${p.odd_decimal.toFixed(2)}</b> <i>(ahora ${p.current_odd ? p.current_odd.toFixed(2) : '—'})</i>\n`;
+    out += `   ${flag} #${p.id} · ${esc(p.event.trim())} <i>[${hora}]</i>\n`;
+    out += `   Stake ${(p.stake || 1).toFixed(1)}u · Marcador ${esc(p.live_score || '—')}`;
+    if (p.live_time) out += ` <i>(${esc(String(p.live_time).split('—')[0].trim())})</i>`;
+    out += `\n`;
+    return out;
+  }
+
+  const enJuego = rows.reduce((k, p) => k + (p.stake || 1), 0);
+  let msg = `<b>⏳ PICKS PENDIENTES DE LIQUIDAR</b>\n`;
+  msg += `<i>${rows.length} picks · ${enJuego.toFixed(2)}u en juego</i>\n`;
+  if (!rows.length) msg += `\n<i>Nada emitido sin liquidar.</i>\n`;
+  msg += `\n`;
+
+  if (live.length) {
+    msg += `<b>🔴 EN VIVO (${live.length})</b>\n\n`;
+    for (const [i, p] of live.slice(0, MAX_SHOWN).entries()) msg += renderOne(p, i) + '\n';
+    if (live.length > MAX_SHOWN) msg += `<i>… y ${live.length - MAX_SHOWN} más en vivo.</i>\n\n`;
+  }
+
+  if (stale.length) {
+    const restante = Math.max(0, MAX_SHOWN - live.length);
+    msg += `<b>🏁 SIN SEÑAL / ESPERANDO LIQUIDACIÓN (${stale.length})</b>\n`;
+    msg += `<i>El partido ya no aparece en el feed. El marcador es el último visto.</i>\n\n`;
+    for (const [i, p] of stale.slice(0, restante).entries()) {
+      msg += renderOne(p, i);
+      msg += `   <i>Sin señal desde hace ${Math.round(p.ageMin)} min</i>\n\n`;
+    }
+    if (stale.length > restante) msg += `<i>… y ${stale.length - restante} más esperando liquidación.</i>\n\n`;
+  }
+
+  // Bloque de sombra. Va al final y visualmente separado a proposito: son picks
+  // NO apostados. Mezclarlos con los reales en la misma lista invitaria a
+  // leerlos como exposicion, que es exactamente lo que no son.
+  if (sombra.length) {
+    msg += `\n\n\u{1F916} <b>MODELO APRENDIDO (sombra — no apostados)</b>\n`;
+    msg += `<i>${sombra.length} sin liquidar · 0u en juego</i>\n\n`;
+    for (const [i, p] of sombra.slice(0, 10).entries()) {
+      const flag = getCountryFlag(p.champ, p.event, p.sport);
+      const hora = p.ts ? new Date(p.ts).toLocaleTimeString('es-MX', { timeZone: 'America/Mexico_City', hour: '2-digit', minute: '2-digit', hour12: false }) : '';
+      let estado = '⚪ sin lectura';
+      if (p.current_odd && p.odd_decimal) {
+        const delta = (p.current_odd - p.odd_decimal) / p.odd_decimal;
+        const pctd = (delta * 100).toFixed(0);
+        if (delta <= -0.08) estado = `🟢 a favor (${pctd}%)`;
+        else if (delta >= 0.08) estado = `🔴 en contra (+${pctd}%)`;
+        else estado = `🟡 estable (${delta >= 0 ? '+' : ''}${pctd}%)`;
+      }
+      msg += `${p.tambien_heuristico ? '\u{1F91D}' : '\u{1F916}'} <b>${i + 1}. ${flag} ${esc(p.event.trim())}</b> <i>[${hora}]</i>\n`;
+      msg += `   ${esc(p.market)}: <b>${esc(p.selection)}</b> @ ${p.odd_decimal.toFixed(2)}\n`;
+      msg += `   Marcador: <b>${esc(p.live_score || '—')}</b>`;
+      if (p.live_time) msg += ` <i>(${esc(String(p.live_time).split('—')[0].trim())})</i>`;
+      msg += `\n   Cuota ahora: <b>${p.current_odd ? p.current_odd.toFixed(2) : '—'}</b> → ${estado}\n`;
+    }
+    if (sombra.length > 10) msg += `<i>… y ${sombra.length - 10} más en sombra.</i>\n`;
+  }
+
+  msg += `\n💡 <i>Usa /pick &lt;id&gt; para la ficha completa de cualquiera.</i>`;
+  await reply(chatId, msg);
+}
+
+// Cinturon generico contra un await que no resuelve nunca. Con FotMob no hay
+// Chromium compartido que colgar (ver src/fotmobScraper.js), pero cada fetch
+// ya lleva su propio AbortSignal.timeout — este cinturon es la red de
+// seguridad de mas afuera. El bot procesa los mensajes de Telegram EN SERIE
+// (poll() hace `await handleMessage`), asi que un solo await sin tope aqui no
+// cuelga solo /fotmob: cuelga el bot ENTERO para siempre. Costo real el
+// 2026-09-10 (con el piloto anterior, SofaScore): asi paso.
+function conTope(promesa, ms) {
+  return Promise.race([
+    promesa,
+    new Promise((_, rej) => setTimeout(() => rej(new Error(`timeout ${ms}ms`)), ms)),
+  ]);
+}
+
+// Tope por mensaje en el bucle de escucha de Telegram. poll() atiende los
+// updates EN SERIE, asi que un solo handler colgado (un fetch sin timeout, una
+// captura de Playwright que no vuelve) dejaba al bot sordo a TODO: el
+// 2026-09-19 "Deportes" se atasco en un sendPhoto sin timeout y ningun comando
+// respondio durante 1.5 h. Pasado el tope el handler se ABANDONA (Promise.race
+// no lo cancela: sigue en segundo plano y contestara si termina) y el bucle
+// vuelve a escuchar. 180s por defecto: /train y /validar pueden tardar minutos
+// de verdad y no deben cortarse por poco.
+const TELEGRAM_HANDLER_MAX_MS = Number(process.env.TELEGRAM_HANDLER_MAX_MS || 180000);
+async function atender(etiqueta, promesa) {
+  try {
+    await conTope(promesa, TELEGRAM_HANDLER_MAX_MS);
+  } catch (e) {
+    if (!/^timeout/.test(e.message)) throw e;
+    console.error(`[poll] "${etiqueta}" excedio ${TELEGRAM_HANDLER_MAX_MS}ms; se abandona para no bloquear la escucha (sigue en segundo plano)`);
+  }
+}
+
+// ---------- /fotmob: partidos EN VIVO con córners en las dos fuentes ----------
+// Piloto de solo lectura (src/fotmobMatch.js): NO emite ni apuesta nada. Antes
+// mostraba solo lo ya LIQUIDADO (getFotmobComparadas) — pero esa etiqueta
+// llegaba a 0 filas siempre (ver el fix de enriquecerConFotmob el 2026-09-10,
+// entonces enriquecerConSofa), asi que el comando se quedaba mudo la mayor
+// parte del tiempo. Ahora muestra el conteo EN VIVO de cada partido con
+// córners muestreados, aun sin liquidar: el inferido de playdoit
+// (stat_snapshots) junto al real de FotMob (fotmob_corner_snapshots), si
+// logro emparejarse.
+async function handleFotmob(chatId) {
+  const esc = str => String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  // Un evento pendiente puede tener varias familias muestreadas (corner,
+  // tarjeta); nos quedamos con la ULTIMA fila de corner por evento — el
+  // conteo inferido se repite igual en todas las lineas de un mismo instante
+  // (ver derivarEtiquetas en src/matchStats.js), asi que una sola basta.
+  const eventos = [];
+  for (const eventId of getStatEventosPendientes()) {
+    const muestras = getStatMuestras(eventId);
+    let ultima = null;
+    for (const m of muestras) {
+      if (m.familia === 'corner' && m.conteo != null) ultima = m; // muestras vienen ordenadas por ts
+    }
+    if (!ultima) continue;
+
+    // Segunda estimacion, INDEPENDIENTE del N-esimo: invierte el mercado de
+    // totales (Mas/Menos de X.5) del MISMO instante que `ultima`. Validado
+    // contra FotMob el 2026-09-17 sobre 22 instantes de 6 partidos: error
+    // promedio 0.59 corners contra 2.23 del N-esimo (el N-esimo se congela
+    // cuando la casa no cierra los indices bajos a tiempo — ver el hallazgo
+    // de esa fecha). Se excluyen filas suspendidas: un mercado cerrado cerca
+    // del final da precios basura que invierten a cualquier cosa.
+    const filasLinea = muestras
+      .filter(m => m.familia === 'corner' && m.ts === ultima.ts && m.lado === 'under'
+        && m.fair_prob != null && m.suspended === 0)
+      .map(m => ({ fairProbUnder: m.fair_prob, linea: m.linea, minuto: ultima.minute }));
+    ultima.estimadoMercado = conteoEstimadoDeMercado(filasLinea);
+
+    eventos.push(ultima);
+  }
+
+  if (!eventos.length) {
+    return reply(chatId, '🔗 <b>FotMob — sin partidos en vivo con córners todavía.</b>');
+  }
+
+  let conMatch = 0, coinciden = 0;
+  // Si el primer intento se topa con el timeout, la fuente probablemente
+  // esta lenta o degradada — insistir con los eventos que siguen solo suma
+  // otro timeout por cada uno y alarga el comando sin ganar nada. Se corta
+  // ahi.
+  let fotmobLento = false;
+  const lineas = [];
+  for (const ev of eventos) {
+    let sf = 'sin match FotMob';
+    let marca = '⚪';
+    if (fotmobLento) {
+      sf = 'FotMob lento, sin tiempo para emparejar';
+    } else try {
+      const match = await conTope(matchFotmobEvent({ event: ev.event, ts: ev.ts, minute: ev.minute }), 8000);
+      if (match) {
+        const latest = getFotmobCornerLatest(match.fotmobEvent.id);
+        if (latest) {
+          conMatch++;
+          const diff = Math.abs(latest.total - ev.conteo);
+          marca = diff <= 1 ? '✅' : '⚠️';
+          if (diff <= 1) coinciden++;
+          sf = `<b>${latest.total}</b> (${latest.home}-${latest.away}) <i>${esc(latest.status || '—')}</i>`;
+        } else {
+          sf = 'emparejado, sin muestra FotMob aún';
+        }
+      }
+    } catch (e) {
+      console.error('[fotmob:live]', e.message);
+      if (/^timeout/.test(e.message)) fotmobLento = true;
+    }
+
+    lineas.push(`<b>${esc(ev.event)}</b> <i>[${esc(ev.champ || '')}]</i> — min ${ev.minute ?? '—'}\n` +
+      `   Playdoit (línea ${ev.linea}): <b>${ev.conteo}</b>\n` +
+      `   Mercado (invertido): <b>${ev.estimadoMercado ?? '—'}</b>\n` +
+      `   FotMob: ${sf} ${marca}\n`);
+  }
+
+  let msg = `<b>🔗 FOTMOB — PARTIDOS EN VIVO (córners)</b>\n`;
+  msg += `<i>${eventos.length} partido(s) en vivo · ${conMatch} emparejado(s) con FotMob · ✅ ${coinciden} coinciden (±1)</i>\n\n`;
+  msg += lineas.join('\n');
+  msg += `\n💡 <i>Conteo en vivo, aún SIN liquidar. Diagnóstico del pilotaje, no emite ni apuesta nada.</i>`;
+  msg += `\n🧮 <i>"Mercado" = estimado invirtiendo el mercado de totales, de referencia (más preciso que el N-ésimo en la validación del 2026-09-17, pero todavía no reemplaza nada).</i>`;
+  await reply(chatId, msg);
+}
+
+// Grafica de pastel via QuickChart (mismo patron que sendDailyPerformanceChart
+// en src/telegram.js: config de Chart.js codificado en la URL, sin libreria
+// de graficas propia ni Chromium de por medio). Antes era una lista de texto;
+// con la variedad de deportes que llegan a estar en vivo a la vez, un pastel
+// se lee de un vistazo donde la lista habia que leerla entera.
 async function handleDeportes(chatId) {
   await reply(chatId, '⏳ Consultando...');
-  const { rows, sports } = await getFreshRows();
+  const { rows } = await getFreshRows();
+  const { excludedSports } = require('./src/confidence');
+  const { sendPhotoTelegram } = require('./src/telegram');
+  const normSport = s => (s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
+  const vetados = new Set(excludedSports());
+
   const counts = {};
-  for (const r of rows) counts[r.sport] = (counts[r.sport] || 0) + 1;
-  const lines = sports.map(s => `• ${s.name}: ${s.count} eventos, ${counts[s.name] || 0} jugadas`);
-  await reply(chatId, `<b>Deportes en vivo:</b>\n${lines.join('\n')}`);
+  for (const r of rows) {
+    if (vetados.has(normSport(r.sport))) continue; // deportes vetados fuera del pastel
+    counts[r.sport] = (counts[r.sport] || 0) + 1;
+  }
+  const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  if (!entries.length) return reply(chatId, 'No hay jugadas en vivo (fuera de los deportes vetados) ahora mismo.');
+
+  const PALETTE = ['#2ed573', '#1e90ff', '#ffa502', '#ff4757', '#a55eea', '#26de81', '#fd9644', '#45aaf2', '#fc5c65', '#778ca3', '#f7b731', '#20bf6b'];
+  const total = entries.reduce((s, [, n]) => s + n, 0);
+  const chartConfig = {
+    type: 'pie',
+    data: {
+      labels: entries.map(([name]) => name),
+      datasets: [{ data: entries.map(([, n]) => n), backgroundColor: entries.map((_, i) => PALETTE[i % PALETTE.length]) }],
+    },
+    options: {
+      title: { display: true, text: `Deportes en vivo — ${total} jugadas`, fontColor: '#d4d4d4', fontSize: 14 },
+      legend: { position: 'right', labels: { fontColor: '#abb2bf' } },
+    },
+  };
+  const chartUrl = `https://quickchart.io/chart?bkg=181a1f&w=700&h=420&c=${encodeURIComponent(JSON.stringify(chartConfig))}`;
+  const caption = `<b>⚽ Deportes en vivo</b>\n<i>${total} jugadas · ${entries.length} deportes (vetados excluidos)</i>`;
+  await sendPhotoTelegram(TOKEN, chatId, chartUrl, caption);
 }
 
 // ---------- /vip: gestión de membresías y canal VIP ----------
@@ -838,7 +1394,7 @@ const MAIN_KEYBOARD = {
     // de texto fijo no puede llevarlo. El propio mensaje de "Pick automático"
     // ya muestra el #id para copiarlo y escribir /pick <id> a mano.
     [{ text: '⚽ Deportes' }, { text: '🩺 Salud Modelo' }, { text: '🔍 Validar' }],
-    [{ text: '❓ Ayuda' }]
+    [{ text: '⏳ Pendientes' }, { text: '🔗 FotMob' }, { text: '❓ Ayuda' }]
   ],
   resize_keyboard: true,
   is_persistent: true,
@@ -873,16 +1429,66 @@ async function handleStart(chatId, fromUser) {
 
 // ---------- Panel web (dashboard API, puerto 3001) ----------
 // No es solo la UI: ese proceso corre el setInterval que dispara las alertas de
-// Telegram, asi que poder levantarlo desde el chat evita depender del escritorio.
-// Se lanza como hijo de bot.js para heredar el auto-reinicio de run-bot.cmd en
-// lugar de necesitar su propia tarea programada.
+// Telegram, asi que su vida es la de las alertas automaticas.
+//
+// SOBREVIVE AL REINICIO DEL BOT. Antes se lanzaba como hijo NO desacoplado y,
+// ademas, un handler de 'exit' lo mataba a proposito para no dejar el puerto
+// ocupado. El efecto colateral era grave y poco visible: cada reinicio del bot
+// —y el supervisor de run-bot.cmd reinicia ante cualquier caida— se llevaba por
+// delante el panel Y con el las alertas de PROFIT_LOCK, POSITION_DYING y
+// STRUCTURAL_DRAW, sin que nada lo dijera. El 2026-09-04 se conto: cinco veces
+// en una sesion de trabajo.
+//
+// Ahora se lanza DESACOPLADO (detached + unref) y el bot nuevo, en vez de
+// necesitar el puerto libre, ADOPTA el panel que ya este vivo. El problema que
+// resolvia matarlo —un huerfano bloqueando el puerto— se resuelve mejor
+// reconociendolo: si el lock apunta a un proceso vivo y el puerto responde, es
+// nuestro panel y no hay nada que levantar.
 const DASHBOARD_PORT = Number(process.env.DASHBOARD_PORT || 3001);
 const DASHBOARD_ENTRY = path.join(__dirname, 'dist', 'server', 'dashboardApi.js');
+
+// DASHBOARD_AUTOSTART=1 hace que el bot se ocupe del panel al arrancar. Con la
+// adopcion ya implementada eso equivale a AUTO-REPARARLO: si sigue vivo lo
+// adopta y no hace nada; si murio por su cuenta, lo vuelve a levantar. Es la
+// forma de que el panel —y con el las alertas automaticas— deje de depender de
+// que alguien mande /dashboard despues de cada incidente.
+// Por defecto APAGADO: levantar un servidor HTTP sin que nadie lo pida es un
+// efecto secundario que debe elegirse, no heredarse.
+const DASHBOARD_AUTOSTART = process.env.DASHBOARD_AUTOSTART === '1';
 const DASHBOARD_LOG = path.join(__dirname, 'dashboard.log');
+// Lock del panel, en el mismo estilo que .bot.lock: "<pid> <iso>". Es lo que
+// permite que un bot recien arrancado reconozca al panel que dejo vivo el bot
+// anterior, en vez de pelearse con el por el puerto.
+const DASHBOARD_LOCK = path.join(__dirname, '.dashboard.lock');
 let dashboardProc = null;
 
+const { pidAlive } = require('./src/singleInstance');
+
+function leerLockPanel() {
+  try {
+    const raw = fs.readFileSync(DASHBOARD_LOCK, 'utf8').trim();
+    const pid = Number(raw.split(/\s+/)[0]);
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch { return null; }
+}
+function escribirLockPanel(pid) {
+  try { fs.writeFileSync(DASHBOARD_LOCK, `${pid} ${new Date().toISOString()}\n`); } catch {}
+}
+function borrarLockPanel() {
+  try { fs.unlinkSync(DASHBOARD_LOCK); } catch {}
+}
+
+/** PID del panel vivo — el que lanzamos nosotros o el que adoptamos del lock. */
+function dashboardPid() {
+  if (dashboardProc !== null && dashboardProc.exitCode === null && !dashboardProc.signalCode) {
+    return dashboardProc.pid;
+  }
+  const pid = leerLockPanel();
+  return pid && pidAlive(pid) ? pid : null;
+}
+
 function dashboardAlive() {
-  return dashboardProc !== null && dashboardProc.exitCode === null && !dashboardProc.signalCode;
+  return dashboardPid() !== null;
 }
 
 // El puerto puede estar tomado por un dashboard que este bot NO lanzó (otra
@@ -906,25 +1512,37 @@ function portUnavailable(port) {
 }
 
 async function startDashboard() {
-  if (dashboardAlive()) {
-    return `ℹ️ El panel ya está corriendo (PID ${dashboardProc.pid}) en http://localhost:${DASHBOARD_PORT}`;
+  const vivoPid = dashboardPid();
+  if (vivoPid) {
+    return `ℹ️ El panel ya está corriendo (PID ${vivoPid}) en http://localhost:${DASHBOARD_PORT}`;
   }
   if (!fs.existsSync(DASHBOARD_ENTRY)) {
     return `⚠️ No existe <code>dist/server/dashboardApi.js</code>. Compila con <code>npx tsc</code> y reintenta.`;
   }
   if (await portUnavailable(DASHBOARD_PORT)) {
-    return `⚠️ El puerto ${DASHBOARD_PORT} ya está ocupado por otro proceso ajeno a este bot.\n` +
-           `Puede ser un dashboard de otra sesión o un huérfano. Ciérralo antes de reintentar.`;
+    // El lock no apuntaba a nada vivo pero el puerto SI esta tomado: es un panel
+    // que no lanzamos nosotros (otra cuenta de Windows, o uno arrancado a mano).
+    // No se mata: se avisa. Matar procesos ajenos por ocupar un puerto es peor
+    // que no arrancar.
+    return `⚠️ El puerto ${DASHBOARD_PORT} está ocupado por un proceso que este bot no lanzó.\n` +
+           `Puede ser un panel de otra sesión o arrancado a mano. Ciérralo antes de reintentar.`;
   }
 
   const out = fs.openSync(DASHBOARD_LOG, 'a');
+  // detached + unref: el panel deja de colgar del ciclo de vida del bot. Sin
+  // esto, en Windows el hijo se va con el padre al hacer Stop-Process /F.
   const child = spawn(process.execPath, [DASHBOARD_ENTRY], {
-    cwd: __dirname, windowsHide: true, stdio: ['ignore', out, out],
+    cwd: __dirname, windowsHide: true, stdio: ['ignore', out, out], detached: true,
   });
+  child.unref();
   dashboardProc = child;
+  escribirLockPanel(child.pid);
   child.on('exit', (code, signal) => {
     console.log(`[dashboard] terminó (code=${code}, signal=${signal})`);
     if (dashboardProc === child) dashboardProc = null;
+    // Solo se limpia el lock si sigue siendo el nuestro: si otro panel lo
+    // reclamo mientras tanto, borrarlo lo dejaria invisible para el proximo bot.
+    if (leerLockPanel() === child.pid) borrarLockPanel();
   });
 
   // Dar un margen para que falle rápido (EADDRINUSE, error de require, etc.)
@@ -937,20 +1555,23 @@ async function startDashboard() {
          `Las alertas automáticas vuelven a estar activas.`;
 }
 
+// Mata POR PID, no por el handle del hijo: el panel puede haberlo lanzado un bot
+// anterior y este solo haberlo adoptado, en cuyo caso no hay handle que matar.
 function stopDashboard() {
-  if (!dashboardAlive()) return 'ℹ️ El panel no está corriendo (o lo lanzó otro proceso).';
-  const pid = dashboardProc.pid;
-  dashboardProc.kill();
+  const pid = dashboardPid();
+  if (!pid) return 'ℹ️ El panel no está corriendo.';
+  try { process.kill(pid); } catch (e) {
+    return `⚠️ No se pudo detener el panel (PID ${pid}): ${e.message}`;
+  }
   dashboardProc = null;
+  borrarLockPanel();
   return `🛑 Panel detenido (PID ${pid}). Las alertas automáticas quedan suspendidas.`;
 }
 
-// Si bot.js se va, no dejar el dashboard huérfano ocupando el puerto: al
-// reiniciar el runner, el bot nuevo no podría levantarlo.
-process.on('exit', () => { try { if (dashboardAlive()) dashboardProc.kill(); } catch {} });
-for (const sig of ['SIGINT', 'SIGTERM']) {
-  process.on(sig, () => { try { if (dashboardAlive()) dashboardProc.kill(); } catch {} process.exit(0); });
-}
+// NO se mata el panel al salir. Es justo lo contrario de lo que hacia antes, y
+// es el objetivo del cambio: que un reinicio del bot no se lleve las alertas por
+// delante. El panel queda vivo y el siguiente bot lo adopta por el lock.
+// Para pararlo de verdad esta /dashboard off.
 
 async function handleDashboard(args, chatId) {
   const sub = (args[0] || '').toLowerCase();
@@ -958,7 +1579,12 @@ async function handleDashboard(args, chatId) {
     return reply(chatId, stopDashboard());
   }
   if (sub === 'status' || sub === 'estado') {
-    if (dashboardAlive()) return reply(chatId, `✅ Panel activo (PID ${dashboardProc.pid}) en http://localhost:${DASHBOARD_PORT}`);
+    const pid = dashboardPid();
+    if (pid) {
+      const propio = dashboardProc && dashboardProc.pid === pid;
+      return reply(chatId, `✅ Panel activo (PID ${pid}${propio ? '' : ', adoptado de un arranque anterior'}) ` +
+                           `en http://localhost:${DASHBOARD_PORT}`);
+    }
     const busy = await portUnavailable(DASHBOARD_PORT);
     return reply(chatId, busy
       ? `⚠️ El puerto ${DASHBOARD_PORT} está ocupado, pero no por este bot.`
@@ -967,6 +1593,156 @@ async function handleDashboard(args, chatId) {
   await reply(chatId, '⏳ Levantando el panel...');
   return reply(chatId, await startDashboard());
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// Túnel público (cloudflared) — expone el panel fuera de localhost. Mismo
+// patrón que el panel: lock file, adopta lo que ya esté vivo, se lanza
+// detached para no caerse con el bot. Sin cuenta de Cloudflare la URL es
+// efímera (quick tunnel de trycloudflare.com): cambia cada vez que se
+// reinicia el túnel, por eso se guarda en el lock y se manda por Telegram al
+// levantarlo — si no, habría que ir a buscarla al log a mano.
+const TUNNEL_AUTOSTART = process.env.TUNNEL_AUTOSTART === '1';
+const TUNNEL_LOG = path.join(__dirname, 'tunnel.log');
+const TUNNEL_LOCK = path.join(__dirname, '.tunnel.lock');
+let tunnelProc = null;
+let tunnelUrlCache = null;
+
+function findCloudflaredExe() {
+  const candidatos = [
+    'C:\\Program Files (x86)\\cloudflared\\cloudflared.exe',
+    'C:\\Program Files\\cloudflared\\cloudflared.exe',
+  ];
+  for (const c of candidatos) {
+    if (fs.existsSync(c)) return c;
+  }
+  return 'cloudflared'; // si no está en ninguna ruta conocida, se prueba vía PATH
+}
+const CLOUDFLARED_EXE = findCloudflaredExe();
+
+function leerLockTunel() {
+  try {
+    const raw = fs.readFileSync(TUNNEL_LOCK, 'utf8').trim();
+    const [pidStr, url] = raw.split(/\s+/);
+    const pid = Number(pidStr);
+    return Number.isInteger(pid) && pid > 0 ? { pid, url: url || null } : null;
+  } catch { return null; }
+}
+function escribirLockTunel(pid, url) {
+  try { fs.writeFileSync(TUNNEL_LOCK, `${pid} ${url} ${new Date().toISOString()}\n`); } catch {}
+}
+function borrarLockTunel() {
+  try { fs.unlinkSync(TUNNEL_LOCK); } catch {}
+}
+
+function tunnelInfo() {
+  if (tunnelProc !== null && tunnelProc.exitCode === null && !tunnelProc.signalCode) {
+    return { pid: tunnelProc.pid, url: tunnelUrlCache };
+  }
+  const lock = leerLockTunel();
+  return lock && pidAlive(lock.pid) ? lock : null;
+}
+
+// La URL sale por stdout de cloudflared unos segundos después de arrancar.
+// stdio va directo a un fd de archivo (igual que el panel), así que no hay
+// stream que leer en vivo desde acá: se sondea el log hasta encontrarla.
+//
+// tunnel.log es acumulativo (se abre en modo 'a' entre arranques), así que
+// buscar la PRIMERA url del archivo entero devuelve la de un arranque viejo
+// — se detectó en producción: el lock quedó apuntando a una url ya muerta
+// mientras el proceso nuevo servía otra. `fromByte` acota la búsqueda a lo
+// que se escribió DESPUÉS de lanzar este proceso.
+function esperarUrlTunel(logPath, timeoutMs, fromByte = 0) {
+  return new Promise(resolve => {
+    const start = Date.now();
+    const check = () => {
+      try {
+        const contenido = fs.readFileSync(logPath, 'utf8').slice(fromByte);
+        const m = contenido.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
+        if (m) return resolve(m[0]);
+      } catch {}
+      if (Date.now() - start > timeoutMs) return resolve(null);
+      setTimeout(check, 500);
+    };
+    check();
+  });
+}
+
+async function startTunnel() {
+  const vivo = tunnelInfo();
+  if (vivo) {
+    return `ℹ️ El túnel ya está corriendo (PID ${vivo.pid})${vivo.url ? `\n${vivo.url}` : ''}`;
+  }
+
+  let offset = 0;
+  try { offset = fs.statSync(TUNNEL_LOG).size; } catch {}
+
+  const out = fs.openSync(TUNNEL_LOG, 'a');
+  const child = spawn(CLOUDFLARED_EXE, ['tunnel', '--url', `http://localhost:${DASHBOARD_PORT}`], {
+    cwd: __dirname, windowsHide: true, stdio: ['ignore', out, out], detached: true,
+  });
+  child.unref();
+  tunnelProc = child;
+  child.on('exit', (code, signal) => {
+    console.log(`[tunnel] terminó (code=${code}, signal=${signal})`);
+    if (tunnelProc === child) tunnelProc = null;
+    const lock = leerLockTunel();
+    if (lock && lock.pid === child.pid) borrarLockTunel();
+  });
+
+  const url = await esperarUrlTunel(TUNNEL_LOG, 15000, offset);
+  if (!url) {
+    return `⚠️ El túnel arrancó (PID ${child.pid}) pero no se pudo leer la URL de <code>tunnel.log</code>. Revisa el archivo a mano.`;
+  }
+  tunnelUrlCache = url;
+  escribirLockTunel(child.pid, url);
+  const auth = process.env.DASHBOARD_USER && process.env.DASHBOARD_PASS
+    ? '\n\n🔒 Pide usuario y contraseña (DASHBOARD_USER/DASHBOARD_PASS en .env).'
+    : '\n\n⚠️ Sin DASHBOARD_USER/DASHBOARD_PASS en .env: el panel queda ABIERTO a cualquiera con la URL.';
+  return `✅ Túnel arrancado (PID ${child.pid})\n${url}${auth}`;
+}
+
+// Igual que stopDashboard: mata por PID, no por el handle del hijo, porque
+// el túnel puede haberlo lanzado un bot anterior y este solo haberlo adoptado.
+function stopTunnel() {
+  const info = tunnelInfo();
+  if (!info) return 'ℹ️ El túnel no está corriendo.';
+  try { process.kill(info.pid); } catch (e) {
+    return `⚠️ No se pudo detener el túnel (PID ${info.pid}): ${e.message}`;
+  }
+  tunnelProc = null;
+  tunnelUrlCache = null;
+  borrarLockTunel();
+  return `🛑 Túnel detenido (PID ${info.pid}).`;
+}
+
+async function handleTunnel(args, chatId) {
+  const sub = (args[0] || '').toLowerCase();
+  if (sub === 'off' || sub === 'stop' || sub === 'apagar') {
+    return reply(chatId, stopTunnel());
+  }
+  if (sub === 'status' || sub === 'estado') {
+    const info = tunnelInfo();
+    return reply(chatId, info
+      ? `✅ Túnel activo (PID ${info.pid})${info.url ? `\n${info.url}` : ''}`
+      : '🛑 Túnel apagado. Manda /tunnel para levantarlo.');
+  }
+  await reply(chatId, '⏳ Levantando el túnel (puede tardar unos segundos)...');
+  return reply(chatId, await startTunnel());
+}
+
+// Enfriamiento de la botonera: el mismo boton, del mismo chat, dos veces en
+// menos de 10s se ignora la segunda vez. poll() atiende los mensajes EN
+// SERIE (un await tras otro) — un doble-tap impaciente en "Unidades Hoy" (se
+// vio en vivo el 2026-09-12, 3 pulsaciones en menos de 2s) no duplica el
+// trabajo, lo ENCOLA: cada pulsacion extra espera a que la anterior termine
+// antes de siquiera empezar a leer, y con la BD bajo contencion (escrituras
+// de decenas de segundos, documentado aparte) eso deja comandos completamente
+// distintos —como /pendientes, mandado despues— atorados detras de una fila
+// de comandos identicos que no aportan nada nuevo. Solo aplica a botones de
+// la botonera (labelMap abajo), no a comandos escritos a mano: quien teclea
+// /top dos veces seguidas probablemente quiere argumentos distintos.
+const BOTON_COOLDOWN_MS = 10000;
+const ultimoComandoBoton = new Map(); // chatId -> { cmd, ts }
 
 async function handleMessage(rawText, chatId = CHAT_ID, fromUser = null) {
   chatId = chatId || CHAT_ID;
@@ -1010,11 +1786,18 @@ async function handleMessage(rawText, chatId = CHAT_ID, fromUser = null) {
     '🤖 reentrenar': '/train',
     'reentrenar': '/train',
     'train': '/train',
+    '⏳ pendientes': '/pendientes',
+    'pendientes': '/pendientes',
+    '🔗 fotmob': '/fotmob',
+    'fotmob': '/fotmob',
+    'sofascore': '/fotmob',
+    'sofa': '/fotmob',
     '❓ ayuda': '/help',
     'ayuda': '/help',
     'help': '/help',
   };
 
+  const vieneDeBotonera = !!(labelMap[normRaw] || labelMap[cleanLabel]);
   if (labelMap[normRaw]) {
     text = labelMap[normRaw];
   } else if (labelMap[cleanLabel]) {
@@ -1024,6 +1807,16 @@ async function handleMessage(rawText, chatId = CHAT_ID, fromUser = null) {
   const parts = text.split(/\s+/);
   const cmd = norm(parts[0]).replace(/@.*$/, '');
   const args = parts.slice(1);
+
+  if (vieneDeBotonera) {
+    const ahora = Date.now();
+    const previo = ultimoComandoBoton.get(chatId);
+    if (previo && previo.cmd === cmd && (ahora - previo.ts) < BOTON_COOLDOWN_MS) {
+      console.log(`[botonera] ${cmd} ignorado (repetido a ${ahora - previo.ts}ms del anterior, chat ${chatId})`);
+      return;
+    }
+    ultimoComandoBoton.set(chatId, { cmd, ts: ahora });
+  }
 
   try {
     const pickMatch = text.trim().match(/^(?:\/pick|\/ticket|#)?\s*(\d+)$/i);
@@ -1051,11 +1844,23 @@ async function handleMessage(rawText, chatId = CHAT_ID, fromUser = null) {
       if (!isOwner(chatId)) await reply(chatId, '🔒 Comando reservado al administrador.');
       else await handleDashboard(args, chatId);
     }
+    else if (cmd === '/tunnel' || cmd === '/tunel') {
+      if (!isOwner(chatId)) await reply(chatId, '🔒 Comando reservado al administrador.');
+      else await handleTunnel(args, chatId);
+    }
     // /reboot tumba el proceso: solo el dueño. Sin esta guarda cualquier chat
     // podría reiniciar el bot en bucle, que es un apagado gratis.
     else if (cmd === '/reboot' || cmd === '/reiniciar') {
       if (!isOwner(chatId)) await reply(chatId, '🔒 Comando reservado al administrador.');
       else await handleReboot(chatId);
+    }
+    else if (cmd === '/pendientes') await handlePendientes(chatId);
+    // Diagnostico interno del pilotaje (src/fotmobMatch.js), no un producto
+    // para suscriptores. Boton visible en la botonera a peticion, pero el
+    // dato mismo queda reservado al dueno — mismo patron que /train y /dashboard.
+    else if (cmd === '/fotmob') {
+      if (!isOwner(chatId)) await reply(chatId, '🔒 Comando reservado al administrador.');
+      else await handleFotmob(chatId);
     }
     else if (cmd === '/deportes') await handleDeportes(chatId);
     else if (cmd === '/vip') await handleVip(chatId, fromUser);
@@ -1070,9 +1875,17 @@ async function handleMessage(rawText, chatId = CHAT_ID, fromUser = null) {
 
 async function registerCommands() {
   try {
+    // Timeout obligatorio: sin AbortSignal, un fetch de Node que SI conecta
+    // pero nunca responde se queda colgado para siempre (mismo motivo que en
+    // sendTelegram, ver src/telegram.js). Esta llamada corre ANTES del
+    // mensaje de arranque y del loop de polling (poll() la espera primero),
+    // asi que un cuelgue aqui deja el bot entero mudo desde el primer
+    // segundo, sin ningun error en el log — encontrado el 2026-09-11 tras un
+    // reinicio donde el bot no volvio a responder en Telegram.
     await fetch(`${API}/setMyCommands`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(15000),
       body: JSON.stringify({
         commands: [
           { command: 'seguras', description: 'Top 3 jugadas con mayor probabilidad' },
@@ -1082,6 +1895,7 @@ async function registerCommands() {
           { command: 'top', description: 'Top 10 momios más bajos' },
           { command: 'unidades', description: 'Rendimiento por unidades y días' },
           { command: 'stats', description: 'Tasa de acierto y métricas' },
+          { command: 'pendientes', description: 'Picks sin liquidar y su estado actual' },
           { command: 'deportes', description: 'Deportes en vivo ahora' },
           { command: 'health', description: 'Salud del modelo (drift)' },
           { command: 'validar', description: 'Validar resultados con oficial' },
@@ -1095,15 +1909,186 @@ async function registerCommands() {
   }
 }
 
+// Offset de getUpdates, persistido en disco para sobrevivir a reinicios.
+// Un fichero y no la BD: no depende del esquema ni de que SQLite este sano, y
+// esto tiene que funcionar incluso si la base esta bloqueada o corrupta.
+const OFFSET_FILE = path.join(__dirname, '.telegram-offset');
+function leerOffset() {
+  try {
+    const n = Number(fs.readFileSync(OFFSET_FILE, 'utf8').trim());
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  } catch { return 0; }   // primer arranque o fichero ilegible: desde el principio
+}
+let ultimoGuardado = 0;
+function guardarOffset(n) {
+  if (n <= ultimoGuardado) return;
+  try { fs.writeFileSync(OFFSET_FILE, String(n)); ultimoGuardado = n; }
+  catch (e) { console.error('[offset] no se pudo guardar:', e.message); }
+}
+
+/**
+ * Panel de estado al arrancar: bot, dashboard, FotMob. Antes el mensaje de
+ * arranque era un solo "activo, Botonera lista" que no decia nada sobre si el
+ * panel web seguia vivo o si el piloto de FotMob estaba prendido — habia
+ * que preguntarlo con /dashboard o revisar el log a mano. Se arma UNA vez,
+ * aqui, en vez de en cada reinicio a ciegas.
+ *
+ * Todo lo que consulta es barato (PID vivo, una fila de la BD): nada de esto
+ * puede colgar el arranque del bot.
+ */
+function construirPanelEstadoTexto() {
+  const horaArranque = new Date().toLocaleTimeString('es-MX', { timeZone: 'America/Mexico_City', hour: '2-digit', minute: '2-digit', hour12: false });
+
+  let msg = `🩺 <b>ESTADO DEL SISTEMA</b> <i>(${horaArranque})</i>\n\n`;
+
+  // ── Bot ──
+  msg += `🤖 <b>Bot</b>: ✅ activo\n`;
+  msg += `   Muestreo cada ${SAMPLE_MINUTES} min · Modelo: <b>${getMode()}</b> · Auto-picks: ${AUTO_PICKS ? 'ON' : 'OFF'}\n\n`;
+
+  // ── Dashboard ──
+  const panelVivo = dashboardAlive();
+  if (panelVivo) {
+    msg += `📊 <b>Dashboard</b>: ✅ activo — http://localhost:${DASHBOARD_PORT} (PID ${dashboardPid()})\n\n`;
+  } else {
+    msg += `📊 <b>Dashboard</b>: ⚫ apagado${DASHBOARD_AUTOSTART ? ' (se debería autoarrancar solo; si sigue apagado, revisar dashboard.log)' : ' — manda /dashboard para levantarlo'}\n\n`;
+  }
+
+  // ── FotMob ──
+  if (FOTMOB_PILOT) {
+    let ultimaCaptura = null, capturas24h = 0;
+    try {
+      ultimaCaptura = db.prepare('SELECT MAX(ts) ts FROM fotmob_corner_snapshots').get()?.ts || null;
+      capturas24h = db.prepare(
+        "SELECT COUNT(DISTINCT fotmob_event_id) n FROM fotmob_corner_snapshots WHERE ts >= datetime('now','-1 day')"
+      ).get()?.n || 0;
+    } catch (e) {
+      console.error('[panel-estado] fotmob query:', e.message);
+    }
+    const minsDesde = ultimaCaptura ? Math.round((Date.now() - new Date(ultimaCaptura).getTime()) / 60000) : null;
+    // Si la ultima captura tiene mas margen que un par de ciclos, algo se
+    // colgo — no basta con decir "activo", hay que decirlo en rojo.
+    const rancio = minsDesde != null && minsDesde > FOTMOB_MINUTES * 3;
+    msg += `🔗 <b>FotMob</b>: ${rancio ? '🟡' : '✅'} activo — cada ${FOTMOB_MINUTES} min`;
+    msg += minsDesde != null
+      ? `, última captura hace ${minsDesde} min (${capturas24h} partidos/24h)\n`
+      : `, aún sin ninguna captura\n`;
+  } else {
+    msg += `🔗 <b>FotMob</b>: ⚫ apagado (FOTMOB_PILOT=0)\n`;
+  }
+
+  return msg;
+}
+
+/**
+ * Mismos datos que construirPanelEstadoTexto(), como objeto plano en vez de
+ * HTML — lo consume render-estado-sistema.py para dibujar el panel como
+ * imagen (pedido del usuario el 2026-09-12, con su propio codigo de
+ * Pillow). Se mantienen las DOS formas (texto y datos) porque el texto sigue
+ * siendo el respaldo si Python/Pillow fallan al arrancar — un arranque no
+ * puede quedar mudo solo porque la imagen no se pudo dibujar.
+ */
+function construirPanelEstadoDatos() {
+  const hora = new Date().toLocaleTimeString('es-MX', { timeZone: 'America/Mexico_City', hour: '2-digit', minute: '2-digit', hour12: false });
+  const cards = [];
+
+  cards.push({
+    title: 'Bot', status: 'ACTIVO', status_type: 'active',
+    metrics: [
+      ['Muestreo', `Cada ${SAMPLE_MINUTES} min`],
+      ['Modelo', getMode()],
+      ['Auto-picks', AUTO_PICKS ? 'ON' : 'OFF'],
+    ],
+  });
+
+  const panelVivo = dashboardAlive();
+  cards.push(panelVivo
+    ? { title: 'Dashboard', status: 'ACTIVO', status_type: 'active',
+        metrics: [['URL', `localhost:${DASHBOARD_PORT}`], ['Process ID', `PID ${dashboardPid()}`]] }
+    : { title: 'Dashboard', status: 'APAGADO', status_type: 'inactive',
+        metrics: [['Auto-arranque', DASHBOARD_AUTOSTART ? 'ON' : 'OFF']] });
+
+  if (FOTMOB_PILOT) {
+    let ultimaCaptura = null, capturas24h = 0;
+    try {
+      ultimaCaptura = db.prepare('SELECT MAX(ts) ts FROM fotmob_corner_snapshots').get()?.ts || null;
+      capturas24h = db.prepare(
+        "SELECT COUNT(DISTINCT fotmob_event_id) n FROM fotmob_corner_snapshots WHERE ts >= datetime('now','-1 day')"
+      ).get()?.n || 0;
+    } catch (e) {
+      console.error('[panel-estado] fotmob query:', e.message);
+    }
+    const minsDesde = ultimaCaptura ? Math.round((Date.now() - new Date(ultimaCaptura).getTime()) / 60000) : null;
+    const rancio = minsDesde != null && minsDesde > FOTMOB_MINUTES * 3;
+    cards.push({
+      title: 'FotMob', status: rancio ? 'DEMORADO' : 'ACTIVO', status_type: rancio ? 'warning' : 'active',
+      metrics: [
+        ['Intervalo', `Cada ${FOTMOB_MINUTES} min`],
+        ['Última captura', minsDesde != null ? `hace ${minsDesde} min` : 'sin datos'],
+        ['Partidos/24h', String(capturas24h)],
+      ],
+    });
+  } else {
+    cards.push({ title: 'FotMob', status: 'APAGADO', status_type: 'inactive', metrics: [['Variable', 'FOTMOB_PILOT=0']] });
+  }
+
+  return { hora, cards };
+}
+
+/**
+ * Renderiza el panel de estado como PNG via scripts/render-estado-sistema.py
+ * y devuelve la ruta del archivo generado. Lanza si python/Pillow no estan
+ * disponibles o el script falla — quien llama decide el respaldo.
+ */
+async function renderPanelEstadoImagen(datos) {
+  const tmpDir = path.join(__dirname, 'scratch');
+  if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+  const entrada = path.join(tmpDir, `_panel_estado_${process.pid}.json`);
+  const salida = path.join(tmpDir, `_panel_estado_${process.pid}.png`);
+  fs.writeFileSync(entrada, JSON.stringify(datos));
+  try {
+    await execFileP('python', [path.join(__dirname, 'scripts', 'render-estado-sistema.py'), entrada, salida],
+      { timeout: 15000, windowsHide: true });
+    return salida;
+  } finally {
+    fs.unlink(entrada, () => {});
+  }
+}
+
 async function poll() {
   await registerCommands();
+  // Imagen primero (pedido del usuario, 2026-09-12); si Python/Pillow fallan
+  // o el proceso no esta disponible en esta maquina, cae al texto de
+  // siempre — el arranque no puede quedar mudo por una imagen que no se
+  // pudo dibujar.
   try {
-    await reply(CHAT_ID, '🤖 <b>Playdoit Monitor activo.</b> Sistema VIP y Botonera listos.', true);
+    const png = await renderPanelEstadoImagen(construirPanelEstadoDatos());
+    const { sendPhotoFile } = require('./src/telegram');
+    await sendPhotoFile(TOKEN, CHAT_ID, png, undefined, MAIN_KEYBOARD);
+    fs.unlink(png, () => {});
   } catch (e) {
-    console.error('[startup notify error]', e.message);
+    console.error('[startup notify] fallo la imagen del panel, uso texto:', e.message);
+    try {
+      await reply(CHAT_ID, construirPanelEstadoTexto(), true);
+    } catch (e2) {
+      console.error('[startup notify error]', e2.message);
+    }
   }
-  let offset = 0;
-  console.log('Bot escuchando comandos de Telegram...');
+  // OFFSET PERSISTENTE. Antes vivía solo en memoria y arrancaba en 0.
+  //
+  // Telegram da por entregada una actualizacion cuando pides la SIGUIENTE con
+  // un offset mayor. /reboot llama a process.exit() antes de esa llamada, asi
+  // que la propia orden de reiniciar nunca se confirmaba: al arrancar, el bot
+  // pedia desde 0, volvia a leer /reboot y se reiniciaba otra vez.
+  //
+  // Bucle infinito, medido el 2026-08-28: el bot se reinicio cada ~7 min
+  // durante media hora replicando el mismo /reboot, sin atender nada. Lo mismo
+  // pasaria tras cualquier crash o kill.
+  //
+  // El offset se guarda ANTES de atender el mensaje, no despues: si el proceso
+  // muere a mitad se pierde ESA orden, que es mucho mejor que repetirla para
+  // siempre. Un /reboot perdido se vuelve a mandar; uno repetido tumba el bot.
+  let offset = leerOffset();
+  console.log(`Bot escuchando comandos de Telegram... (offset ${offset})`);
   while (true) {
     try {
       const res = await fetch(`${API}/getUpdates?timeout=50&offset=${offset}`, { signal: AbortSignal.timeout(60000) });
@@ -1111,6 +2096,33 @@ async function poll() {
       if (!data.ok) throw new Error(data.description);
       for (const u of data.result) {
         offset = u.update_id + 1;
+        guardarOffset(offset);   // ANTES de atender: ver el comentario de arriba
+
+        if (u.callback_query) {
+          const cq = u.callback_query;
+          // answerCallbackQuery es obligatorio: sin el, el boton se queda con
+          // el reloj de "cargando" girando en el cliente de Telegram hasta
+          // que expira solo. Va ANTES de procesar para no hacer esperar al
+          // usuario por el reporte completo antes de quitarle el spinner.
+          fetch(`${API}/answerCallbackQuery`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ callback_query_id: cq.id }),
+            signal: AbortSignal.timeout(10000),
+          }).catch(e => console.error('[callback_query] answer:', e.message));
+
+          const chatId = cq.message?.chat?.id;
+          if (chatId && cq.data === 'unidades_hoy:heuristico') {
+            await atender(cq.data, enviarUnidadesHoyHeuristico(chatId));
+          } else if (chatId && cq.data === 'unidades_hoy:learned') {
+            await atender(cq.data, enviarUnidadesHoyLearned(chatId));
+          } else if (chatId && cq.data === 'unidades_hoy:tabla_img') {
+            await atender(cq.data, enviarUnidadesHoyImagenDashboard(chatId, 'table', 'la tabla'));
+          } else if (chatId && cq.data === 'unidades_hoy:modelo_img') {
+            await atender(cq.data, enviarUnidadesHoyImagenDashboard(chatId, 'model', 'el modelo ML'));
+          }
+          continue;
+        }
 
         if (u.pre_checkout_query) {
           try {
@@ -1135,7 +2147,7 @@ async function poll() {
 
         if (msg.text) {
           console.log(`[${new Date().toISOString()}] ${msg.text}`);
-          await handleMessage(msg.text, msg.chat.id, msg.from);
+          await atender(msg.text, handleMessage(msg.text, msg.chat.id, msg.from));
         }
       }
     } catch (e) {
@@ -1211,7 +2223,7 @@ function esRectaFinal(p) {
 // Nunca debe tumbar el ciclo de picks: es instrumentación, no producción. De ahí
 // el try/catch. Y REJECTED_SAMPLE=0 lo apaga entero.
 const REJECTED_SAMPLE = Number(process.env.REJECTED_SAMPLE || 5);
-function captureRejectedControls(rows) {
+function captureRejectedControls(rows, scored = null) {
   if (REJECTED_SAMPLE <= 0) return;
   try {
     const muestras = auditRejections(rows, {
@@ -1219,6 +2231,7 @@ function captureRejectedControls(rows) {
       minEdge: Number(process.env.MIN_EDGE || 0.03),
       minConf: Number(process.env.MIN_CONF || 0.70),
       limit: REJECTED_SAMPLE,
+      scored,
     });
     if (!muestras.length) return;
     const ts = new Date().toISOString();
@@ -1231,7 +2244,8 @@ function captureRejectedControls(rows) {
       // guardaba siempre NULL desde que existe esta tabla (2026-08-09).
       fProbJusta: r.base, fAvance: r.progress, fAvanceModel: r.fAvance,
       fSituacion: r.scoreFactor, fLinea: r.lineFactor, fApertura: r.fApertura,
-      confHeuristic: r.confHeuristic, confLearned: r.confLearned, scoreVersion: SCORE_VERSION,
+      confHeuristic: r.confHeuristic, confLearned: r.confLearned, modelVersion: r.modelVersion,
+      scoreVersion: SCORE_VERSION,
     })));
     if (n) console.log(`[control] ${n} candidatos rechazados guardados (de ${muestras.length} muestreados)`);
   } catch (e) {
@@ -1247,38 +2261,205 @@ function captureRejectedControls(rows) {
 // modelo salen de una poblacion sobre la que no hay NI UNA observacion, y sobre
 // lo que si se puede medir el modelo filtra al reves (-17u sobre 255 picks
 // frescos). Mandarselos a suscriptores de pago seria vender algo sin validar.
+// ---------- MODEL_RESCUE ----------
+// El experimento inverso al veto: en vez de dejar que el modelo QUITE picks,
+// deja que RESCATE los que el heuristico tira SOLO por min_conf y que el modelo
+// coloca en su top 30%. Ver src/confidence.js:rescuePicks para la medicion que
+// lo justifica (+7.18% ROI OOS, IC95% [+2.81, +11.51], bootstrap por evento).
+//
+// Se apuestan DE VERDAD — esa es la gracia, convertir un hallazgo observacional
+// en un experimento — pero con tres cinturones:
+//   1. source='rescue', para poder separarlos de todo lo demas. src/metrics.js
+//      los EXCLUYE del rendimiento principal: si contaminaran /unidades y los
+//      KPIs del panel, seria imposible saber que rinde cada cosa.
+//   2. Stake fijo minimo, no el escalonado. El escalonado esta calibrado sobre
+//      la poblacion emitida; aplicarlo aqui seria extrapolarlo a una zona sin
+//      validar.
+//   3. Tope horario propio, que NO consume el de los picks normales.
+// Aviso solo al dueno, nunca al canal VIP: poblacion sin validar.
+const MODEL_RESCUE = process.env.MODEL_RESCUE === '1';
+// p70 de conf_learned bajo el modelo de produccion del 2026-08-25. RECALCULAR
+// al adoptar un modelo nuevo: cada reentrenamiento mueve la escala y este
+// numero deja de ser el p70 sin que nada avise.
+// El umbral del rescate es un CUANTIL (el p70) de la distribucion de
+// conf_learned sobre su poblacion elegible. Cada reentrenamiento mueve esa
+// escala, asi que un numero fijo en el .env caduca en silencio: deja de ser el
+// p70 y el "top 30%" pasa a ser otra cosa sin que nada avise.
+//
+// Por eso se CALCULA del modelo vigente al arrancar, en vez de leerse.
+// MODEL_RESCUE_MIN_CONF en el entorno lo fija a mano si hace falta.
+let rescueMinConf = null;
+function umbralRescate() {
+  if (rescueMinConf !== null) return rescueMinConf;
+  const fijado = Number(process.env.MODEL_RESCUE_MIN_CONF);
+  if (fijado > 0) {
+    rescueMinConf = fijado;
+    console.log(`[rescate] umbral fijado por entorno: ${fijado}`);
+    return rescueMinConf;
+  }
+  try {
+    const { learnedConf, marketFeatures } = require('./src/model');
+    const desde = new Date(Date.now() - 7 * 864e5).toISOString();
+    const confs = getRescueEligible(desde).map(r => learnedConf({
+      f_prob_justa: r.f_prob_justa, f_avance: r.f_avance_model,
+      f_situacion: r.f_situacion, f_linea: r.f_linea, f_apertura: r.f_apertura,
+      ...marketFeatures(r),
+    }, r.sport)).filter(v => v != null).sort((a, b) => a - b);
+    // Con muestra pobre no se inventa un cuantil: se deja el rescate apagado.
+    if (confs.length < 500) {
+      console.error(`[rescate] solo ${confs.length} candidatos elegibles: insuficiente para fijar el p70, rescate inactivo`);
+      rescueMinConf = 0;
+      return rescueMinConf;
+    }
+    rescueMinConf = confs[Math.floor(0.70 * (confs.length - 1))];
+    console.log(`[rescate] umbral p70 recalculado sobre ${confs.length} candidatos: ${rescueMinConf.toFixed(4)}`);
+  } catch (e) {
+    console.error('[rescate] no se pudo calcular el umbral:', e.message);
+    rescueMinConf = 0;
+  }
+  return rescueMinConf;
+}
+const MODEL_RESCUE_STAKE = Number(process.env.MODEL_RESCUE_STAKE || 0.25);
+const MODEL_RESCUE_MAX_PER_HOUR = Number(process.env.MODEL_RESCUE_MAX_PER_HOUR || 2);
+
+async function emitirRescates(rows, scored = null) {
+  if (!MODEL_RESCUE) return;
+  const esc = str => String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  try {
+    const hourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const yaEstaHora = countPicksSince(hourAgo, 'rescue');
+    const quedan = MODEL_RESCUE_MAX_PER_HOUR - yaEstaHora;
+    if (quedan <= 0) return;
+
+    const candidatos = rescuePicks(rows, {
+      minOdds: Number(process.env.MIN_ODDS || 1.35),
+      minEdge: Number(process.env.MIN_EDGE || 0.03),
+      minConf: Number(process.env.MIN_CONF || 0.70),
+      minLearned: umbralRescate(),
+      n: quedan,
+      scored,
+    }).filter(p => !hasPickForEvent(p.eventId));
+    if (!candidatos.length) return;
+
+    const ts = new Date().toISOString();
+    const ids = logPicks(candidatos.map(p => ({
+      ts, eventId: p.eventId, event: p.event, sport: p.sport,
+      market: p.market, selection: p.selection, oddDecimal: p.oddDecimal, conf: p.conf,
+      fProbJusta: p.base, fAvance: p.progress, fAvanceModel: p.fAvance,
+      fSituacion: p.scoreFactor, fLinea: p.lineFactor,
+      confHeuristic: p.confHeuristic, confLearned: p.confLearned,
+      modelVersion: p.modelVersion, modelMode: p.modelMode, edge: p.edge, source: 'rescue',
+      openingOdd: p.openingOdd, fApertura: p.fApertura, scoreVersion: p.scoreVersion,
+      stake: MODEL_RESCUE_STAKE, stakeMode: 'rescue',
+    })));
+    captureSharpEntries(ids, candidatos).catch(e => console.error('[sharp]', e.message));
+    for (const p of candidatos) {
+      console.log(`[rescate] ${p.event} | ${p.selection} @ ${p.oddDecimal} | modelo ${pct(p.confLearned)} heur ${pct(p.confHeuristic)}`);
+    }
+
+    let msg = '\u{1F6DF} <b>RESCATE DEL MODELO</b> — experimento, stake mínimo\n';
+    msg += `<i>El heurístico los descartó por confianza; el modelo los pone en su top 30%.</i>${NL}${NL}`;
+    for (let i = 0; i < candidatos.length; i++) {
+      const p = candidatos[i];
+      const flag = getCountryFlag(p.champ, p.event, p.sport);
+      msg += `${flag} <b>#${ids[i]}</b> · <b>${esc(p.event.trim())}</b> <i>(${esc(p.sport)})</i>${NL}`;
+      if (p.score) msg += `Marcador: ${esc(p.score)}${p.liveTime ? ` — ${esc(p.liveTime)}` : ''}${NL}`;
+      msg += `${esc(p.market)}: <b>${esc(p.selection)}</b> @ <b>${p.oddDecimal.toFixed(2)}</b>${NL}`;
+      msg += `modelo <b>${pct(p.confLearned)}</b> · heurístico ${pct(p.confHeuristic)} · <b>${MODEL_RESCUE_STAKE}u</b>${NL}${NL}`;
+    }
+    msg += '<i>Fuera del rendimiento principal: se miden aparte.</i>';
+    await sendTelegram(TOKEN, CHAT_ID, msg).catch(e => console.error('[rescate] aviso:', e.message));
+  } catch (e) {
+    console.error('[rescate] no se pudieron emitir los rescates:', e.message);
+  }
+}
+
 const MODEL_PICKS = process.env.MODEL_PICKS === '1';
 
-async function emitirPicksModelo(rows) {
+// Nivel 0 de apuesta directa (src/execProbe.js): solo mide, no apuesta. Apagable
+// con EXEC_PROBE=0. `ids` va paralelo a `picks` (null donde hubo duplicado).
+const EXEC_PROBE = !/^(0|false|off|no)$/i.test(process.env.EXEC_PROBE || '1');
+function sondearEjecutabilidad(source, picks, ids) {
+  if (!EXEC_PROBE) return;
+  try {
+    const items = picks.map((p, i) => ({
+      pickId: ids[i], eventId: p.eventId, sportId: p.sportId, sport: p.sport,
+      market: p.market, selection: p.selection, oddDecimal: p.oddDecimal,
+    })).filter(it => it.pickId);
+    if (items.length) programarSondeos(source, items, saveExecProbe);
+  } catch (e) {
+    console.error('[execProbe]', e.message);
+  }
+}
+
+async function emitirPicksModelo(rows, scored = null) {
   if (!MODEL_PICKS) return;
+  // `esc` es local a propósito: no es un global de bot.js (vive en
+  // src/telegram.js y no se exporta). Sin esta línea, el aviso reventaba con
+  // "esc is not defined" en CADA ciclo desde que existe la función — 138 veces
+  // hasta el 2026-08-25. Los picks SÍ se registraban (logModelPicks corre
+  // antes), así que el fallo era invisible salvo en bot.log.
+  const esc = str => String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   try {
     const picks = modelPicks(rows, {
       minOdds: Number(process.env.MIN_ODDS || 1.35),
       minEdge: Number(process.env.MIN_EDGE || 0.03),
       minConf: Number(process.env.MIN_CONF || 0.70),
       n: Number(process.env.MODEL_PICKS_N || 3),
+      scored,
     });
     if (!picks.length) return;
+
+    // Un evento con pick de sombra sin liquidar no genera mas. Misma regla que
+    // autoPicks aplica al real: sin ella los dos conjuntos no son comparables
+    // pick a pick, porque la sombra contaria varias veces el mismo partido.
+    // Se filtra aqui y no dentro de modelPicks() para que la funcion siga
+    // siendo pura y los scripts de backtest puedan llamarla sin tocar la BD.
+    const vistos = new Set();
+    const nuevos = picks.filter(p => {
+      if (vistos.has(p.eventId) || isDuplicateModelPick(p.eventId)) return false;
+      vistos.add(p.eventId);
+      return true;
+    });
+    if (!nuevos.length) return;
     const ts = new Date().toISOString();
-    const n = logModelPicks(picks.map(p => ({
+    const { n, ids } = logModelPicks(nuevos.map(p => ({
       ts, eventId: p.eventId, event: p.event, sport: p.sport, champ: p.champ,
       market: p.market, selection: p.selection, oddDecimal: p.oddDecimal,
       confLearned: p.confLearned, confHeuristic: p.confHeuristic, edgeLearned: p.edge,
       tambienHeuristico: p.tambienHeuristico,
       fProbJusta: p.base, fAvance: p.progress, fAvanceModel: p.fAvance,
       fSituacion: p.scoreFactor, fLinea: p.lineFactor, fApertura: p.fApertura,
-      scoreVersion: SCORE_VERSION,
+      scoreVersion: SCORE_VERSION, modelVersion: p.modelVersion,
+      entryScore: p.score || null, entryMinute: p.minute ?? null,
+      entryLiveTime: p.liveTime || null,
     })));
     if (!n) return; // ya estaban registrados; no volver a avisar
     console.log(`[modelo] ${n} picks del modelo registrados`);
+    sondearEjecutabilidad('model', nuevos, ids);
 
-    const soloModelo = picks.filter(p => !p.tambienHeuristico).length;
+    const soloModelo = nuevos.filter(p => !p.tambienHeuristico).length;
     let msg = '\u{1F916} <b>Picks del MODELO aprendido</b> — no apostados, solo registro\n';
     msg += `<i>${n} registrado${n === 1 ? '' : 's'} · ${soloModelo} que el heurístico NO emitiría</i>\n\n`;
-    for (const p of picks) {
-      msg += `${p.tambienHeuristico ? '\u{1F91D}' : '\u{1F916}'} <b>${esc(p.event)}</b> <i>(${esc(p.sport)})</i>\n`;
+    for (const [i, p] of nuevos.entries()) {
+      // #id y edge: pedido explicito del usuario el 2026-09-13 — sin el id no
+      // hay forma de pedir /pick <id> ni de cruzar este aviso con la fila de
+      // model_picks despues, y sin el edge no se puede juzgar la sugerencia
+      // igual que ya se puede en el aviso de pick automatico real.
+      const idTag = ids[i] != null ? `<b>#${ids[i]}</b> · ` : '';
+      msg += `${p.tambienHeuristico ? '\u{1F91D}' : '\u{1F916}'} ${idTag}<b>${esc(p.event)}</b> <i>(${esc(p.sport)})</i>\n`;
+      // Marcador y minuto del instante del pick. Sin esto el aviso no se puede
+      // juzgar al leerlo: "Menos de 2.5" es una cosa en el minuto 10 con 0-0 y
+      // otra muy distinta en el 80 con 1-1.
+      // liveTime ya viene con el minuto dentro ("96' — 2ª parte"), asi que
+      // `minute` solo entra como respaldo cuando el proveedor no manda texto.
+      if (p.score) {
+        const cuando = p.liveTime ? esc(p.liveTime)
+          : (p.minute != null ? `${Math.floor(p.minute)}'` : null);
+        msg += `Marcador: <b>${esc(p.score)}</b>${cuando ? ` — ${cuando}` : ''}\n`;
+      }
       msg += `${esc(p.market)}: <b>${esc(p.selection)}</b> @ <b>${p.oddDecimal.toFixed(2)}</b>\n`;
-      msg += `modelo <b>${pct(p.confLearned)}</b> · heurístico ${pct(p.confHeuristic)}`;
+      msg += `modelo <b>${pct(p.confLearned)}</b> · heurístico ${pct(p.confHeuristic)} · Edge <b>${p.edge >= 0 ? '+' : ''}${(100 * p.edge).toFixed(1)}%</b>`;
       msg += p.tambienHeuristico ? ' · <i>ambos coinciden</i>\n\n' : ' · <i>solo el modelo</i>\n\n';
     }
     try { await sendTelegram(TOKEN, CHAT_ID, msg); }
@@ -1288,14 +2469,18 @@ async function emitirPicksModelo(rows) {
   }
 }
 
-async function autoPicks(rows) {
+async function autoPicks(rows, scored = null) {
   if (!AUTO_PICKS) return;
 
   const elegibles = rows.filter(r => !norm(r.sport).startsWith('e-'));
-  captureRejectedControls(elegibles);
+  captureRejectedControls(elegibles, scored);
 
-  const candidates = safestPicks(elegibles, 5)
-    .filter(p => !isDuplicatePick(p.eventId, p.market, p.selection));
+  // hasPickForEvent y no isDuplicatePick: estas filas vienen del feed EN VIVO,
+  // asi que el partido esta en juego. Un pick anterior del mismo evento cuenta
+  // aunque ya liquidara — la liquidacion temprana cierra mercados a mitad de
+  // partido y sin esto el evento quedaba libre para un segundo pick correlado.
+  const candidates = safestPicks(elegibles, 5, scored)
+    .filter(p => !hasPickForEvent(p.eventId));
   if (!candidates.length) return;
 
   // AUTO_PICK_MAX_PER_HOUR estaba declarado y documentado (ver comentario de
@@ -1318,11 +2503,12 @@ async function autoPicks(rows) {
     ts: p.ts, eventId: p.eventId, event: p.event, sport: p.sport,
     market: p.market, selection: p.selection, oddDecimal: p.oddDecimal, conf: p.conf,
     fProbJusta: p.base, fAvance: p.progress, fAvanceModel: p.fAvance, fSituacion: p.scoreFactor, fLinea: p.lineFactor,
-    confHeuristic: p.confHeuristic, confLearned: p.confLearned, edge: p.edge, source: 'auto',
+    confHeuristic: p.confHeuristic, confLearned: p.confLearned, modelVersion: p.modelVersion, modelMode: p.modelMode, edge: p.edge, source: 'auto',
     openingOdd: p.openingOdd, fApertura: p.fApertura, scoreVersion: p.scoreVersion,
     stake: p.stake, stakeMode: p.stakeMode,
   })));
   captureSharpEntries(ids, picks).catch(e => console.error('[sharp]', e.message));
+  sondearEjecutabilidad('heur', picks, ids);
   for (const p of picks) {
     console.log(`[auto-pick] ${p.event} | ${p.selection} @ ${p.oddDecimal} | conf ${pct(p.conf)} edge ${(100 * p.edge).toFixed(1)}%`);
   }
@@ -1334,14 +2520,22 @@ async function autoPicks(rows) {
   // evolución de cuota (misma ficha que el inspector del dashboard). Antes
   // `ids` se calculaba para capturar el momio sharp y nunca llegaba al
   // mensaje: no había forma de saber qué número pedir sin abrir el dashboard.
+  // JERARQUIA: la accion (que apostar y a que cuota) es lo PRIMARIO — va
+  // primero, sola, en su propia linea grande. El partido/torneo/marcador es
+  // CONTEXTO que sustenta esa accion — va despues, sin negrita. Confianza/
+  // edge/stake son diagnostico de POR QUE — van al final, en texto plano, no
+  // compitiendo en negrita con la accion misma (antes las cuatro cosas —
+  // partido, pick, confianza, edge— llevaban el mismo peso visual y el ojo no
+  // sabia por donde empezar; mismo principio que la jerarquia ya aplicada en
+  // el dashboard: el peso visual debe coincidir con la prioridad real).
   for (let i = 0; i < picks.length; i++) {
     const p = picks[i];
     const flag = getCountryFlag(p.champ, p.event, p.sport);
-    msg += `${isElite(p) ? '🛡️ ' : ''}${esRectaFinal(p) ? '⏱️ ' : ''}${flag} <b>#${ids[i]}</b> · <b>${esc(p.event)}</b> <i>(${esc(p.sport)}${p.champ ? ` — ${esc(p.champ)}` : ''})</i>\n`;
+    msg += `🎯 <b>${esc(p.market)}: ${esc(p.selection)} @ ${p.oddDecimal.toFixed(2)}</b> <i>(${p.oddAmerican})</i>\n`;
+    msg += `${isElite(p) ? '🛡️ ' : ''}${esRectaFinal(p) ? '⏱️ ' : ''}${flag} #${ids[i]} · ${esc(p.event)} <i>(${esc(p.sport)}${p.champ ? ` — ${esc(p.champ)}` : ''})</i>\n`;
     if (p.score) msg += `Marcador: ${esc(p.score)}${p.liveTime ? ` — ${esc(p.liveTime)}` : ''}\n`;
-    msg += `${esc(p.market)}: 🎯 <b><u>${esc(p.selection)}</u></b> @ <b>${p.oddDecimal.toFixed(2)}</b> (${p.oddAmerican})\n`;
-    msg += `Confianza: <b>${pct(p.conf)}</b> | Edge: <b>+${(100 * p.edge).toFixed(1)}%</b>`;
-    msg += p.stake != null ? ` | Unidad: <b>${p.stake.toFixed(1)}u</b>\n` : '\n';
+    msg += `Confianza ${pct(p.conf)} · Edge +${(100 * p.edge).toFixed(1)}%`;
+    msg += p.stake != null ? ` · Unidad ${p.stake.toFixed(1)}u\n` : '\n';
     // Movimiento de la cuota: es un HECHO, no un pronóstico. No necesita muestra
     // ni intervalo de confianza porque no afirma nada sobre el futuro — solo dice
     // lo que el mercado YA hizo desde que empezamos a seguir esta jugada.
@@ -1370,6 +2564,15 @@ async function autoPicks(rows) {
       msg += `<i>🛡️ tier ELITE del firewall — Under tardío con línea estable.`
            + `${f ? ` ${f}.` : ''} Marca orientativa, no una recomendación de stake.</i>\n`;
     }
+    // ENLACE AL EVENTO. Faltaba desde siempre en ESTE mensaje. formatMessage
+    // (/seguras, /golden) y las alertas de Profit Lock si lo llevaban, pero el
+    // aviso del pick automatico —el que llega en cada emision— se arma aqui a
+    // mano y nunca llamo a generateBetLink: habia que buscar el partido por su
+    // nombre.
+    //
+    // `p` viene de normalize(), asi que trae eventId y sportId directos y no
+    // hace falta resolver el deporte contra snapshots.
+    msg += `👉 ${enlaceHtml(generateBetLink(p), 'Abrir en Playdoit')}\n`;
     msg += '\n';
   }
   try { await sendTelegram(TOKEN, CHAT_ID, msg); } catch (e) { console.error('[auto-pick notify]', e.message); }
@@ -1401,13 +2604,20 @@ async function sample() {
     const sportResults = await fetchAllLive();
     const rows = normalize(sportResults);
     if (rows.length) saveSnapshot(rows);
+    recordarEventosFutbol(rows);
     console.log(`[sampler ${new Date().toISOString()}] ${rows.length} jugadas guardadas`);
     // processSettlements captura también el cierre sharp bajo demanda (1 sola
     // consulta por pick, al desaparecer el evento del feed)
     await processSettlements(rows);
     computeFocusSports(sportResults, rows);
-    await autoPicks(rows);
-    await emitirPicksModelo(rows);
+    // Se puntua UNA sola vez por ciclo y se reparte. Antes cada consumidor
+    // (auditRejections, safestPicks, modelPicks) puntuaba el conjunto entero
+    // por su cuenta: tres pasadas identicas, ~43 s de CPU bloqueante por ciclo
+    // con Node de un solo hilo, que era lo que retrasaba los mensajes.
+    const scored = scoreCandidates(rows);
+    await autoPicks(rows, scored);
+    await emitirRescates(rows, scored);
+    await emitirPicksModelo(rows, scored);
     await checkExpiredSubscribers();
   } catch (e) {
     console.error('[sampler]', e.message);
@@ -1417,6 +2627,625 @@ async function sample() {
 }
 setInterval(sample, SAMPLE_MINUTES * 60 * 1000);
 sample();
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PILOTO DE ESTADISTICAS DE PARTIDO — captura de solo lectura, apagable.
+//
+// Va en SU PROPIO intervalo y no dentro de sample() a proposito. sample() es el
+// camino critico: descarga, puntua y EMITE. Colgarle 30 llamadas HTTP mas
+// retrasaria la emision de todos los picks para alimentar un experimento que no
+// decide nada. Aqui, si el piloto se atasca o se cae, la emision ni se entera.
+//
+// Ver src/matchStats.js para el porque del piloto y que pretende validar.
+// ─────────────────────────────────────────────────────────────────────────────
+// STATS_* con respaldo en los CORNERS_* originales: el piloto nacio solo-corners
+// y las claves viejas siguen valiendo, para no romper un .env restaurado de un
+// backup anterior al cambio.
+const env = (nuevo, viejo) => process.env[nuevo] ?? process.env[viejo];
+const STATS_PILOT = /^(1|true|on|si|sí)$/i.test(env('STATS_PILOT', 'CORNERS_PILOT') || '');
+const STATS_MINUTES = Number(env('STATS_MINUTES', 'CORNERS_MINUTES') || 3);
+const STATS_MAX_EVENTS = Number(env('STATS_MAX_EVENTS', 'CORNERS_MAX_EVENTS') || 40);
+const STATS_STUCK_MS = Number(env('STATS_STUCK_MS', 'CORNERS_STUCK_MS') || 5 * 60000);
+// Ciclos seguidos sin ver un evento en el feed antes de darlo por terminado. Un
+// partido puede faltar un ciclo por un hueco del feed; liquidar a la primera
+// etiquetaria como final un estado intermedio.
+const STATS_AUSENCIAS = Number(process.env.STATS_AUSENCIAS || 2);
+
+// Los eventos de futbol en vivo salen del ciclo normal, que YA los tiene en
+// memoria. Preguntarselo a la BD costaria un escaneo por rango de ts sobre 113
+// millones de filas cada tres minutos para reconstruir algo que el sampler
+// acaba de calcular.
+let eventosFutbol = [];
+function recordarEventosFutbol(rows) {
+  const vistos = new Map();
+  for (const r of rows) {
+    if (r.sport !== 'Fútbol' || !r.eventId) continue;
+    if (!vistos.has(r.eventId)) vistos.set(r.eventId, { eventId: r.eventId, event: r.event, champ: r.champ });
+  }
+  eventosFutbol = [...vistos.values()];
+}
+
+let statsRunning = false;
+let statsSince = 0;
+// Ausencias por evento, para no dar por terminado un partido por un hueco del
+// feed. Mismo criterio que la liquidacion de picks en src/results.js.
+const statsAusencias = new Map();
+
+/**
+ * Segunda fuente de etiqueta para las lineas de CORNERS: el conteo DIRECTO de
+ * FotMob. Muta `filas` en el sitio — se llama justo antes de
+ * saveStatResults, con las mismas filas que ya trae derivarEtiquetas.
+ *
+ * Rellena fotmob_* en TODAS las filas (con null si no aplica), porque
+ * insertStatResultStmt tiene parametros nombrados obligatorios — better-
+ * sqlite3 revienta si falta alguno, no lo trata como NULL implicito.
+ *
+ * POR QUE fetchEventFinal Y NO getFotmobCornerFinal. getFotmobCornerFinal
+ * (src/db.js) lee el ULTIMO SNAPSHOT ya guardado por fetchLiveCorners(), que
+ * solo muestrea partidos EN VIVO — uno que termino desaparece de ahi por
+ * definicion, asi que esa ultima muestra SIEMPRE es anterior al final y
+ * status_type nunca llega a 'finished'. Misma leccion aprendida con el
+ * piloto anterior (SofaScore, confirmado el 2026-09-10: 0 de 5376 snapshots
+ * lo tenian). fetchEventFinal(fotmobEventId) pregunta DIRECTO por ese
+ * partido puntual (no barre el live feed), asi que sigue viendolo aunque ya
+ * haya salido de ahi.
+ *
+ * SIN BACKFILL, a proposito (ver comentario de la columna en src/db.js): si
+ * FotMob TODAVIA no marca el partido como terminado en este instante, estas
+ * columnas se quedan NULL para esa fila para siempre — es un timing que se
+ * acepta, no un caso a reintentar.
+ *
+ * SIN INTERRUPTOR APARTE (a diferencia de enriquecerConSofa/SOFA_SUSPENDIDO):
+ * esa suspension existia porque la liquidacion compartia el MISMO Chromium
+ * costoso en RAM que el piloto periodico, sin importar su flag. FotMob no
+ * tiene ese recurso compartido — cada llamada es un fetch HTTP independiente
+ * con su propio timeout — asi que no hay nada que "suspender" aparte de
+ * FOTMOB_PILOT.
+ *
+ * COSTO ACOPLADO A muestrearStats: matchFotmobEvent cachea el barrido del
+ * dia (ver fotmobMatch.js), asi que esto es gratis casi siempre — la PRIMERA
+ * liquidacion de un corner despues de medianoche paga el barrido completo,
+ * pero a diferencia del piloto anterior (SofaScore, ~2 min con
+ * MAX_TOURNAMENTS=600) FotMob trae todas las ligas del dia en UNA sola
+ * llamada, asi que el costo real es mucho menor.
+ */
+async function enriquecerConFotmob(filas) {
+  for (const f of filas) { f.fotmobEventId = null; f.fotmobConteoFinal = null; f.fotmobLadoGanador = null; f.fotmobExtraStats = null; }
+  const conCorners = filas.filter(f => f.familia === 'corner');
+  if (!conCorners.length) return;
+
+  const cab = conCorners[conCorners.length - 1];
+  const pick = { event: cab.event, ts: cab.ultimaTs, minute: cab.ultimoMinuto };
+  let match;
+  try {
+    // conTope: mismo motivo que en handleFotmob (ver comentario de conTope
+    // arriba) — sin esto, una respuesta lenta de FotMob dejaria esta
+    // liquidacion colgada dentro del ciclo del piloto de stats. Sintoma real
+    // en produccion el 2026-09-10 (con el piloto anterior, SofaScore):
+    // "[stats] el ciclo anterior se dio por colgado" en bucle, y el bot de
+    // Telegram sin responder — no porque poll() estuviera bloqueado (corre
+    // aparte), sino porque la acumulacion de ciclos zombis termino ahogando
+    // la BD compartida (sincronica, un solo hilo) que tambien necesitan los
+    // comandos de Telegram.
+    match = await conTope(matchFotmobEvent(pick), 20000);
+  } catch (e) {
+    console.error('[fotmob:match]', e.message);
+    return;
+  }
+  if (!match) return;
+
+  let final;
+  try {
+    final = await conTope(fetchEventFinal(match.fotmobEvent.id), 15000);
+  } catch (e) {
+    console.error('[fotmob:final]', e.message);
+    return;
+  }
+  if (!final || final.statusType !== 'finished' || final.cornersHome == null || final.cornersAway == null) return;
+
+  const total = final.cornersHome + final.cornersAway;
+  for (const f of conCorners) {
+    f.fotmobEventId = match.fotmobEvent.id;
+    f.fotmobConteoFinal = total;
+    f.fotmobLadoGanador = total > f.linea ? 'over' : 'under';
+    f.fotmobExtraStats = final.extraStats; // Fase 2: captura sin usar, ver src/fotmobScraper.js
+  }
+}
+
+/**
+ * Liquida un partido: convierte sus muestras en etiquetas.
+ *
+ * Se llama cuando el partido ha TERMINADO, por cualquiera de las dos seniales:
+ *  - GetEventDetails devuelve `markets: []` (la limpia, hallada el 2026-08-29);
+ *  - el evento lleva STATS_AUSENCIAS ciclos sin aparecer en el feed en vivo.
+ */
+async function liquidarEvento(eventId) {
+  const muestras = getStatMuestras(eventId);
+  if (!muestras.length) return 0;
+  const filas = derivarEtiquetas(muestras);
+  await enriquecerConFotmob(filas);
+  saveStatResults(filas);
+  statsAusencias.delete(eventId);
+  const conEtiqueta = filas.filter(f => f.ladoGanador).length;
+  const conFotmob = filas.filter(f => f.fotmobLadoGanador).length;
+  console.log(`[stats:liquidacion] ${muestras[0].event} | ${filas.length} lineas, ${conEtiqueta} con etiqueta${conFotmob ? `, ${conFotmob} con etiqueta FotMob` : ''}`);
+  return filas.length;
+}
+
+async function muestrearStats() {
+  if (!STATS_PILOT) return;
+  // Mismo cinturon que el sampler: sin esto, un await colgado deja el flag en
+  // true y el piloto no vuelve a correr nunca, en silencio (ver SAMPLE_STUCK_MS).
+  if (statsRunning) {
+    if (Date.now() - statsSince < STATS_STUCK_MS) return;
+    console.error('[stats] el ciclo anterior se dio por colgado; se arranca otro');
+  }
+  statsRunning = true;
+  statsSince = Date.now();
+  const objetivo = eventosFutbol.slice(0, STATS_MAX_EVENTS);
+  const vivos = new Set(objetivo.map(e => e.eventId));
+  let filas = 0, conMercado = 0, conConteo = 0, errores = 0, terminados = 0, lineas = 0;
+  const familias = new Set();
+  try {
+    for (const ev of objetivo) {
+      try {
+        const detalle = await fetchEventDetails(ev.eventId);
+        if (partidoTerminado(detalle)) {
+          terminados++;
+          lineas += await liquidarEvento(ev.eventId);
+          continue;
+        }
+        const rows = extraerStats(detalle, ev);
+        if (rows.length) {
+          conMercado++;
+          if (rows.some(r => r.conteo != null)) conConteo++;
+          for (const r of rows) familias.add(r.familia);
+          saveStatSnapshot(rows);
+          filas += rows.length;
+        }
+      } catch (e) {
+        errores++;
+      }
+      // Respiro entre partidos. El ratelimit global ya impone el techo por
+      // minuto; esto evita ademas competir en rafaga con el sampler.
+      await new Promise(r => setTimeout(r, 300));
+    }
+
+    // Los que tienen muestras, no estan etiquetados y ya no aparecen en el feed.
+    // Cubre el caso en que el evento desaparece antes de devolver `markets: []`.
+    for (const id of getStatEventosPendientes()) {
+      if (vivos.has(id)) { statsAusencias.delete(id); continue; }
+      const n = (statsAusencias.get(id) || 0) + 1;
+      statsAusencias.set(id, n);
+      if (n >= STATS_AUSENCIAS) { terminados++; lineas += await liquidarEvento(id); }
+    }
+
+    const fam = familias.size ? ` [${[...familias].join('+')}]` : '';
+    console.log(`[stats ${new Date().toISOString()}] ${objetivo.length} partidos, ${conMercado} con mercado${fam}, ${conConteo} con conteo, ${filas} filas` +
+      `${terminados ? `, ${terminados} liquidados (${lineas} lineas)` : ''}${errores ? `, ${errores} errores` : ''}`);
+  } catch (e) {
+    console.error('[stats]', e.message);
+  } finally {
+    statsRunning = false;
+  }
+}
+
+if (STATS_PILOT) {
+  console.log(`[stats] piloto ACTIVO: cada ${STATS_MINUTES} min, hasta ${STATS_MAX_EVENTS} partidos por ciclo (corners + tarjetas)`);
+  setInterval(muestrearStats, STATS_MINUTES * 60 * 1000);
+}
+
+// PILOTO FotMob: segundo piloto de corners, fuente distinta (ver
+// src/fotmobScraper.js). Reemplazo de SofaScore (suspendido el 2026-09-14
+// por bloquear fetch plano — SofaScore exigia Chromium headless, un proceso
+// pesado adicional). FotMob responde a fetch normal, asi que ya no hace
+// falta el interruptor de suspension aparte (SOFA_SUSPENDIDO) que existia
+// solo para cortar el gasto de RAM de ese Chromium compartido.
+const FOTMOB_PILOT = /^(1|true|on|si|sí)$/i.test(env('FOTMOB_PILOT') || '');
+const FOTMOB_MINUTES = Number(env('FOTMOB_MINUTES') || 3);
+const FOTMOB_STUCK_MS = Number(env('FOTMOB_STUCK_MS') || 3 * 60000);
+
+let fotmobRunning = false;
+let fotmobSince = 0;
+
+async function muestrearFotmob() {
+  if (!FOTMOB_PILOT) return;
+  if (fotmobRunning) {
+    if (Date.now() - fotmobSince < FOTMOB_STUCK_MS) return;
+    console.error(`[fotmob] el ciclo anterior lleva ${Math.round((Date.now() - fotmobSince) / 1000)}s sin terminar; se da por colgado y se arranca otro`);
+  }
+  fotmobRunning = true;
+  fotmobSince = Date.now();
+  try {
+    const filas = await fetchLiveCorners();
+    if (filas.length) saveFotmobSnapshot(filas);
+    console.log(`[fotmob ${new Date().toISOString()}] ${filas.length} partidos con corners capturados`);
+
+    // Historial de pronosticos: un snapshot por partido con dos fuentes que
+    // ya tiene una linea sugerida (edge positivo). No se guarda TODA la
+    // escalera — solo la sugerida, que es lo que el indicador de direccion
+    // del dashboard necesita mostrar como historial (ver /api/fotmob-pilot/historial).
+    try {
+      const dosFuentes = computeDosFuentes(db);
+      const ts = new Date().toISOString();
+      for (const d of dosFuentes) {
+        const sug = d.poisson?.sugerida;
+        if (!sug) continue;
+        saveForecastSnapshot({
+          ts,
+          eventId: d.playdoit.eventId,
+          fotmobEventId: d.fotmob.fotmobEventId,
+          event: d.playdoit.event,
+          minuto: d.playdoit.minuto,
+          linea: sug.linea,
+          lado: sug.lado,
+          odd: sug.odd,
+          pModelo: sug.pModelo,
+          pMercado: sug.pMercado,
+          edge: sug.edge,
+          conteoReal: (d.fotmob.cornersHome != null && d.fotmob.cornersAway != null) ? d.fotmob.cornersHome + d.fotmob.cornersAway : null,
+          esperados: d.poisson.esperados,
+          nbVersion: d.poisson.calibrado ? 'nb-cal-1' : 'nb-orig',
+        });
+      }
+    } catch (e) {
+      console.error('[fotmob:historial]', e.message);
+    }
+  } catch (e) {
+    console.error('[fotmob]', e.message);
+  } finally {
+    fotmobRunning = false;
+  }
+}
+
+if (FOTMOB_PILOT) {
+  console.log(`[fotmob] piloto ACTIVO: cada ${FOTMOB_MINUTES} min, via fetch plano (FotMob, corners directos)`);
+  setInterval(muestrearFotmob, FOTMOB_MINUTES * 60 * 1000);
+
+  // CALENTAR EL CACHE DEL BARRIDO AL ARRANCAR, en vez de esperar a que la
+  // primera liquidacion lo necesite. Misma leccion aprendida con el piloto
+  // anterior (SofaScore, 2026-09-10): el cache de fotmobMatch.js vive en
+  // MEMORIA del proceso, asi que cada reinicio del bot lo borra, y
+  // enriquecerConFotmob llama a matchFotmobEvent con un tope de 20s — un
+  // barrido en frio deberia entrar de sobra en eso (FotMob trae todas las
+  // ligas del dia en una sola llamada), pero calentarlo aqui evita depender
+  // de que la primera liquidacion tenga la suerte de caber en ese margen.
+  //
+  // Fire-and-forget: si falla, el barrido se reintenta solo la proxima vez
+  // que algo llame a matchFotmobEvent. No se espera aqui porque el arranque
+  // del bot no debe depender de que FotMob responda.
+  eventosDeHoy().then(
+    (evs) => console.log(`[fotmob] cache del barrido calentado al arrancar: ${evs.length} partidos de hoy`),
+    (e) => console.error('[fotmob] fallo calentando el cache del barrido al arrancar:', e.message),
+  );
+
+  // Y otra vez pasada la medianoche UTC, para el bot que SI se queda vivo
+  // muchas horas: sin esto, el primer corner que se liquide despues de las
+  // 00:00 UTC vuelve a pagar el barrido en frio dentro de su propio tope.
+  setInterval(() => {
+    eventosDeHoy().catch(e => console.error('[fotmob] fallo calentando el cache del barrido (refresco diario):', e.message));
+  }, 24 * 3600 * 1000);
+}
+
+// -----------------------------------------------------------------------------
+// PILOTO PRE-PARTIDO (src/fetcher.js: fetchPrematch) — de solo lectura.
+// -----------------------------------------------------------------------------
+// QUE HACE: guarda el historial de cuotas de los partidos de futbol AUN NO
+// INICIADOS (GetEvents, hasta 31 dias hacia adelante segun se midio el
+// 2026-09-22), para poder medir "steam" — si el movimiento de la linea entre
+// la apertura y el cierre (kickoff) predice el resultado, señal documentada
+// en la literatura de apuestas deportivas (dinero informado mueve la linea
+// antes que el publico). No puntua, no emite, no apuesta, no toca el
+// firewall ni el modelo — mismo criterio que STATS_PILOT/FOTMOB_PILOT.
+//
+// POR QUE UNA SOLA LLAMADA BASTA: a diferencia del piloto de corners
+// (una llamada por partido via GetEventDetails), GetEvents trae TODOS los
+// partidos programados de un deporte, con mercados y cuotas incluidos, en una
+// sola respuesta — normalize() la procesa sin cambios (misma forma que
+// GetLiveOverview). Solo hay que sumar `startDate` a mano, que normalize()
+// no conserva.
+//
+// SIN RESULTADOS TODAVIA: liquidar estos picks (saber si el favorito gano,
+// etc.) requiere el mismo pipeline de liquidacion que ya usan los picks
+// reales — se deja para cuando haya suficiente historial de apertura/cierre
+// acumulado como para que valga la pena construirlo.
+const PREMATCH_PILOT = /^(1|true|on|si|sí)$/i.test(env('PREMATCH_PILOT') || '');
+const PREMATCH_MINUTES = Number(env('PREMATCH_MINUTES') || 60);
+const PREMATCH_STUCK_MS = Number(env('PREMATCH_STUCK_MS') || 5 * 60000);
+const PREMATCH_SPORT_ID = Number(env('PREMATCH_SPORT_ID') || 66); // Futbol
+
+let prematchRunning = false;
+let prematchSince = 0;
+
+async function muestrearPrematch() {
+  if (!PREMATCH_PILOT) return;
+  if (prematchRunning) {
+    if (Date.now() - prematchSince < PREMATCH_STUCK_MS) return;
+    console.error(`[prematch] el ciclo anterior lleva ${Math.round((Date.now() - prematchSince) / 1000)}s sin terminar; se da por colgado y se arranca otro`);
+  }
+  prematchRunning = true;
+  prematchSince = Date.now();
+  try {
+    const data = await fetchPrematch(PREMATCH_SPORT_ID);
+    const rows = normalize([{ sport: { name: 'Fútbol', id: PREMATCH_SPORT_ID }, data }]);
+    // normalize() no conserva startDate; se une a mano desde los eventos crudos.
+    const startById = new Map((data.events || []).map(e => [e.id, e.startDate || null]));
+    const ts = new Date().toISOString();
+    const filas = rows.map(r => ({
+      ts, sport: r.sport, sportId: r.sportId, champ: r.champ,
+      eventId: r.eventId, event: r.event, startDate: startById.get(r.eventId) || null,
+      market: r.market, selection: r.selection, oddDecimal: r.oddDecimal, oddAmerican: r.oddAmerican,
+      suspended: r.suspended,
+    }));
+    if (filas.length) savePrematchSnapshot(filas);
+    const eventos = new Set(filas.map(f => f.eventId)).size;
+    console.log(`[prematch ${ts}] ${eventos} partidos pre-partido, ${filas.length} filas`);
+  } catch (e) {
+    console.error('[prematch]', e.message);
+  } finally {
+    prematchRunning = false;
+  }
+}
+
+if (PREMATCH_PILOT) {
+  console.log(`[prematch] piloto ACTIVO: cada ${PREMATCH_MINUTES} min, sportId=${PREMATCH_SPORT_ID}`);
+  setInterval(muestrearPrematch, PREMATCH_MINUTES * 60 * 1000);
+  muestrearPrematch();
+}
+
+// -----------------------------------------------------------------------------
+// ESCANEO DE VALOR PRE-PARTIDO vs. casa sharp (src/prematchValue.js) — solo lectura.
+// -----------------------------------------------------------------------------
+// A diferencia del piloto de arriba (que guarda apertura/cierre PROPIO para
+// medir "steam" mas adelante, semanas de espera), esto compara la cuota de
+// Playdoit contra Pinnacle/Betfair (misma fuente que ya se usaba solo para
+// picks en vivo, src/sharp.js) EN EL MISMO INSTANTE — no espera nada.
+// Validado a mano el 2026-09-22: 100% de emparejamiento en EPL+LaLiga, con al
+// menos un caso real de diferencia grande (~16%).
+//
+// PRESUPUESTO COMPARTIDO: cada liga escaneada cuesta 1 credito de
+// SHARP_MAX_CREDITS_PER_DAY, EL MISMO presupuesto que ya gastan los picks en
+// vivo (src/sharp.js ya lo controla — si se agota, fetchLeagueOdds devuelve
+// null/cache sin gastar de mas). Por eso se escanea solo un puñado de ligas
+// por ciclo, rotando, y con un intervalo largo (horas, no minutos) — las
+// cuotas pre-partido no cambian tan rapido como para necesitar mas.
+//
+// SIGUE SIN DECIDIR NADA: guarda las comparaciones en prematch_value_scan
+// para medir despues (con resultados reales) si estas discrepancias
+// predicen algo o son solo ruido de margen. No emite, no apuesta.
+const PREMATCH_SHARP_SCAN = /^(1|true|on|si|sí)$/i.test(env('PREMATCH_SHARP_SCAN') || '');
+const PREMATCH_SHARP_SCAN_MINUTES = Number(env('PREMATCH_SHARP_SCAN_MINUTES') || 240);
+const PREMATCH_SHARP_SCAN_LIGAS_POR_CICLO = Number(env('PREMATCH_SHARP_SCAN_LIGAS_POR_CICLO') || 3);
+const PREMATCH_SHARP_SCAN_STUCK_MS = Number(env('PREMATCH_SHARP_SCAN_STUCK_MS') || 5 * 60000);
+// Diferencia minima para que el resumen de log la cuente como "destacada" —
+// solo afecta el log, no filtra lo que se guarda (se guarda todo, filtrar
+// despues con datos es mas seguro que decidir un umbral hoy sin backtest).
+const PREMATCH_SHARP_SCAN_DESTACADO_PCT = Number(env('PREMATCH_SHARP_SCAN_DESTACADO_PCT') || 5);
+
+let prematchScanRunning = false;
+let prematchScanSince = 0;
+let prematchScanCursor = 0;
+
+async function escanearValorPrematch() {
+  if (!PREMATCH_SHARP_SCAN) return;
+  if (prematchScanRunning) {
+    if (Date.now() - prematchScanSince < PREMATCH_SHARP_SCAN_STUCK_MS) return;
+    console.error(`[prematch-scan] el ciclo anterior lleva ${Math.round((Date.now() - prematchScanSince) / 1000)}s sin terminar; se da por colgado y se arranca otro`);
+  }
+  prematchScanRunning = true;
+  prematchScanSince = Date.now();
+  try {
+    const ligasFutbol = (process.env.SHARP_SPORT_KEYS || '').split(',').map(s => s.trim()).filter(s => s.startsWith('soccer_'));
+    if (!ligasFutbol.length) {
+      console.log('[prematch-scan] sin ligas de futbol en SHARP_SPORT_KEYS; nada que escanear');
+      return;
+    }
+    const tanda = [];
+    for (let i = 0; i < PREMATCH_SHARP_SCAN_LIGAS_POR_CICLO; i++) {
+      tanda.push(ligasFutbol[prematchScanCursor % ligasFutbol.length]);
+      prematchScanCursor++;
+    }
+    let total = 0, destacadas = 0;
+    for (const liga of tanda) {
+      try {
+        const filas = await escanearLigaPrematch(liga);
+        if (filas.length) savePrematchValueScan(filas);
+        total += filas.length;
+        destacadas += filas.filter(f => Math.abs(f.edgePct) >= PREMATCH_SHARP_SCAN_DESTACADO_PCT).length;
+      } catch (e) {
+        console.error(`[prematch-scan] ${liga}:`, e.message);
+      }
+      await new Promise(r => setTimeout(r, 500));
+    }
+    console.log(`[prematch-scan ${new Date().toISOString()}] ${tanda.join(',')} | ${total} comparaciones, ${destacadas} con diferencia >=${PREMATCH_SHARP_SCAN_DESTACADO_PCT}%`);
+  } catch (e) {
+    console.error('[prematch-scan]', e.message);
+  } finally {
+    prematchScanRunning = false;
+  }
+}
+
+if (PREMATCH_SHARP_SCAN) {
+  console.log(`[prematch-scan] piloto ACTIVO: cada ${PREMATCH_SHARP_SCAN_MINUTES} min, ${PREMATCH_SHARP_SCAN_LIGAS_POR_CICLO} ligas/ciclo, comparte presupuesto con src/sharp.js`);
+  setInterval(escanearValorPrematch, PREMATCH_SHARP_SCAN_MINUTES * 60 * 1000);
+  escanearValorPrematch();
+}
+
+// Piloto de xG pre-partido (src/prematchXg.js), pedido explicito del usuario
+// el 2026-09-23 tras confirmar que FotMob expone xG de temporada por equipo
+// (/data/teams?id=X). A diferencia del escaneo sharp (compara contra otra
+// casa) y de steam (compara Playdoit contra si mismo), esta señal viene del
+// RENDIMIENTO medido del equipo: disponible desde que se conoce el fixture,
+// sin esperar a que nadie mueva una cuota. Solo lectura, no decide ni emite.
+//
+// FUENTE DE EVENTOS: reutiliza lo que ya captura PREMATCH_PILOT en
+// prematch_snapshots — un evento SOLO se procesa si aun no tiene fila en
+// prematch_xg_scan (idx_prematch_xg_uniq por event_id), asi que cada partido
+// se resuelve una vez, no en cada ciclo.
+//
+// COSTO: hasta ~7 llamadas HTTP por evento (dias de calendario + matchDetails
+// + 2 equipos), sin credito de por medio (FotMob no lo cobra) pero si con
+// tope de eventos por ciclo para no saturar el rate-limit del propio FotMob.
+const PREMATCH_XG_PILOT = /^(1|true|on|si|sí)$/i.test(env('PREMATCH_XG_PILOT') || '');
+const PREMATCH_XG_MINUTES = Number(env('PREMATCH_XG_MINUTES') || 120);
+const PREMATCH_XG_EVENTOS_POR_CICLO = Number(env('PREMATCH_XG_EVENTOS_POR_CICLO') || 10);
+const PREMATCH_XG_STUCK_MS = Number(env('PREMATCH_XG_STUCK_MS') || 5 * 60000);
+
+let prematchXgRunning = false;
+let prematchXgSince = 0;
+
+async function escanearXgPrematch() {
+  if (!PREMATCH_XG_PILOT) return;
+  if (prematchXgRunning) {
+    if (Date.now() - prematchXgSince < PREMATCH_XG_STUCK_MS) return;
+    console.error(`[prematch-xg] el ciclo anterior lleva ${Math.round((Date.now() - prematchXgSince) / 1000)}s sin terminar; se da por colgado y se arranca otro`);
+  }
+  prematchXgRunning = true;
+  prematchXgSince = Date.now();
+  try {
+    const pendientes = db.prepare(`
+      SELECT DISTINCT p.event_id, p.event
+      FROM prematch_snapshots p
+      LEFT JOIN prematch_xg_scan x ON x.event_id = p.event_id
+      WHERE x.event_id IS NULL AND p.start_date > datetime('now')
+      LIMIT ?
+    `).all(PREMATCH_XG_EVENTOS_POR_CICLO * 3); // margen: no todos van a tener xG en FotMob
+
+    let procesados = 0, conXg = 0;
+    for (const ev of pendientes) {
+      if (procesados >= PREMATCH_XG_EVENTOS_POR_CICLO) break;
+      procesados++;
+      try {
+        const xg = await xgDeEvento(ev.event_id);
+        if (xg) {
+          savePrematchXg({
+            ts: new Date().toISOString(), eventId: ev.event_id, event: xg.event, startDate: xg.startDate,
+            fotmobMatchId: xg.fotmobMatchId,
+            homeTeamId: xg.home.teamId, homePlayed: xg.home.played, homeXgFor: xg.home.xgFor, homeXgAgainst: xg.home.xgAgainst,
+            awayTeamId: xg.away.teamId, awayPlayed: xg.away.played, awayXgFor: xg.away.xgFor, awayXgAgainst: xg.away.xgAgainst,
+            xgEsperadoLocal: xg.xgEsperadoLocal, xgEsperadoVisita: xg.xgEsperadoVisita, xgEsperadoTotal: xg.xgEsperadoTotal,
+          });
+          conXg++;
+        } else {
+          // sin xG disponible (friendly, liga menor, sin match en FotMob): se
+          // guarda igual con nulos para no reintentar este evento cada ciclo.
+          savePrematchXg({
+            ts: new Date().toISOString(), eventId: ev.event_id, event: ev.event, startDate: null,
+            fotmobMatchId: null, homeTeamId: null, homePlayed: null, homeXgFor: null, homeXgAgainst: null,
+            awayTeamId: null, awayPlayed: null, awayXgFor: null, awayXgAgainst: null,
+            xgEsperadoLocal: null, xgEsperadoVisita: null, xgEsperadoTotal: null,
+          });
+        }
+      } catch (e) {
+        console.error(`[prematch-xg] event_id ${ev.event_id}:`, e.message);
+      }
+      await new Promise(r => setTimeout(r, 300));
+    }
+    console.log(`[prematch-xg ${new Date().toISOString()}] ${procesados} eventos procesados, ${conXg} con xG disponible`);
+  } catch (e) {
+    console.error('[prematch-xg]', e.message);
+  } finally {
+    prematchXgRunning = false;
+  }
+}
+
+if (PREMATCH_XG_PILOT) {
+  console.log(`[prematch-xg] piloto ACTIVO: cada ${PREMATCH_XG_MINUTES} min, ${PREMATCH_XG_EVENTOS_POR_CICLO} eventos/ciclo`);
+  setInterval(escanearXgPrematch, PREMATCH_XG_MINUTES * 60 * 1000);
+  escanearXgPrematch();
+}
+
+/**
+ * WATCHDOG: revisa cada 3 min si el sampler, el piloto de stats, el piloto de
+ * FotMob y el dashboard SIGUEN produciendo datos frescos — no solo si el
+ * proceso vive, que es lo unico que ya vigilaban los guards *_STUCK_MS (y
+ * esos se auto-reparan en silencio, sin avisarle a nadie). Antes la unica
+ * forma de notar un congelamiento era mirar la columna "ultima lectura" del
+ * dashboard a mano — si nadie estaba viendo, podia llevar horas sin que
+ * nadie se enterara (el propio incidente del 2026-08-19: 4h de silencio con
+ * el proceso vivo).
+ *
+ * Avisa por Telegram SOLO en la TRANSICION (se congelo / se recupero), no en
+ * cada ciclo mientras sigue mal — mismo criterio que driftCheck. Sin esto,
+ * un congelamiento real generaria una alerta cada 3 min para siempre.
+ *
+ * "Congelado" = sin fila nueva en 3 ciclos de su propio intervalo (mismo
+ * margen que ya usaba el panel de arranque para FotMob). Cada pieza solo
+ * se vigila si esta prendida — un piloto apagado a proposito no es una falla.
+ */
+const SALUD_INTERVALO_MS = 3 * 60 * 1000;
+const saludPrevia = { sampler: true, stats: true, fotmob: true, dashboard: true };
+const SALUD_NOMBRES = {
+  sampler: 'Sampler de odds (playdoit)',
+  stats: 'Piloto de estadísticas',
+  fotmob: 'Piloto de FotMob',
+  dashboard: 'Dashboard',
+};
+
+// Ventana activa: 8am-11pm hora CDMX, todos los dias. Fuera de ahi (madrugada)
+// el sampler de por si tiene menos mercados en vivo y un congelamiento corto
+// importa menos — no vale la pena el ruido de un mensaje largo. Se calcula la
+// hora LOCAL de Mexico explicitamente (no la del servidor, que puede correr en
+// otro huso) via Intl, sin depender de que el proceso tenga TZ configurada.
+function horaActivaMx(ahora = new Date()) {
+  const hora = Number(new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Mexico_City', hour: 'numeric', hour12: false,
+  }).format(ahora));
+  return hora >= 8 && hora < 23;
+}
+
+async function verificarSalud() {
+  try {
+    const ahora = Date.now();
+    // null (no true/false) cuando AUN no hay ninguna fila — un piloto recien
+    // prendido no tiene datos todavia y eso no es un congelamiento. El bucle
+    // de abajo solo actua sobre true/false; null se salta sin marcar nada,
+    // asi que el primer dato real decide, no un arranque en frio.
+    const fresco = (tsIso, minutos) => tsIso == null ? null : (ahora - new Date(tsIso).getTime()) <= minutos * 3 * 60000;
+    const estados = {};
+
+    estados.sampler = fresco(db.prepare('SELECT MAX(ts) ts FROM snapshots').get()?.ts, SAMPLE_MINUTES);
+    if (STATS_PILOT) estados.stats = fresco(db.prepare('SELECT MAX(ts) ts FROM stat_snapshots').get()?.ts, STATS_MINUTES);
+    if (FOTMOB_PILOT) estados.fotmob = fresco(db.prepare('SELECT MAX(ts) ts FROM fotmob_corner_snapshots').get()?.ts, FOTMOB_MINUTES);
+    if (DASHBOARD_AUTOSTART) estados.dashboard = dashboardAlive();
+
+    for (const [clave, sano] of Object.entries(estados)) {
+      const antes = saludPrevia[clave];
+      // El sampler es el UNICO que reduce el aviso a solo el emoji: es el que
+      // decide "el universo de mercados seleccionables" (fetchAllLive), asi
+      // que es tambien el unico donde recuperarse significa algo mas que
+      // "ya hay datos" — significa "hay que re-consultar ESE universo ya, no
+      // esperar al proximo ciclo natural". Los demas pilotos (stats/fotmob/
+      // dashboard) conservan el aviso largo tal cual.
+      if (clave === 'sampler' && horaActivaMx()) {
+        if (antes !== false && sano === false) {
+          console.error(`[salud] ${clave} parece congelado (sin conexion, 8am-11pm)`);
+          await reply(CHAT_ID, '🔴', false).catch(() => {});
+        } else if (antes === false && sano === true) {
+          console.log(`[salud] ${clave} se recupero — re-consultando el universo de mercados`);
+          await reply(CHAT_ID, '🟢', false).catch(() => {});
+          // Fire-and-forget: no bloquear verificarSalud() a la espera de un
+          // ciclo completo. sample() ya trae su propio guard `sampling`, asi
+          // que si un ciclo natural ya arranco entretanto esto no hace nada.
+          sample().catch(e => console.error('[salud] fallo el resampleo forzado tras recuperar:', e.message));
+        }
+        saludPrevia[clave] = sano;
+        continue;
+      }
+      if (antes !== false && sano === false) {
+        console.error(`[salud] ${clave} parece congelado`);
+        await reply(CHAT_ID, `🔴 <b>${SALUD_NOMBRES[clave]}</b> parece congelado — sin datos nuevos en más de lo esperado. Revisa <code>bot.log</code>.`, false).catch(() => {});
+      } else if (antes === false && sano === true) {
+        console.log(`[salud] ${clave} se recupero`);
+        await reply(CHAT_ID, `🟢 <b>${SALUD_NOMBRES[clave]}</b> se recuperó, ya vuelve a producir datos.`, false).catch(() => {});
+      }
+      saludPrevia[clave] = sano;
+    }
+  } catch (e) {
+    console.error('[salud]', e.message);
+  }
+}
+setInterval(verificarSalud, SALUD_INTERVALO_MS);
 
 // Monitoreo de drift: chequeo diario, alerta por Telegram como máximo una vez
 // cada 30 días si el ECE de los últimos 200 picks supera el umbral.
@@ -1435,33 +3264,42 @@ async function driftCheck() {
 }
 setInterval(driftCheck, 24 * 3600 * 1000);
 
-// Poda diaria de snapshots (~1.1M filas/día): retiene RETENTION_DAYS (default 7)
-// y preserva siempre los eventos con picks, que alimentan el CLV histórico.
-// NO se llama en el arranque, y no es un descuido. pruneSnapshots es síncrono
-// (better-sqlite3), así que mientras corre NADA más se ejecuta en este proceso.
-// Arrancar con un backlog grande dejaba el bot clavado antes de muestrear una
-// sola vez. Ahora: primer pase a los PRUNE_DELAY_MS de haber arrancado (con el
-// sampler ya en marcha) y en lotes de PRUNE_MAX_MS, reprogramando mientras
-// queden filas en vez de vaciar el backlog de una sentada.
+// Poda de snapshots (~1.7M filas/día a SAMPLE_MINUTES=1): retiene
+// RETENTION_DAYS (default 7) y preserva siempre los eventos con picks, que
+// alimentan el CLV histórico. pruneSnapshots es síncrono (better-sqlite3),
+// así que mientras corre NADA más se ejecuta en este proceso — de ahí el
+// tope PRUNE_MAX_MS por corrida en vez de vaciar el backlog de una sentada.
+//
+// ANTES corria UNA VEZ AL DIA y solo volvia a intentar antes si la pasada
+// anterior SI habia borrado algo. Con una tabla de 99M filas y una ventana de
+// 50k filas examinadas por corrida, el cursor tarda ~2000 dias en dar una
+// sola vuelta completa — asi que casi cualquier corrida caía en una region
+// donde nada calificaba todavia, `deleted` salía 0, y el codigo se quedaba
+// otras 24h sin insistir. Resultado medido el 2026-09-13: 77.7M de 99.67M
+// filas (78%) ya tenian mas de RETENTION_DAYS y seguian sin borrarse. La
+// tasa de poda (50k filas/corrida) nunca podia alcanzar la tasa de entrada
+// (~1.7M filas/dia) corriendo una vez al dia.
+//
+// Arreglo: correr cada PRUNE_INTERVAL_MS (2 min por defecto) SIN condicionar
+// al resultado de la corrida anterior — es el avance constante del cursor,
+// no el numero de filas borradas en una ventana puntual, lo que garantiza
+// que la tabla completa se revise. A este ritmo (50k filas cada 2 min ≈ 36M
+// filas/dia de cobertura) se supera con margen la tasa de entrada actual.
 const PRUNE_MAX_MS = Number(process.env.PRUNE_MAX_MS || 2000);
-const PRUNE_DELAY_MS = Number(process.env.PRUNE_DELAY_MS || 60000);
+const PRUNE_INTERVAL_MS = Number(process.env.PRUNE_INTERVAL_MS || 120000);
 function prune() {
   try {
     const { deleted, pending, ms, examined } = pruneSnapshots(
-      Number(process.env.RETENTION_DAYS || 7), { maxMs: PRUNE_MAX_MS });
+      Number(process.env.RETENTION_DAYS || 7),
+      { maxMs: PRUNE_MAX_MS, pickedDays: Number(process.env.PICKED_RETENTION_DAYS || 60) });
     if (deleted) console.log(`[prune] ${deleted} snapshots viejos eliminados en ${ms}ms${pending ? ' (queda backlog)' : ''}`);
-    else console.log(`[prune] nada que borrar: ${examined} filas examinadas en ${ms}ms, todas protegidas o dentro del retention`);
-    // Sólo se insiste si la pasada RINDIÓ. Con deleted=0 seguir cada minuto
-    // congelaría el bot varios segundos por nada: hoy el 100% de las filas
-    // viejas están protegidas por la cláusula de `picks`, así que reintentar
-    // es puro coste. Si no rindió, se espera al ciclo de 24 h.
-    if (deleted > 0 && pending) setTimeout(prune, PRUNE_DELAY_MS);
+    else console.log(`[prune] nada que borrar en esta ventana: ${examined} filas examinadas en ${ms}ms`);
   } catch (e) {
     console.error('[prune]', e.message);
   }
 }
-setInterval(prune, 24 * 3600 * 1000);
-setTimeout(prune, PRUNE_DELAY_MS);
+setInterval(prune, PRUNE_INTERVAL_MS);
+setTimeout(prune, 60000);
 
 // Ciclo focalizado: solo los deportes de interés, cada FOCUS_SAMPLE_SECONDS
 // con jitter ±20%. El tope global de peticiones lo aplica src/ratelimit.js.
@@ -1492,5 +3330,32 @@ function scheduleFocused() {
   }, FOCUS_SAMPLE_SECONDS * 1000 * jitter);
 }
 scheduleFocused();
+
+// El túnel solo tiene sentido si el panel está (o queda) vivo, así que su
+// autostart cuelga del resultado del panel en vez de dispararse en paralelo:
+// si DASHBOARD_AUTOSTART está apagado pero el panel ya lo dejó vivo una
+// sesión anterior (adoptado por lock), igual arranca.
+function autostartTunnelSiToca() {
+  if (!TUNNEL_AUTOSTART) return;
+  startTunnel()
+    .then(msg => {
+      console.log('[tunnel:autostart]', msg.replace(/<[^>]+>/g, ''));
+      // Autostart no lo pide nadie por chat, así que sin este aviso la URL
+      // nueva (cambia cada arranque) solo se sabría mirando tunnel.log a mano.
+      reply(CHAT_ID, `🌐 <b>Túnel público (autostart)</b>\n${msg}`).catch(() => {});
+    })
+    .catch(e => console.error('[tunnel:autostart]', e.message));
+}
+
+if (DASHBOARD_AUTOSTART) {
+  startDashboard()
+    .then(msg => {
+      console.log('[dashboard:autostart]', msg.replace(/<[^>]+>/g, ''));
+      autostartTunnelSiToca();
+    })
+    .catch(e => console.error('[dashboard:autostart]', e.message));
+} else {
+  autostartTunnelSiToca();
+}
 
 poll();
