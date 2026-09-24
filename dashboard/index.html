@@ -73,6 +73,11 @@ body {
   font-size: 14px;
   line-height: 1.5;
   min-height: 100vh;
+  /* Fuente "grande" (30-40%) sin reescribir cada font-size suelto del
+     archivo: zoom escala fuente + padding + bordes + iconos como unidad,
+     preservando la proporcion del layout. Ver el comentario en tokens.css
+     junto a --pd-scale. */
+  zoom: var(--pd-scale);
 }
 ::selection { background: var(--c-accent-wash); color: var(--c-text); }
 
@@ -201,16 +206,16 @@ body {
   border: 1px solid var(--c-border);
   border-radius: var(--pd-radius-md);
   overflow: hidden;
-  margin-bottom: 20px;
+  margin-bottom: 12px;
 }
 @media (max-width: 1000px) { .kpi-grid { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 600px) { .kpi-grid { grid-template-columns: 1fr; } }
 .kpi {
   background: var(--c-surface-raised);
-  padding: 16px;
+  padding: 10px 14px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 3px;
 }
 .kpi-label {
   font-family: var(--pd-font-label);
@@ -226,6 +231,29 @@ body {
   font-size: 22px;
   font-weight: 500;
   letter-spacing: -.01em;
+}
+/* JERARQUÍA: las 8 métricas del hero se veían todas igual, pero no pesan
+   igual. ROI/Win Rate/P·L responden "¿estoy ganando?" de un vistazo — eso
+   es lo que se lee primero. Brier/ECE/Sharpe/Max Drawdown/Total Picks son
+   diagnóstico de calibración, importan para el análisis, no para el vistazo.
+   El peso visual ahora sigue esa prioridad en vez de tratarlas como si
+   fueran intercambiables. */
+.kpi.kpi-primary {
+  padding: 12px 14px;
+  background: var(--c-surface-hover);
+}
+.kpi.kpi-primary .kpi-label {
+  font-size: 11px;
+  color: var(--c-text-secondary);
+}
+.kpi.kpi-primary .kpi-value {
+  font-size: 28px;
+  font-weight: 700;
+}
+.kpi:not(.kpi-primary) .kpi-value {
+  font-size: 17px;
+  font-weight: 500;
+  color: var(--c-text-secondary);
 }
 .kpi-value.good { color: var(--c-good-strong); }
 .kpi-value.bad { color: var(--c-bad-strong); }
@@ -244,7 +272,7 @@ body {
   text-transform: uppercase;
   font-size: 11px;
   color: var(--c-text-muted);
-  margin: 22px 0 14px;
+  margin: 10px 0 8px;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -253,7 +281,11 @@ body {
 .eyebrow::after { content: ""; flex: 1; height: 1px; background: var(--c-border); }
 
 /* ═══ CHART CARD ═══ */
-.chart-grid { display: grid; grid-template-columns: 3fr 2fr; gap: 14px; margin-bottom: 18px; }
+/* Command debe caber en una sola pantalla sin scroll — pedido explicito del
+   usuario el 2026-09-13. Con zoom:1.35 global, cada px de aqui cuenta: los
+   graficos bajaron de 300px a 150px (ver el <canvas> inline) y los margenes
+   de esta zona se apretaron junto con .kpi/.eyebrow de arriba. */
+.chart-grid { display: grid; grid-template-columns: 3fr 2fr; gap: 10px; margin-bottom: 10px; }
 @media (max-width: 960px) { .chart-grid { grid-template-columns: 1fr; } }
 .chart-card {
   border: 1px solid var(--c-border);
@@ -269,8 +301,20 @@ body {
   color: var(--c-text);
   font-stretch: condensed;
 }
-.chart-body { padding: 14px; position: relative; width: 100%; height: 100%; }
+.chart-body { padding: 8px 14px; position: relative; width: 100%; height: 100%; }
 canvas { max-width: 100% !important; height: auto !important; }
+/* #chartPL/#chartSport (Command) necesitan una altura FIJA para caber en una
+   sola pantalla (pedido del usuario, 2026-09-13) — la regla generica de
+   arriba (height:auto !important, pensada para otros canvas responsivos de
+   la app) las estaba anulando en silencio pese al height inline del
+   <canvas>. Con maintainAspectRatio:false (ver el JS de estos dos charts),
+   Chart.js dimensiona el canvas por el contenedor (.chart-body), no por el
+   estilo propio del canvas — asi que la altura fija va en .chart-body, no
+   solo en el <canvas>. Selectores especificos para ganarle a la regla
+   general de arriba sin tocarla, que otros paneles si necesitan tal cual. */
+#chartPL, #chartSport { height: 95px !important; }
+#chartPL, #chartSport { position: absolute !important; }
+.chart-card:has(#chartPL) .chart-body, .chart-card:has(#chartSport) .chart-body { height: 95px !important; }
 
 /* ═══ TABLE ═══ */
 .table-wrap { overflow-x: auto; border: 1px solid var(--c-border); border-radius: var(--pd-radius-md); }
@@ -453,12 +497,52 @@ tbody tr.r-pending td:first-child { box-shadow: inset 3px 0 0 var(--c-warn); }
   transition: all .2s;
 }
 .live-card:hover { border-color: var(--c-border-strong); background: var(--c-surface-hover); }
+
+/* Sombra del modelo. Borde discontinuo y sin cursor:pointer — no son clicables
+   (sus ids colisionan con los de `picks`) y no representan exposicion. La
+   diferencia visual es deliberada: una tarjeta identica a las reales en el
+   mismo grid se lee como dinero en juego. */
+.live-card.shadow {
+  border-style: dashed;
+  background: transparent;
+  opacity: .88;
+}
+.live-card.shadow:hover { background: var(--c-surface-hover); border-color: var(--c-border-strong); }
+.live-shadow-sep {
+  grid-column: 1 / -1;
+  margin-top: 6px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--c-border);
+  font-size: 12px;
+  color: var(--c-text-secondary);
+}
+.alert-tag.shadow-tag {
+  background: transparent;
+  border: 1px dashed var(--c-border-strong);
+  color: var(--c-text-muted);
+}
 .live-card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; }
-.live-event { font-size: 13px; font-weight: 600; color: var(--c-text); }
+/* Fecha y hora de emision del pick, en CDMX como todo el resto del panel.
+   La tarjeta solo tenia "Elapsed: 14m" — un relativo que no dice cuando. */
+.live-ts {
+  font-family: var(--pd-font-mono);
+  font-size: 10px;
+  color: var(--c-text-muted);
+  white-space: nowrap;
+  padding-left: 8px;
+  flex-shrink: 0;
+}
+.live-event { font-size: 13px; font-weight: 600; color: var(--c-text); min-width: 0; }
 .live-sport { font-size: 10px; color: var(--c-accent); font-weight: 500; }
 .live-score-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .live-score { font-family: var(--pd-font-mono); font-size: 14px; font-weight: 700; color: var(--c-text); background: color-mix(in srgb, var(--c-warn) 15%, transparent); padding: 2px 10px; border-radius: var(--pd-radius-sm); }
 .live-minute { font-family: var(--pd-font-mono); font-size: 11px; color: var(--c-good); font-weight: 600; }
+/* Sello de marcador viejo: el evento dejo de reportar y lo mostrado no es "ahora". */
+.live-stale { font-family: var(--pd-font-mono); font-size: 10px; color: var(--c-warn); font-weight: 700; }
+/* Linea retirada: el ultimo precio visto ya no es un precio vigente. Se tacha
+   para que no se lea como cotizacion actual. */
+.live-odd-box.withdrawn { color: var(--c-text-muted); text-decoration: line-through; opacity: .7; }
+.live-withdrawn-tag { font-family: var(--pd-font-mono); font-size: 10px; font-weight: 700; color: var(--c-warn); }
 .live-prematch { font-size: 10px; color: var(--c-text-faint); font-style: italic; }
 .live-market { font-size: 11px; color: var(--c-text-muted); margin-bottom: 8px; }
 .live-market b { color: var(--c-warn); font-weight: 600; }
@@ -497,6 +581,13 @@ tbody tr.r-pending td:first-child { box-shadow: inset 3px 0 0 var(--c-warn); }
 .vt-btn.active { background: var(--c-accent-wash); color: var(--c-accent); border-color: var(--c-accent); }
 
 /* ═══ MATRIX GRID ═══ */
+.matrix-group-title {
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  margin: 4px 0 10px;
+}
 .matrix-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
@@ -576,15 +667,39 @@ tbody tr.r-pending td:first-child { box-shadow: inset 3px 0 0 var(--c-warn); }
 .matrix-card.m-pending { border-left: 3px solid var(--c-warn); }
 .m-id { font-family: var(--pd-font-mono); font-size: 10px; color: var(--c-text-muted); }
 .m-event { font-size: 11px; font-weight: 600; color: var(--c-text); margin: 4px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.m-market { font-size: 10px; color: var(--c-text-muted); margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .m-bottom { display: flex; justify-content: space-between; font-size: 10px; }
 .m-odd { font-family: var(--pd-font-mono); color: var(--c-warn); font-weight: 600; }
 .m-result { font-weight: 700; font-size: 10px; }
+.m-time { font-size: 9px; color: var(--c-text-faint); margin-top: 4px; text-align: right; }
 
 /* ═══ FIREWALL HERO ═══ */
 .fw-hero { display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+
+/* Aviso de la vista sombra. Tiene que leerse ANTES que la tabla: sin el, una
+   tabla de picks con P/L se lee como dinero real, y estos nunca se apostaron. */
+.disclaimer-note {
+  border: 1px solid var(--c-border);
+  border-left: 3px solid var(--c-accent);
+  background: var(--c-surface);
+  border-radius: var(--pd-radius-md);
+  padding: 10px 14px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--c-text-secondary);
+}
 .fw-stat { border: 1px solid var(--c-border); border-radius: var(--pd-radius-md); padding: 14px 18px; flex: 1; min-width: 140px; background: var(--c-surface-raised); }
 .fw-val { font-family: var(--pd-font-mono); font-size: 28px; font-weight: 700; }
 .fw-label { font-size: 11px; color: var(--c-text-muted); margin-top: 4px; }
+/* JERARQUÍA (misma idea que .kpi-primary): en cada grupo de fw-stat hay UNA
+   pregunta que domina — cuánto salvó el firewall, si lo descartado hubiera
+   ganado, cuánto rinde el modelo — y el resto es contexto para llegar ahí.
+   Sin esto todas las tarjetas de un mismo bloque pesan igual, y el ojo no
+   sabe cuál leer primero. */
+.fw-stat.fw-primary { flex: 1.6; background: var(--c-surface-hover); border-color: var(--c-border-strong); }
+.fw-stat.fw-primary .fw-val { font-size: 40px; }
+.fw-stat.fw-primary .fw-label { font-size: 12px; color: var(--c-text-secondary); }
+.fw-stat:not(.fw-primary) .fw-val { font-size: 20px; }
 
 /* ═══ MODAL PANEL ═══ */
 .modal-panel {
@@ -671,6 +786,14 @@ tbody tr.r-pending td:first-child { box-shadow: inset 3px 0 0 var(--c-warn); }
     <div class="rail-item" data-tab="firewall" onclick="switchTab('firewall')">
       <span>Firewall</span>
     </div>
+    <div class="rail-item" data-tab="corners" onclick="switchTab('corners')">
+      <span>Estadísticas</span>
+      <span class="badge" id="cornersBadge">0</span>
+    </div>
+    <div class="rail-item" data-tab="prematch" onclick="switchTab('prematch')">
+      <span>Hoy (pre-partido)</span>
+      <span class="badge" id="prematchHoyBadge">0</span>
+    </div>
   </nav>
 
   <!-- MAIN CONTENT AREA -->
@@ -679,17 +802,17 @@ tbody tr.r-pending td:first-child { box-shadow: inset 3px 0 0 var(--c-warn); }
   <div class="panel active" id="panel-command">
     <div class="eyebrow">Resumen General</div>
     <div class="kpi-grid" id="heroKpis">
-      <div class="kpi">
+      <div class="kpi kpi-primary">
         <span class="kpi-label">ROI</span>
         <span class="kpi-value" id="kROI">—</span>
         <span class="kpi-sub" id="kROIsub">—</span>
       </div>
-      <div class="kpi">
+      <div class="kpi kpi-primary">
         <span class="kpi-label">Win Rate</span>
         <span class="kpi-value" id="kWR">—</span>
         <span class="kpi-sub" id="kWRsub">—</span>
       </div>
-      <div class="kpi">
+      <div class="kpi kpi-primary">
         <span class="kpi-label">P/L (Unidades)</span>
         <span class="kpi-value" id="kPL">—</span>
         <span class="kpi-sub" id="kPLsub">—</span>
@@ -725,15 +848,15 @@ tbody tr.r-pending td:first-child { box-shadow: inset 3px 0 0 var(--c-warn); }
     <div class="chart-grid">
       <div class="chart-card">
         <div class="chart-header">P/L Acumulado (Unidades)</div>
-        <div class="chart-body"><canvas id="chartPL" style="width:100%;height:300px;display:block;"></canvas></div>
+        <div class="chart-body"><canvas id="chartPL" style="width:100%;height:95px;display:block;"></canvas></div>
       </div>
       <div class="chart-card">
         <div class="chart-header">Rendimiento por Deporte</div>
-        <div class="chart-body"><canvas id="chartSport" style="width:100%;height:300px;display:block;"></canvas></div>
+        <div class="chart-body"><canvas id="chartSport" style="width:100%;height:95px;display:block;"></canvas></div>
       </div>
     </div>
 
-    <div style="border: 1px solid var(--c-border); border-radius: var(--pd-radius-md); padding: 14px 16px; background: var(--c-surface-raised); display: flex; align-items: center; gap: 12px;">
+    <div style="border: 1px solid var(--c-border); border-radius: var(--pd-radius-md); padding: 6px 14px; background: var(--c-surface-raised); display: flex; align-items: center; gap: 12px;">
       <span style="font-size:24px" id="healthEmoji">⚪</span>
       <div>
         <div style="font-size:13px; font-weight:600" id="healthStatus">Cargando...</div>
@@ -754,12 +877,17 @@ tbody tr.r-pending td:first-child { box-shadow: inset 3px 0 0 var(--c-warn); }
   <!-- ═══════════ TAB 4: PICK HISTORY ═══════════ -->
   <div class="panel" id="panel-history">
     <div class="section-title">📊 Historial de Picks Emitidos</div>
-    <div class="view-toggle">
-      <button class="vt-btn active" onclick="setHistoryView('matrix')">⊞ Matrix</button>
-      <button class="vt-btn" onclick="setHistoryView('table')">☰ Tabla</button>
+
+    <!-- SECCION HEURISTICO (produccion) — mismas reglas de matriz que antes:
+         solo picks de HOY (dia CDMX), agrupados en curso/ganadores/perdedores. -->
+    <div class="section-title" style="margin-top:4px;font-size:13px">📊 Heurístico (Producción)</div>
+    <div class="view-toggle" id="heurViewToggle">
+      <button class="vt-btn active" onclick="setHeurView('matrix')">⊞ Matrix</button>
+      <button class="vt-btn" onclick="setHeurView('list')">☰ Lista</button>
     </div>
-    <div id="historyMatrix" class="matrix-grid"></div>
-    <div id="historyTable" style="display:none">
+    <div id="heurTodayStats" class="fw-hero" style="margin-bottom:12px"></div>
+    <div id="heurMatrix"></div>
+    <div id="heurList" style="display:none">
       <div class="tbl-wrap">
         <table>
           <thead><tr>
@@ -767,7 +895,48 @@ tbody tr.r-pending td:first-child { box-shadow: inset 3px 0 0 var(--c-warn); }
             <th>Selección</th><th>Cuota</th><th>Conf</th><th>Edge</th>
             <th>Stake</th><th>Resultado</th><th>P/L</th>
           </tr></thead>
-          <tbody id="historyBody"></tbody>
+          <tbody id="heurBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- SECCION MODELO APRENDIDO (sombra): picks que el modelo aprendido habria
+         emitido si decidiera el. Nunca se apuestan y viven en model_picks,
+         tabla aparte, para no contaminar el dataset de `picks`. El P/L es a
+         stake plano de 1u porque la sombra no tiene stake asignado. Misma
+         estructura Matrix/Lista que Heuristico — pedido explicito del usuario
+         (2026-09-14): dividir el historial en dos secciones, una por modelo,
+         cada una con sus dos vistas, la Matrix con las mismas reglas de
+         siempre (solo hoy, agrupada por resultado). -->
+    <div class="section-title" style="margin-top:28px;font-size:13px">🤖 Modelo Aprendido (Shadow)</div>
+    <div class="disclaimer-note">
+      🤖 Picks <b>no apostados</b>. Es el registro de lo que el modelo aprendido habría
+      elegido, para poder comparar los dos decisores sobre la misma realidad.
+      P/L a stake plano de 1u.
+    </div>
+    <div class="fw-hero" id="mlHero" style="margin-top:8px"></div>
+    <div class="view-toggle" id="mlViewToggle" style="margin-top:12px">
+      <button class="vt-btn active" onclick="setMlView('matrix')">⊞ Matrix</button>
+      <button class="vt-btn" onclick="setMlView('list')">☰ Lista</button>
+    </div>
+    <div id="mlTodayStats" class="fw-hero" style="margin-bottom:12px"></div>
+    <div id="mlMatrix"></div>
+    <div id="mlList" style="display:none">
+      <div class="view-toggle">
+        <button class="vt-btn active" onclick="setMlFilter('all')">Todos</button>
+        <button class="vt-btn" onclick="setMlFilter('pending')">⏳ En curso</button>
+        <button class="vt-btn" onclick="setMlFilter('win')">Habrían ganado</button>
+        <button class="vt-btn" onclick="setMlFilter('loss')">Habrían perdido</button>
+        <button class="vt-btn" onclick="setMlFilter('solo')">Solo el modelo</button>
+      </div>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr>
+            <th>#</th><th>Fecha</th><th>Evento</th><th>Mercado</th><th>Selección</th>
+            <th>Cuota</th><th>Min</th><th>Edge</th><th>Ahora</th><th>Marcador</th>
+            <th>Modelo</th><th>Heur.</th><th>Resultado</th><th>P/L</th>
+          </tr></thead>
+          <tbody id="mlBody"></tbody>
         </table>
       </div>
     </div>
@@ -818,6 +987,103 @@ tbody tr.r-pending td:first-child { box-shadow: inset 3px 0 0 var(--c-warn); }
     </div>
   </div>
 
+  <!-- ═══════════ PANEL 5: PILOTO DE CÓRNERS ═══════════
+       Captura de SOLO LECTURA. No emite, no liquida, no puntúa. El panel no
+       mide rendimiento — mide si la captura se sostiene, y sobre todo si el
+       conteo inferido aguanta. Ver src/corners.js. -->
+  <div class="panel" id="panel-corners">
+    <div class="section-title">Partidos EN VIVO en las dos fuentes (aún sin liquidar)</div>
+    <div style="margin:-4px 0 10px;font-size:11px;color:var(--fg3);line-height:1.6">
+      Cruce en memoria (sin Chromium) de lo que YA capturaron ambos pilotos, mientras el partido sigue
+      en curso — confirma que el pipeline está funcionando antes de esperar a que termine. No es el
+      emparejamiento oficial: ese corre aparte (con el barrido completo del día) al liquidar.
+    </div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr>
+          <th>Partido (playdoit)</th><th>Min</th><th>Líneas de córners (playdoit)</th><th>Última lectura (playdoit)</th><th>FotMob</th><th>Córners (local-visita)</th><th>Última lectura (FotMob)</th><th>Estado</th><th>Dirección</th><th>Pronóstico (binomial negativa)</th>
+        </tr></thead>
+        <tbody id="fotmobDosFuentesBody"></tbody>
+      </table>
+    </div>
+
+    <div class="section-title" style="margin-top:26px">Partidos LIQUIDADOS en las dos fuentes</div>
+    <div style="margin:-4px 0 10px;font-size:11px;color:var(--fg3);line-height:1.6">
+      Partidos ya <b>terminados</b>: el resultado real (conteo final de FotMob) contra lo que había
+      derivado el piloto de playdoit para esa línea. Aquí sí se puede juzgar si el heurístico acertó,
+      no solo si el pipeline está vivo.
+    </div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr>
+          <th>Partido</th><th>Línea</th><th>Resultado real (FotMob)</th><th>Playdoit derivó</th><th>¿Acertó?</th>
+        </tr></thead>
+        <tbody id="fotmobLiquidadosBody"></tbody>
+      </table>
+    </div>
+
+    <div class="section-title" style="margin-top:26px">Valor pre-partido vs. casa sharp</div>
+    <div style="margin:-4px 0 10px;font-size:11px;color:var(--fg3);line-height:1.6">
+      Compara la cuota de Playdoit contra Pinnacle/Betfair (<code>src/prematchValue.js</code>) para partidos
+      que <b>aún no arrancan</b> — no espera a que se mueva la línea propia (steam): si Playdoit ya paga más
+      que la referencia sharp ahora mismo, esa diferencia es la señal. Solo lectura, no decide ni emite nada.
+    </div>
+    <div id="prematchResumen" style="font-size:11px;color:var(--fg3);margin-bottom:8px"></div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr>
+          <th>Partido</th><th>Selección</th><th>Cuota Playdoit</th><th>Cuota sharp</th><th>Casa sharp</th><th>Diferencia</th><th>Kickoff</th>
+        </tr></thead>
+        <tbody id="prematchValueBody"></tbody>
+      </table>
+    </div>
+
+    <div class="section-title" style="margin-top:26px">xG de temporada — pre-partido</div>
+    <div style="margin:-4px 0 10px;font-size:11px;color:var(--fg3);line-height:1.6">
+      xG a favor/en contra de temporada por equipo (FotMob, <code>src/prematchXg.js</code>), combinado en un
+      xG esperado del enfrentamiento. No depende de otra casa ni de que se mueva la línea — es rendimiento
+      medido del equipo, disponible desde que se conoce el fixture. Solo lectura, no decide ni emite nada.
+    </div>
+    <div id="xgResumen" style="font-size:11px;color:var(--fg3);margin-bottom:8px"></div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr>
+          <th>Partido</th><th>xG local</th><th>xG visita</th><th>xG total esperado</th><th>Kickoff</th>
+        </tr></thead>
+        <tbody id="xgBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ═══════════ PANEL: PARTIDOS DE HOY (PRE-PARTIDO) ═══════════ -->
+  <div class="panel" id="panel-prematch">
+    <div class="eyebrow">Catálogo del día — pre-partido</div>
+    <div class="section-title">Partidos de hoy</div>
+    <div style="margin:-4px 0 10px;font-size:11px;color:var(--fg3);line-height:1.6">
+      Cuotas pre-partido capturadas por el piloto (<code>src/fetcher.js: fetchPrematch</code>), última lectura
+      antes de cada kickoff de hoy. Es un catálogo para navegar — no decide ni emite nada.
+    </div>
+    <div id="prematchHoyResumen" style="font-size:11px;color:var(--fg3);margin-bottom:10px"></div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr>
+          <th>Hora</th><th>Torneo</th><th>Partido</th><th>1</th><th>X</th><th>2</th><th>O/U 2.5</th>
+        </tr></thead>
+        <tbody id="prematchHoyBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ═══════════ MODAL: DETALLE FOTMOB PRE-PARTIDO ═══════════ -->
+  <div class="modal-overlay" id="prematchModalOverlay">
+    <div class="modal-box" style="position:relative;max-width:520px">
+      <button class="modal-close" onclick="closePrematchModal()">✕ Cerrar <span style="font-size:9px;opacity:0.5;margin-left:4px">ESC</span></button>
+      <div class="modal-title" id="prematchModalTitle">—</div>
+      <div class="modal-sub" id="prematchModalSub">—</div>
+      <div id="prematchModalBody" style="margin-top:16px;font-size:12px;color:var(--fg2)">Cargando…</div>
+    </div>
+  </div>
+
   <!-- ═══════════ MODAL: PICK INSPECTOR ═══════════ -->
   <div class="modal-overlay" id="modalOverlay">
     <div class="modal-box" style="position:relative;">
@@ -829,6 +1095,7 @@ tbody tr.r-pending td:first-child { box-shadow: inset 3px 0 0 var(--c-warn); }
         <div class="modal-panel">
           <div class="modal-panel-title">📈 Evolución de Cuota</div>
           <canvas id="modalChart" height="220"></canvas>
+          <div id="modalLineChanges" style="font-size:11px;color:var(--yellow);margin-top:6px"></div>
         </div>
         <div class="modal-panel">
           <div class="modal-panel-title">📋 Datos del Pick</div>
@@ -840,6 +1107,21 @@ tbody tr.r-pending td:first-child { box-shadow: inset 3px 0 0 var(--c-warn); }
         <table style="font-size:11px">
           <thead><tr><th>Hora</th><th>Marcador</th><th>Minuto</th><th>Cuota</th><th>Estado</th></tr></thead>
           <tbody id="modalTimeline"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════ MODAL: HISTORIAL DE PRONÓSTICOS (FotMob) ═══════════ -->
+  <div class="modal-overlay" id="forecastModalOverlay">
+    <div class="modal-box" style="position:relative;">
+      <button class="modal-close" onclick="closeForecastModal()">✕ Cerrar <span style="font-size:9px;opacity:0.5;margin-left:4px">ESC</span></button>
+      <div class="modal-title" id="forecastModalTitle">—</div>
+      <div class="modal-sub">Cada fila es una lectura guardada durante el partido: lo que sugería el modelo EN ESE momento, con la cuota que tenía entonces. No se recalcula con datos de hoy — es historia.</div>
+      <div class="modal-panel" style="max-height:400px;overflow-y:auto">
+        <table style="font-size:11px">
+          <thead><tr><th>Hora</th><th>Min</th><th>Sugerencia</th><th>Cuota</th><th>Modelo (NB)</th><th>Mercado (devig)</th><th>Edge</th><th>Córners reales</th><th>Esperados al final</th></tr></thead>
+          <tbody id="forecastHistBody"></tbody>
         </table>
       </div>
     </div>
@@ -898,10 +1180,10 @@ function switchTab(name) {
   document.querySelector(`[data-tab="${name}"]`).classList.add('active');
 }
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') closeModal();
+  if (e.key === 'Escape') { closeModal(); closeForecastModal(); closePrematchModal(); }
   if (document.getElementById('modalOverlay').classList.contains('open')) return;
-  if (e.key >= '1' && e.key <= '4') {
-    const tabs = ['command', 'live', 'history', 'firewall'];
+  if (e.key >= '1' && e.key <= '6') {
+    const tabs = ['command', 'live', 'history', 'firewall', 'corners', 'prematch'];
     switchTab(tabs[parseInt(e.key) - 1]);
   }
 });
@@ -916,6 +1198,19 @@ function fmtDate(ts) {
          d.toLocaleTimeString('es-MX', { timeZone: 'America/Mexico_City', hour: '2-digit', minute: '2-digit', hour12: false });
 }
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+// Solo hora:min:seg, sin fecha — para "ultima lectura" de partidos EN VIVO
+// (siempre son de hoy, la fecha solo estorba). Ademas marca en naranja si ya
+// pasaron mas de 3 minutos desde esa lectura: la tabla se piensa como "esto
+// sigue vivo AHORA", asi que una lectura vieja sin decirlo engañaria.
+function fmtHoraVivo(ts) {
+  if (!ts) return '<span style="color:var(--fg3)">—</span>';
+  const d = new Date(ts);
+  const hora = d.toLocaleTimeString('es-MX', { timeZone: 'America/Mexico_City', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+  const minsDesde = Math.round((Date.now() - d.getTime()) / 60000);
+  const vieja = minsDesde > 3;
+  return '<span style="color:' + (vieja ? 'var(--c-warn)' : 'var(--fg3)') + '">' + hora +
+    (minsDesde >= 1 ? ' <i>(hace ' + minsDesde + " min)</i>" : '') + '</span>';
+}
 
 function alertClass(alert) {
   switch(alert) {
@@ -1000,7 +1295,11 @@ async function loadCommand() {
           }]
         },
         options: {
-          responsive: true, plugins: { legend: { display: false } },
+          // maintainAspectRatio:false: sin esto Chart.js calcula el alto por
+          // proporcion del ancho (~2:1) e ignora el height:95px forzado en
+          // CSS para caber en una pantalla — con un contenedor angosto eso
+          // pedia mucha mas altura de la que hay y quedaba recortado.
+          responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
           scales: {
             x: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#6b7280', font: { size: 10, family: "'JetBrains Mono'" } } },
             y: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#6b7280', font: { size: 10, family: "'JetBrains Mono'" } } }
@@ -1025,7 +1324,7 @@ async function loadCommand() {
           }]
         },
         options: {
-          indexAxis: 'y', responsive: true, plugins: { legend: { display: false } },
+          indexAxis: 'y', responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
           scales: {
             x: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#6b7280', font: { size: 10, family: "'JetBrains Mono'" } } },
             y: { grid: { display: false }, ticks: { color: '#9ca3af', font: { size: 10 } } }
@@ -1037,12 +1336,53 @@ async function loadCommand() {
 }
 
 // ═══════════ LIVE RADAR ═══════════
+// Fila de marcador. `score_age_min` es la edad de la ultima lectura del
+// marcador; si pasa de 3 minutos el partido dejo de reportar y lo que se ve ya
+// no es "ahora". Decirlo es parte del dato: un marcador viejo presentado como
+// actual es peor que no mostrarlo.
+// Fila de cuotas. Si la casa retiro la linea, el ultimo precio visto NO es el
+// precio actual y el CLV calculado con el es ficticio — se marca y se calla el
+// CLV en vez de enseñar un numero que no significa nada.
+function oddsRowHtml(p) {
+  const dir = p.direction === 'up' ? '↑' : p.direction === 'down' ? '↓' : '→';
+  const dirClass = p.direction === 'up' ? 'up' : p.direction === 'down' ? 'down' : '';
+  const entrada = `<div class="live-odd-box" style="color:var(--fg3)">@ ${fmt(p.entry_odd, 3)}</div>`;
+
+  if (p.line_withdrawn) {
+    return `<div class="live-odds-row">${entrada}
+      <div class="live-arrow">→</div>
+      <div class="live-odd-box withdrawn" title="Último precio visto hace ${p.odd_age_min} min; la casa dejó de ofrecer esta línea">@ ${p.current_odd != null ? fmt(p.current_odd, 3) : '—'}</div>
+      <div class="live-withdrawn-tag">línea retirada · ${p.odd_age_min}m</div>
+    </div>`;
+  }
+
+  const clvColor = (p.live_clv || 0) > 0 ? 'var(--green)' : (p.live_clv || 0) < -5 ? 'var(--red)' : 'var(--fg3)';
+  return `<div class="live-odds-row">${entrada}
+    <div class="live-arrow ${dirClass}">${dir}</div>
+    <div class="live-odd-box" style="color:var(--orange)">@ ${p.current_odd != null ? fmt(p.current_odd, 3) : '—'}</div>
+    <div style="font-family:var(--mono);font-weight:700;color:${clvColor};font-size:12px">${p.live_clv != null ? (p.live_clv > 0 ? '+' : '') + fmt(p.live_clv) + '%' : ''} CLV</div>
+  </div>`;
+}
+
+function scoreRowHtml(p) {
+  const deporte = `<span class="live-sport">${esc(p.sport || 'Fútbol')}</span>`;
+  if (!p.score) return `<div class="live-score-row"><span class="live-prematch">Pre-match</span>${deporte}</div>`;
+  const viejo = p.score_age_min != null && p.score_age_min > 3;
+  const sello = viejo
+    ? `<span class="live-stale" title="Última lectura hace ${p.score_age_min} min — el evento dejó de reportar">⚠︎ ${p.score_age_min}m</span>`
+    : '';
+  return `<div class="live-score-row"><span class="live-score">${esc(p.score)}</span>`
+    + (p.live_time ? `<span class="live-minute">${esc(p.live_time)}</span>` : '')
+    + sello + deporte + `</div>`;
+}
+
 async function loadLive() {
   try {
     const res = await fetch(API + '/api/live');
-    const { count, live } = await res.json();
+    const { count, live, modelLive = [], modelCount = 0 } = await res.json();
     document.getElementById('liveBadge').textContent = count;
-    document.getElementById('liveCount').textContent = `${count} picks activos`;
+    document.getElementById('liveCount').textContent =
+      `${count} picks activos` + (modelCount ? ` · ${modelCount} en sombra` : '');
 
     // Alert summary
     const alertCounts = {};
@@ -1054,32 +1394,23 @@ async function loadLive() {
 
     // Cards
     const grid = document.getElementById('liveGrid');
-    if (!live.length) {
+    if (!live.length && !modelLive.length) {
       grid.innerHTML = '<div class="empty-state"><div class="empty-icon">📡</div>Sin picks activos en este momento</div>';
       return;
     }
     grid.innerHTML = live.map(p => {
-      const dir = p.direction === 'up' ? '↑' : p.direction === 'down' ? '↓' : '→';
-      const dirClass = p.direction === 'up' ? 'up' : p.direction === 'down' ? 'down' : '';
-      const clvColor = (p.live_clv || 0) > 0 ? 'var(--green)' : (p.live_clv || 0) < -5 ? 'var(--red)' : 'var(--fg3)';
       const alertHtml = p.alert ? `<span class="alert-tag ${alertClass(p.alert)}">${alertLabel(p.alert)}</span>` : '';
 
-      const scoreHtml = p.score
-        ? `<div class="live-score-row"><span class="live-score">${esc(p.score)}</span>${p.live_time ? `<span class="live-minute">${esc(p.live_time)}</span>` : ''}<span class="live-sport">${esc(p.sport || 'Fútbol')}</span></div>`
-        : `<div class="live-score-row"><span class="live-prematch">Pre-match</span><span class="live-sport">${esc(p.sport || 'Fútbol')}</span></div>`;
+      const scoreHtml = scoreRowHtml(p);
 
       return `<div class="live-card" onclick="openPick(${p.id})">
         <div class="live-card-header">
           <div class="live-event">${esc(p.event)}</div>
+          <div class="live-ts" title="Emitido el ${fmtDate(p.ts)} (CDMX)">${fmtDate(p.ts)}</div>
         </div>
         ${scoreHtml}
         <div class="live-market"><b>${esc(p.market)}</b> · ${esc(p.selection)}</div>
-        <div class="live-odds-row">
-          <div class="live-odd-box" style="color:var(--fg3)">@ ${fmt(p.entry_odd, 3)}</div>
-          <div class="live-arrow ${dirClass}">${dir}</div>
-          <div class="live-odd-box" style="color:var(--orange)">@ ${p.current_odd != null ? fmt(p.current_odd, 3) : '—'}</div>
-          <div style="font-family:var(--mono);font-weight:700;color:${clvColor};font-size:12px">${p.live_clv != null ? (p.live_clv > 0 ? '+' : '') + fmt(p.live_clv) + '%' : ''} CLV</div>
-        </div>
+        ${oddsRowHtml(p)}
         <div class="live-stats">
           <div>Conf: <b>${fmtPct(p.conf * 100)}</b></div>
           <div>Stake: <b>${fmt(p.stake)}u</b></div>
@@ -1091,12 +1422,45 @@ async function loadLive() {
           <div class="live-sparkline-box"><canvas id="spark-${p.id}" width="80" height="24"></canvas></div>
         </div>
       </div>`;
-    }).join('');
+    }).join('') || '<div class="empty-state" style="grid-column:1/-1"><div class="empty-icon">📡</div>Sin picks reales activos</div>';
+
+    // Sombra del modelo: mismo radar, tarjetas visualmente distintas (borde
+    // discontinuo) pero igual de clicables. Abren el mismo inspector pasando
+    // source='model', porque los ids de model_picks colisionan con los de
+    // `picks` y sin ese parametro se abriria la ficha de otro pick.
+    if (modelLive.length) {
+      grid.insertAdjacentHTML('beforeend', `
+        <div class="live-shadow-sep">
+          🤖 Modelo aprendido — ${modelCount} en curso · <b>no apostados</b>
+        </div>` + modelLive.map(p => {
+        const scoreHtml = scoreRowHtml(p);
+
+        return `<div class="live-card shadow" onclick="openPick(${p.id}, 'model')">
+          <div class="live-card-header">
+            <div class="live-event">${p.tambien_heuristico ? '🤝' : '🤖'} ${esc(p.event)}</div>
+            <div class="live-ts" title="Registrado el ${fmtDate(p.ts)} (CDMX)">${fmtDate(p.ts)}</div>
+          </div>
+          ${scoreHtml}
+          <div class="live-market"><b>${esc(p.market)}</b> · ${esc(p.selection)}</div>
+          ${oddsRowHtml(p)}
+          <div class="live-stats">
+            <div>Modelo: <b>${fmtPct(p.conf_learned * 100)}</b></div>
+            <div>Heur: <b>${p.conf_heuristic != null ? fmtPct(p.conf_heuristic * 100) : '—'}</b></div>
+            <div>Snaps: <b>${p.snapshot_count}</b></div>
+            <div>Elapsed: <b>${p.elapsed_min}m</b></div>
+          </div>
+          <div class="live-footer">
+            <span class="alert-tag shadow-tag">Sombra · no apostado</span>
+            <div class="live-sparkline-box"><canvas id="mspark-${p.id}" width="80" height="24"></canvas></div>
+          </div>
+        </div>`;
+      }).join(''));
+    }
 
     // Draw sparklines
-    live.forEach(p => {
+    [...live.map(p => ['spark-', p]), ...modelLive.map(p => ['mspark-', p])].forEach(([prefix, p]) => {
       if (!p.sparkline || !p.sparkline.length) return;
-      const canvas = document.getElementById('spark-' + p.id);
+      const canvas = document.getElementById(prefix + p.id);
       if (!canvas) return;
       const ctx = canvas.getContext('2d');
       const w = 80, h = 24;
@@ -1129,25 +1493,96 @@ async function loadHistory() {
   } catch (e) { console.error('History load error:', e); }
 }
 
-function renderHistory() {
-  // Matrix
-  document.getElementById('historyMatrix').innerHTML = acceptedData.map(p => {
-    const isPending = !p.result || p.result === 'pending';
-    const cls = p.result === 'win' ? 'm-win' : p.result === 'loss' ? 'm-loss' : isPending ? 'm-pending' : 'm-push';
-    const resColor = p.result === 'win' ? 'var(--green)' : p.result === 'loss' ? 'var(--red)' : isPending ? 'var(--cyan)' : 'var(--fg3)';
-    const plStr = isPending ? '⏳ En Juego' : (p.profit >= 0 ? `+${fmt(p.profit, 2)}u` : `${fmt(p.profit, 2)}u`);
-    return `<div class="matrix-card ${cls}" onclick="openPick(${p.id})">
-      <div class="m-id">#${p.id}</div>
-      <div class="m-event">${esc(p.event)}</div>
-      <div class="m-bottom">
-        <span class="m-odd">@ ${fmt(p.odd_decimal, 2)}</span>
-        <span class="m-result" style="color:${resColor}">${plStr}</span>
-      </div>
-    </div>`;
-  }).join('');
+// Mismo criterio que diaLocal() en src/metrics.js: dia CDMX (UTC-6), no el
+// dia UTC del timestamp crudo — un pick de las 23:30 CDMX no debe contarse
+// en el dia siguiente solo porque el servidor guarda todo en UTC.
+function diaLocalKey(ts) {
+  return new Date(new Date(ts).getTime() - 6 * 3600e3).toISOString().slice(0, 10);
+}
 
-  // Table
-  document.getElementById('historyBody').innerHTML = acceptedData.map(p => {
+// Tarjeta individual de la matriz — extraido para no duplicar el markup
+// entre los tres grupos (pendientes/ganadores/perdedores). `source` distingue
+// picks reales (undefined) de la sombra del modelo aprendido ('model'), para
+// que el modal de detalle (openPick) consulte la tabla correcta.
+function renderMatrixCard(p, source) {
+  const isPending = !p.result || p.result === 'pending';
+  const cls = p.result === 'win' ? 'm-win' : p.result === 'loss' ? 'm-loss' : isPending ? 'm-pending' : 'm-push';
+  const resColor = p.result === 'win' ? 'var(--green)' : p.result === 'loss' ? 'var(--red)' : isPending ? 'var(--cyan)' : 'var(--fg3)';
+  const resTxt = isPending ? 'EN JUEGO' : String(p.result || '').toUpperCase();
+  const plStr = isPending ? '⏳ En Juego' : (p.profit >= 0 ? `+${fmt(p.profit, 2)}u` : `${fmt(p.profit, 2)}u`);
+  // Hora de LIQUIDACION (settled_ts), no de emision (ts) — pedido explicito
+  // del usuario el 2026-09-13: en una tarjeta ya resuelta interesa cuando se
+  // decidio, no cuando se emitio. Sin settled_ts (pick en juego) se muestra
+  // la hora de emision como respaldo, marcada como tal.
+  const horaTxt = p.settled_ts
+    ? new Date(p.settled_ts).toLocaleTimeString('es-MX', { timeZone: 'America/Mexico_City', hour: '2-digit', minute: '2-digit', hour12: false })
+    : `${new Date(p.ts).toLocaleTimeString('es-MX', { timeZone: 'America/Mexico_City', hour: '2-digit', minute: '2-digit', hour12: false })} (emisión)`;
+  const openArgs = source === 'model' ? `${p.id}, 'model'` : `${p.id}`;
+  const edgeVal = p.edge_learned != null ? p.edge_learned : p.edge;
+  const edgeStr = edgeVal != null ? `Edge ${fmtPct(edgeVal * 100)}` : '';
+  return `<div class="matrix-card ${cls}" onclick="openPick(${openArgs})">
+    <div class="m-id">#${p.id}</div>
+    <div class="m-event">${esc(p.event)}</div>
+    <div class="m-market">${esc(p.market || '')}</div>
+    <div class="m-bottom">
+      <span class="m-odd">@ ${fmt(p.odd_decimal, 2)}${edgeStr ? ` · <span style="color:var(--cyan)">${edgeStr}</span>` : ''}</span>
+      <span class="m-result" style="color:${resColor}">${resTxt}${!isPending ? ` · ${plStr}` : ''}</span>
+    </div>
+    <div class="m-time">${horaTxt}</div>
+  </div>`;
+}
+
+// La matriz muestra SOLO los picks de HOY (dia CDMX) — antes acumulaba todo
+// el historial y con miles de picks se volvia una pared sin poder distinguir
+// el dia en curso. Divida en tres grupos, en este orden: primero los que
+// aun estan en juego (lo que de verdad hay que vigilar ahora mismo), luego
+// los GANADORES en verde arriba, y los PERDEDORES en rojo al final —
+// pedido explicito del usuario el 2026-09-13. Generica desde el 2026-09-14
+// para servir tanto al heuristico (picks) como al modelo aprendido
+// (model_picks): mismos grupos, mismas reglas, distinto contenedor destino.
+function renderHistoryMatrix(picks, matrixElId, statsElId, source) {
+  const hoy = diaLocalKey(new Date().toISOString());
+  const deHoy = picks.filter(p => diaLocalKey(p.ts) === hoy);
+
+  const pendientes = deHoy.filter(p => !p.result || p.result === 'pending');
+  const ganadores = deHoy.filter(p => p.result === 'win');
+  const perdedores = deHoy.filter(p => p.result === 'loss');
+  const otros = deHoy.filter(p => p.result && p.result !== 'win' && p.result !== 'loss' && p.result !== 'pending');
+
+  const grupo = (titulo, color, arr) => !arr.length ? '' : `
+    <div class="matrix-group-title" style="color:${color}">${titulo} (${arr.length})</div>
+    <div class="matrix-grid" style="margin-bottom:20px">${arr.map(p => renderMatrixCard(p, source)).join('')}</div>`;
+
+  const html = grupo('⏳ En curso', 'var(--cyan)', pendientes)
+    + grupo('✅ Ganadores', 'var(--green)', ganadores)
+    + grupo('❌ Perdedores', 'var(--red)', perdedores)
+    + grupo('◻️ Push / sin acción', 'var(--fg3)', otros);
+
+  document.getElementById(matrixElId).innerHTML = html
+    || `<div style="text-align:center;color:var(--fg3);padding:24px">Sin picks hoy (${hoy}) todavía.</div>`;
+
+  // Metrica de rendimiento del dia, en el header de la matriz.
+  const liquidados = ganadores.length + perdedores.length;
+  const staked = deHoy.reduce((s, p) => s + (p.stake || 1), 0);
+  const profit = deHoy.reduce((s, p) => s + (p.result === 'win' || p.result === 'loss' ? (p.profit || 0) : 0), 0);
+  const roi = staked > 0 && liquidados > 0
+    ? 100 * profit / deHoy.filter(p => p.result === 'win' || p.result === 'loss').reduce((s, p) => s + (p.stake || 1), 0)
+    : null;
+  const wr = liquidados > 0 ? 100 * ganadores.length / liquidados : null;
+  const plColor = profit >= 0 ? 'var(--green)' : 'var(--red)';
+  document.getElementById(statsElId).innerHTML = `
+    <div class="fw-stat fw-primary"><div class="fw-val" style="color:${plColor}">${profit >= 0 ? '+' : ''}${fmt(profit, 2)}u</div><div class="fw-label">P/L de hoy${roi != null ? ` (ROI ${roi >= 0 ? '+' : ''}${fmt(roi, 1)}%)` : ''}</div></div>
+    <div class="fw-stat"><div class="fw-val">${deHoy.length}</div><div class="fw-label">Picks hoy</div></div>
+    <div class="fw-stat"><div class="fw-val" style="color:var(--cyan)">${pendientes.length}</div><div class="fw-label">En curso</div></div>
+    <div class="fw-stat"><div class="fw-val">${wr != null ? fmt(wr, 0) + '%' : '—'}</div><div class="fw-label">Win rate (${ganadores.length}-${perdedores.length})</div></div>
+  `;
+}
+
+function renderHistory() {
+  renderHistoryMatrix(acceptedData, 'heurMatrix', 'heurTodayStats');
+
+  // Lista
+  document.getElementById('heurBody').innerHTML = acceptedData.map(p => {
     const isPending = !p.result || p.result === 'pending';
     const resColor = p.result === 'win' ? 'var(--green)' : p.result === 'loss' ? 'var(--red)' : isPending ? 'var(--cyan)' : 'var(--fg3)';
     const resText = isPending ? 'EN JUEGO' : String(p.result).toUpperCase();
@@ -1171,12 +1606,114 @@ function renderHistory() {
   }).join('');
 }
 
-function setHistoryView(view) {
+// Historial dividido en dos secciones independientes (Heuristico / Modelo
+// Aprendido), cada una con su propio toggle Matrix/Lista — pedido explicito
+// del usuario (2026-09-14). Cada toggle esta acotado a su propio contenedor
+// (#heurViewToggle / #mlViewToggle) para no interferir con el filtro de la
+// lista del modelo (#mlList .view-toggle), que es un toggle aparte.
+function setHeurView(view) {
   historyView = view;
-  document.querySelectorAll('.vt-btn').forEach(b => b.classList.remove('active'));
-  document.querySelector(`.vt-btn[onclick="setHistoryView('${view}')"]`).classList.add('active');
-  document.getElementById('historyMatrix').style.display = view === 'matrix' ? 'grid' : 'none';
-  document.getElementById('historyTable').style.display = view === 'table' ? 'block' : 'none';
+  const toggle = document.getElementById('heurViewToggle');
+  toggle.querySelectorAll('.vt-btn').forEach(b => b.classList.remove('active'));
+  toggle.querySelector(`.vt-btn[onclick="setHeurView('${view}')"]`).classList.add('active');
+  document.getElementById('heurMatrix').style.display = view === 'matrix' ? 'block' : 'none';
+  document.getElementById('heurTodayStats').style.display = view === 'matrix' ? 'flex' : 'none';
+  document.getElementById('heurList').style.display = view === 'list' ? 'block' : 'none';
+}
+
+function setMlView(view) {
+  mlView = view;
+  const toggle = document.getElementById('mlViewToggle');
+  toggle.querySelectorAll('.vt-btn').forEach(b => b.classList.remove('active'));
+  toggle.querySelector(`.vt-btn[onclick="setMlView('${view}')"]`).classList.add('active');
+  document.getElementById('mlMatrix').style.display = view === 'matrix' ? 'block' : 'none';
+  document.getElementById('mlTodayStats').style.display = view === 'matrix' ? 'flex' : 'none';
+  document.getElementById('mlList').style.display = view === 'list' ? 'block' : 'none';
+}
+
+// ═══════════ SOMBRA DEL MODELO APRENDIDO ═══════════
+let mlData = [];
+let mlFilter = 'all';
+let mlView = 'matrix';
+
+async function loadModelPicks() {
+  try {
+    const res = await fetch(API + '/api/model-picks');
+    const d = await res.json();
+    mlData = d.rows || [];
+
+    const roiColor = d.roi == null ? 'var(--fg3)' : d.roi >= 0 ? 'var(--green)' : 'var(--red)';
+    // El solape es el numero que decide si la comparacion vale: si es bajo, los
+    // dos motores no discrepan en los margenes, miran poblaciones distintas.
+    const solapeColor = d.solapePct != null && d.solapePct < 20 ? 'var(--yellow)' : 'var(--fg)';
+    document.getElementById('mlHero').innerHTML = `
+      <div class="fw-stat"><div class="fw-val">${d.total}</div><div class="fw-label">Picks del modelo</div></div>
+      <div class="fw-stat"><div class="fw-val" style="color:var(--yellow)">${d.pendientes}</div><div class="fw-label">En curso</div></div>
+      <div class="fw-stat"><div class="fw-val">${d.wr == null ? '—' : d.wr + '%'}</div><div class="fw-label">Win rate (${d.wins}-${d.losses})</div></div>
+      <div class="fw-stat"><div class="fw-val" style="color:${roiColor}">${d.pl >= 0 ? '+' : ''}${fmt(d.pl, 2)}u</div><div class="fw-label">P/L a 1u plano</div></div>
+      <div class="fw-stat fw-primary"><div class="fw-val" style="color:${roiColor}">${d.roi == null ? '—' : (d.roi >= 0 ? '+' : '') + d.roi + '%'}</div><div class="fw-label">ROI</div></div>
+      <div class="fw-stat"><div class="fw-val" style="color:${solapeColor}">${d.solapePct == null ? '—' : d.solapePct + '%'}</div><div class="fw-label">Solape con heurístico</div></div>
+    `;
+    renderHistoryMatrix(mlData, 'mlMatrix', 'mlTodayStats', 'model');
+    renderModelPicks();
+  } catch (e) { console.error('Model picks load error:', e); }
+}
+
+function setMlFilter(f) {
+  mlFilter = f;
+  const toggle = document.querySelector('#mlList .view-toggle');
+  toggle.querySelectorAll('.vt-btn').forEach(b => b.classList.remove('active'));
+  toggle.querySelector(`.vt-btn[onclick="setMlFilter('${f}')"]`).classList.add('active');
+  renderModelPicks();
+}
+
+function renderModelPicks() {
+  const rows = mlData.filter(r => {
+    if (mlFilter === 'win') return r.result === 'win';
+    if (mlFilter === 'loss') return r.result === 'loss';
+    if (mlFilter === 'pending') return !r.result;
+    if (mlFilter === 'solo') return !r.tambien_heuristico;
+    return true;
+  });
+
+  document.getElementById('mlBody').innerHTML = rows.slice(0, 300).map(r => {
+    const resColor = r.result === 'win' ? 'var(--green)'
+      : r.result === 'loss' ? 'var(--red)'
+      : r.result === 'push' ? 'var(--fg3)' : 'var(--yellow)';
+
+    // Pendiente: se muestra la cuota actual con su deriva. Liquidado: la deriva
+    // ya no dice nada, asi que la celda queda vacia en vez de mostrar ruido.
+    let ahora = '—';
+    if (!r.result && r.current_odd != null) {
+      const dc = r.drift == null ? 'var(--fg3)'
+        : r.drift <= -8 ? 'var(--green)' : r.drift >= 8 ? 'var(--red)' : 'var(--fg2)';
+      ahora = `<span style="color:${dc}">${fmt(r.current_odd, 2)}${r.drift != null ? ` <small>(${r.drift > 0 ? '+' : ''}${r.drift}%)</small>` : ''}</span>`;
+    }
+
+    // Marcador: el de cierre si ya se liquidó; si sigue vivo, el de ahora con su
+    // minuto. entry_score (el del instante del pick) solo existe desde 2026-08-25.
+    const score = r.result ? (r.final_score || '—') : (r.live_score || '—');
+    const minuto = !r.result && r.live_time ? ` <small style="color:var(--fg3)">${esc(String(r.live_time).split('—')[0].trim())}</small>` : '';
+    const stale = !r.result && r.staleMin != null && r.staleMin > 25
+      ? ` <small style="color:var(--yellow)" title="El partido ya no aparece en el feed">⚠︎</small>` : '';
+
+    return `<tr>
+      <td style="color:var(--fg3)">${r.tambien_heuristico ? '🤝' : '🤖'} ${r.id}</td>
+      <td style="color:var(--fg3)">${fmtDate(r.ts)}</td>
+      <td class="col-event">${esc(r.event || '')}</td>
+      <td style="color:var(--fg3);max-width:140px;overflow:hidden;text-overflow:ellipsis">${esc(r.market || '')}</td>
+      <td>${esc(r.selection || '')}</td>
+      <td class="num">@ ${fmt(r.odd_decimal, 2)}</td>
+      <td class="num" style="color:var(--fg3)">${r.entry_minute != null ? Math.round(r.entry_minute) + "'" : '—'}</td>
+      <td class="num" style="color:var(--cyan)">${r.edge_learned != null ? fmtPct(r.edge_learned * 100) : '—'}</td>
+      <td class="num">${ahora}</td>
+      <td>${esc(score)}${minuto}${stale}</td>
+      <td class="num">${r.confMLPct || '—'}</td>
+      <td class="num" style="color:var(--fg3)">${r.confHeurPct || '—'}</td>
+      <td style="color:${resColor};font-weight:700">${esc(r.resultLabel)}</td>
+      <td class="num" style="color:${r.profit > 0 ? 'var(--green)' : r.profit < 0 ? 'var(--red)' : 'var(--fg3)'}">${r.result ? (r.profit >= 0 ? '+' : '') + fmt(r.profit, 2) + 'u' : '—'}</td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="14" style="color:var(--fg3);text-align:center;padding:20px">Sin picks del modelo en este filtro.</td></tr>';
 }
 
 // ═══════════ FIREWALL ═══════════
@@ -1188,7 +1725,7 @@ async function loadFirewall() {
     document.getElementById('fwHero').innerHTML = `
       <div class="fw-stat"><div class="fw-val" style="color:var(--red)">${rejectedCount}</div><div class="fw-label">Picks Bloqueados</div></div>
       <div class="fw-stat"><div class="fw-val" style="color:var(--green)">${totalLossesAvoided}</div><div class="fw-label">Pérdidas Evitadas</div></div>
-      <div class="fw-stat"><div class="fw-val" style="color:var(--green)">+${fmt(savedUnits, 2)}</div><div class="fw-label">Unidades Salvadas</div></div>
+      <div class="fw-stat fw-primary"><div class="fw-val" style="color:var(--green)">+${fmt(savedUnits, 2)}</div><div class="fw-label">Unidades Salvadas</div></div>
     `;
 
     document.getElementById('fwBody').innerHTML = (rejected || []).slice(0, 100).map(r => {
@@ -1205,6 +1742,278 @@ async function loadFirewall() {
       </tr>`;
     }).join('');
   } catch (e) { console.error('Firewall load error:', e); }
+}
+
+// ═══════════ FOTMOB — PARTIDOS EN VIVO EN LAS DOS FUENTES ═══════════
+// Unica vista que queda de este panel a peticion: solo el cruce en memoria
+// (sin Chromium — fetch plano, ver src/fotmobScraper.js) de lo que YA
+// capturaron playdoit y FotMob, mientras el partido sigue en curso. El resto
+// (piloto de stats original, comparacion liquidada, capturas crudas, log) se
+// quito del dashboard — sigue existiendo en la BD y en /api/stats-pilot /
+// /api/fotmob-pilot por si hace falta despues.
+async function loadStats() {
+  try {
+    const res = await fetch(API + '/api/fotmob-pilot');
+    const { dosFuentes, comparadas } = await res.json();
+
+    document.getElementById('cornersBadge').textContent = (dosFuentes || []).length;
+
+    document.getElementById('fotmobDosFuentesBody').innerHTML = (dosFuentes || []).map(function (d) {
+      const total = (d.fotmob.cornersHome != null && d.fotmob.cornersAway != null) ? (d.fotmob.cornersHome + d.fotmob.cornersAway) : null;
+      // Momios VISIBLES (no solo en el title): hacen falta para calcular la
+      // probabilidad implícita por linea y contrastarla contra el modelo.
+      // Por cada linea: verde si el conteo real de FotMob ya la supero
+      // (el Mas ya gano, monotonia), gris si sigue abierta y sin decidir.
+      const lineasHtml = (d.playdoit.lineas || []).map(function (l) {
+        const yaGano = total != null && total > l.linea;
+        const color = yaGano ? 'var(--green)' : 'var(--fg2)';
+        const over = l.over && !l.over.susp ? l.over.odd.toFixed(2) : (l.over && l.over.susp ? 'susp' : '—');
+        const under = l.under && !l.under.susp ? l.under.odd.toFixed(2) : (l.under && l.under.susp ? 'susp' : '—');
+        // Edge del modelo (binomial negativa con conteo REAL de FotMob)
+        // vs el precio devigado de playdoit, solo con par completo sin suspender.
+        const edge = l.modelo && l.modelo.edgeOver != null
+          ? (function () {
+              const lado = l.modelo.edgeOver >= 0 ? 'Más' : 'Menos';
+              const val = Math.abs(l.modelo.edgeOver);
+              const c = val >= 0.05 ? 'var(--green)' : 'var(--fg3)';
+              return ' <span style="color:' + c + ';font-size:10px" title="Binomial negativa vs mercado devigado">(' + lado + ' ' + (val * 100).toFixed(1) + 'pp)</span>';
+            })()
+          : '';
+        return '<div style="white-space:nowrap;color:' + color + (yaGano ? ';font-weight:700' : '') + '" title="Más de ' + l.linea + ' / Menos de ' + l.linea + '">' +
+          l.linea + (yaGano ? ' ✓' : '') +
+          ' <span style="color:var(--green)">↑' + over + '</span>' +
+          ' <span style="color:var(--cyan)">↓' + under + '</span>' + edge +
+          '</div>';
+      }).join('') || '<span style="color:var(--fg3)">sin líneas de córners</span>';
+
+      const p = d.poisson || {};
+      const sug = p.sugerida;
+      // Explicito a proposito: no basta con "Sugerida: Menos 7.5 (+22.8pp)"
+      // — hay que decir la accion completa (apostar Menos DE 7.5) y el
+      // porque (el modelo cree X%, el mercado paga como si fuera Y%),
+      // porque "pp" y una linea sola no dejan claro que es una sugerencia
+      // de apuesta y no solo una etiqueta informativa.
+      let poissonHtml = '<span style="color:var(--fg3)">—</span>';
+      if (p.esperados != null) {
+        poissonHtml = '<div style="font-size:12px;max-width:220px">' +
+          '<div style="color:var(--fg3)">Corners esperados al final: <b style="color:var(--yellow)">' + p.esperados + '</b></div>';
+        if (sug) {
+          const relevante = sug.edge >= 0.05;
+          const accion = 'Apostar <b>' + (sug.lado === 'over' ? 'MÁS' : 'MENOS') + ' de ' + sug.linea + '</b> córners';
+          const pModeloPct = (sug.pModelo * 100).toFixed(0);
+          // pMercado (devigado, sin el margen de la casa) es lo que de
+          // verdad decide sug.edge — mostrar 100/cuota aqui daba un numero
+          // distinto que hacia parecer sin edge una sugerencia que si lo
+          // tenia (bug encontrado el 2026-09-10 con la explicacion "modelo
+          // 29%, mercado 29%" mostrando un caso con 5+ puntos de edge real).
+          const pMercadoPct = sug.pMercado != null ? (sug.pMercado * 100).toFixed(0) : null;
+          poissonHtml +=
+            '<div style="margin-top:4px;padding:4px 6px;border-radius:4px;background:' + (relevante ? 'rgba(46,213,115,.1)' : 'rgba(150,150,150,.08)') + ';color:' + (relevante ? 'var(--green)' : 'var(--fg2)') + '">' +
+              '💡 ' + accion +
+              '<div style="font-size:10px;color:var(--fg3);margin-top:2px;font-weight:400">' +
+                'El modelo (binomial negativa) estima ' + pModeloPct + '% de probabilidad' +
+                (pMercadoPct ? ', el mercado (sin margen) implica ' + pMercadoPct + '%' + (sug.odd ? ' (cuota ' + sug.odd.toFixed(2) + ')' : '') : '') +
+              '</div>' +
+            '</div>';
+        }
+        poissonHtml += '</div>';
+      }
+      // INDICADOR DE DIRECCION: hacia donde derivo playdoit la linea (↑Más /
+      // ↓Menos) segun la sugerida actual, con el pronostico NB al lado. Es
+      // un boton, no solo texto: al hacer clic abre el historial de
+      // pronosticos guardado para ESTE partido (ver saveForecastSnapshot en
+      // src/db.js) — sin eso no habria forma de ver que decia el modelo
+      // hace 20 minutos ni con que cuota, una vez que la cuota ya se movio.
+      let direccionHtml = '<span style="color:var(--fg3)">—</span>';
+      if (sug) {
+        const flecha = sug.lado === 'over' ? '↑' : '↓';
+        const color = sug.lado === 'over' ? 'var(--green)' : 'var(--cyan)';
+        const etiqueta = sug.lado === 'over' ? 'MÁS' : 'MENOS';
+        direccionHtml = '<button onclick="verHistorialPronostico(\'' + esc(d.playdoit.eventId).replace(/'/g, '&#39;') + '\',\'' + esc(d.playdoit.event).replace(/'/g, '&#39;') + '\')" ' +
+          'style="cursor:pointer;background:none;border:1px solid var(--c-border);border-radius:4px;padding:3px 7px;font-size:12px;color:' + color + ';font-weight:700" ' +
+          'title="Ver historial de pronósticos de este partido">' +
+          flecha + ' ' + etiqueta + ' ' + sug.linea +
+          (p.esperados != null ? '<span style="color:var(--fg3);font-weight:400;font-size:10px"> · ' + p.esperados + ' esp.</span>' : '') +
+          '</button>';
+      }
+      return '<tr>' +
+        '<td class="col-event" style="font-family:var(--font)">' + esc(d.playdoit.event) + ' <span style="color:var(--fg3);font-size:11px">[' + esc(d.playdoit.champ || '') + ']</span></td>' +
+        '<td style="color:var(--fg3)">' + (d.playdoit.minuto != null ? d.playdoit.minuto + "'" : '—') + '</td>' +
+        '<td style="font-size:12px;white-space:nowrap">' + lineasHtml + '</td>' +
+        '<td style="font-size:11px;white-space:nowrap">' + fmtHoraVivo(d.playdoit.ts) + '</td>' +
+        '<td style="color:var(--cyan)">' + esc(d.fotmob.home) + ' vs ' + esc(d.fotmob.away) + '</td>' +
+        '<td style="color:var(--yellow);font-weight:700">' + (d.fotmob.cornersHome ?? '—') + '-' + (d.fotmob.cornersAway ?? '—') + ' <span style="color:var(--fg3);font-weight:400">(' + (total ?? '—') + ')</span></td>' +
+        '<td style="font-size:11px;white-space:nowrap">' + fmtHoraVivo(d.fotmob.ts) + '</td>' +
+        '<td style="color:var(--fg3)">' + esc(d.fotmob.status || '—') + '</td>' +
+        '<td style="white-space:nowrap">' + direccionHtml + '</td>' +
+        '<td>' + poissonHtml + '</td>' +
+        '</tr>';
+    }).join('') || '<tr><td colspan="10" style="color:var(--fg3);text-align:center;padding:18px">Ningún partido en vivo ahora mismo en las dos fuentes a la vez.</td></tr>';
+
+    document.getElementById('fotmobLiquidadosBody').innerHTML = (comparadas || []).map(function (r) {
+      const real = '<b style="color:' + (r.fotmob_lado_ganador === 'over' ? 'var(--green)' : 'var(--cyan)') + '">' +
+        (r.fotmob_lado_ganador === 'over' ? 'MÁS' : 'MENOS') + ' de ' + r.linea + '</b>' +
+        ' <span style="color:var(--fg3);font-size:11px">(' + r.fotmob_conteo_final + ' córners reales)</span>';
+      const derivo = r.lado_ganador
+        ? '<b style="color:' + (r.lado_ganador === 'over' ? 'var(--green)' : 'var(--cyan)') + '">' + (r.lado_ganador === 'over' ? 'MÁS' : 'MENOS') + '</b>' +
+          ' <span style="color:var(--fg3);font-size:11px">(' + esc(r.certeza || '—') + ')</span>'
+        : '<span class="reason-tag" title="Evidencia insuficiente para derivar un lado">sin etiqueta</span>';
+      const acerto = r.lado_ganador == null ? '<span style="color:var(--fg3)">sin comparar</span>'
+        : r.lado_ganador === r.fotmob_lado_ganador ? '<span style="color:var(--green)">✓ acertó</span>'
+        : '<span style="color:var(--red)">✗ falló</span>';
+      return '<tr>' +
+        '<td class="col-event" style="font-family:var(--font)">' + esc(r.event) + '</td>' +
+        '<td style="color:var(--fg2)">' + r.linea + '</td>' +
+        '<td>' + real + '</td>' +
+        '<td>' + derivo + '</td>' +
+        '<td>' + acerto + '</td>' +
+        '</tr>';
+    }).join('') || '<tr><td colspan="5" style="color:var(--fg3);text-align:center;padding:18px">Aún no hay partidos liquidados con match de ambas fuentes.</td></tr>';
+  } catch (e) { console.error('FotMob pilot load error:', e); }
+}
+
+// ═══════════ VALOR PRE-PARTIDO vs. CASA SHARP (src/prematchValue.js) ═══════════
+async function loadPrematchValue() {
+  try {
+    const res = await fetch(API + '/api/prematch-value');
+    const { activo, resumen, destacadoPct, filas } = await res.json();
+
+    const r = resumen || {};
+    document.getElementById('prematchResumen').innerHTML =
+      (activo ? '🟢 activo' : '⚫ apagado') +
+      ' · ' + (r.filas || 0) + ' comparaciones en ' + (r.partidos || 0) + ' partidos' +
+      ' · <b style="color:var(--yellow)">' + (r.destacadas || 0) + '</b> con diferencia ≥' + destacadoPct + '%';
+
+    document.getElementById('prematchValueBody').innerHTML = (filas || []).map(function (f) {
+      const destacado = Math.abs(f.edge_pct) >= destacadoPct;
+      const color = f.edge_pct > 0 ? 'var(--green)' : 'var(--red)';
+      const signo = f.edge_pct > 0 ? '+' : '';
+      return '<tr' + (destacado ? ' style="background:rgba(229,192,123,0.08)"' : '') + '>' +
+        '<td class="col-event" style="font-family:var(--font)">' + esc(f.event) + '</td>' +
+        '<td style="color:var(--yellow)">' + esc(f.selection) + '</td>' +
+        '<td class="num">@ ' + fmt(f.playdoit_odd, 2) + '</td>' +
+        '<td class="num" style="color:var(--fg3)">@ ' + fmt(f.sharp_odd, 2) + '</td>' +
+        '<td style="color:var(--fg3);font-size:11px">' + esc(f.bookmaker || '—') + '</td>' +
+        '<td class="num" style="color:' + color + ';font-weight:700">' + signo + fmt(f.edge_pct, 1) + '%</td>' +
+        '<td style="color:var(--fg3)">' + fmtDate(f.start_date) + '</td>' +
+        '</tr>';
+    }).join('') || '<tr><td colspan="7" style="color:var(--fg3);text-align:center;padding:18px">Sin comparaciones todavía — el escaneo corre cada ' +
+      '4h y comparte presupuesto de crédito con las capturas sharp de picks en vivo.</td></tr>';
+  } catch (e) { console.error('Prematch value load error:', e); }
+}
+
+// ═══════════ xG DE TEMPORADA — PRE-PARTIDO (src/prematchXg.js) ═══════════
+async function loadPrematchXg() {
+  try {
+    const res = await fetch(API + '/api/prematch-xg');
+    const { activo, resumen, filas } = await res.json();
+
+    const r = resumen || {};
+    document.getElementById('xgResumen').innerHTML =
+      (activo ? '🟢 activo' : '⚫ apagado') +
+      ' · ' + (r.filas || 0) + ' eventos procesados · <b>' + (r.conXg || 0) + '</b> con xG disponible';
+
+    document.getElementById('xgBody').innerHTML = (filas || []).map(function (f) {
+      const dif = Math.abs(f.xg_esperado_local - f.xg_esperado_visita);
+      const favLocal = f.xg_esperado_local > f.xg_esperado_visita;
+      return '<tr>' +
+        '<td class="col-event" style="font-family:var(--font)">' + esc(f.event) + '</td>' +
+        '<td class="num" style="color:' + (favLocal ? 'var(--green)' : 'var(--fg3)') + '">' + fmt(f.xg_esperado_local, 2) + '</td>' +
+        '<td class="num" style="color:' + (!favLocal ? 'var(--green)' : 'var(--fg3)') + '">' + fmt(f.xg_esperado_visita, 2) + '</td>' +
+        '<td class="num" style="font-weight:700">' + fmt(f.xg_esperado_total, 2) + '</td>' +
+        '<td style="color:var(--fg3)">' + fmtDate(f.start_date) + '</td>' +
+        '</tr>';
+    }).join('') || '<tr><td colspan="5" style="color:var(--fg3);text-align:center;padding:18px">Sin datos todavía — el piloto corre cada 2h, 10 eventos/ciclo.</td></tr>';
+  } catch (e) { console.error('Prematch xG load error:', e); }
+}
+
+// ═══════════ VISOR: PARTIDOS DE HOY (PRE-PARTIDO) ═══════════
+let prematchHoyData = [];
+
+function oddDe(mercados, mercado, selectionTest) {
+  const grupo = (mercados || {})[mercado];
+  if (!grupo) return null;
+  const s = grupo.find(function (x) { return selectionTest(x.selection); });
+  return s ? s.odd : null;
+}
+async function loadPrematchHoy() {
+  try {
+    const res = await fetch(API + '/api/prematch-hoy');
+    const { total, partidos } = await res.json();
+    prematchHoyData = partidos || [];
+
+    document.getElementById('prematchHoyBadge').textContent = total || 0;
+    document.getElementById('prematchHoyResumen').textContent = (total || 0) + ' partido(s) programado(s) hoy — clic en un partido para ver estadio, árbitro y forma reciente (FotMob)';
+
+    document.getElementById('prematchHoyBody').innerHTML = prematchHoyData.length
+      ? prematchHoyData.map(function (p, i) {
+          const hora = p.startDate ? new Date(p.startDate).toLocaleTimeString('es-MX', { timeZone: 'America/Mexico_City', hour: '2-digit', minute: '2-digit', hour12: false }) : '—';
+          const rf = p.mercados['Resultado Final (Tiempo Regular)'] || [];
+          const partes = p.event.split(/\s+vs\.?\s+/i);
+          const nombreLocal = (partes[0] || '').trim(), nombreVisita = (partes[1] || '').trim();
+          const equis = oddDe(p.mercados, 'Resultado Final (Tiempo Regular)', function (s) { return /^empate$/i.test(s); });
+          const uno = oddDe(p.mercados, 'Resultado Final (Tiempo Regular)', function (s) { return s.trim() === nombreLocal; });
+          const dos = oddDe(p.mercados, 'Resultado Final (Tiempo Regular)', function (s) { return s.trim() === nombreVisita; });
+          const ou25 = p.mercados['Total 2.5'] || [];
+          const under = ou25.find(function (s) { return /menos/i.test(s.selection); });
+          const over = ou25.find(function (s) { return /m[aá]s/i.test(s.selection); });
+          return '<tr style="cursor:pointer" onclick="openPrematchModal(' + i + ')">' +
+            '<td style="color:var(--fg3);white-space:nowrap">' + hora + '</td>' +
+            '<td style="color:var(--fg3);font-size:11px">' + esc(p.champ || '—') + '</td>' +
+            '<td class="col-event" style="font-family:var(--font)">' + esc(p.event) + '</td>' +
+            '<td class="num">' + (uno != null ? '@' + fmt(uno, 2) : '—') + '</td>' +
+            '<td class="num">' + (equis != null ? '@' + fmt(equis, 2) : '—') + '</td>' +
+            '<td class="num">' + (dos != null ? '@' + fmt(dos, 2) : '—') + '</td>' +
+            '<td class="num" style="font-size:11px">' + (under ? 'U@' + fmt(under.odd, 2) : '—') + (over ? ' O@' + fmt(over.odd, 2) : '') + '</td>' +
+            '</tr>';
+        }).join('')
+      : '<tr><td colspan="7" style="color:var(--fg3);text-align:center;padding:24px">Sin partidos capturados para hoy todavía.</td></tr>';
+  } catch (e) { console.error('Prematch hoy load error:', e); }
+}
+
+// ── Modal de detalle FotMob (estadio, arbitro, forma reciente) ──
+async function openPrematchModal(idx) {
+  const p = prematchHoyData[idx];
+  if (!p) return;
+  document.getElementById('prematchModalOverlay').classList.add('open');
+  document.getElementById('prematchModalTitle').textContent = p.event;
+  document.getElementById('prematchModalSub').textContent = (p.champ || '') +
+    (p.startDate ? ' · ' + new Date(p.startDate).toLocaleString('es-MX', { timeZone: 'America/Mexico_City', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }) + ' CDMX' : '');
+  const body = document.getElementById('prematchModalBody');
+  body.innerHTML = 'Buscando en FotMob…';
+  try {
+    const res = await fetch(API + '/api/prematch-fotmob?eventId=' + encodeURIComponent(p.eventId));
+    const d = await res.json();
+    if (!d || d.sinMatch) { body.innerHTML = '<span style="color:var(--fg3)">Sin equivalente encontrado en FotMob para este partido.</span>'; return; }
+    if (d.error) { body.innerHTML = '<span style="color:var(--red)">Error: ' + esc(d.error) + '</span>'; return; }
+
+    let html = '';
+    if (d.stadium) {
+      html += '<div class="modal-stat"><span class="modal-stat-k">Estadio</span><span class="modal-stat-v">' +
+        esc(d.stadium.name || '—') + (d.stadium.city ? ', ' + esc(d.stadium.city) : '') + '</span></div>';
+    }
+    html += '<div class="modal-stat"><span class="modal-stat-k">Árbitro</span><span class="modal-stat-v">' +
+      esc((d.referee && d.referee.text) || 'sin publicar') + '</span></div>';
+
+    if (Array.isArray(d.teamForm) && d.teamForm.length === 2) {
+      for (const equipo of d.teamForm) {
+        if (!equipo || !equipo.length) continue;
+        const nombreEquipo = equipo[0].home.isOurTeam ? equipo[0].home.name : equipo[0].away.name;
+        const badges = equipo.slice(0, 5).map(function (m) {
+          const color = m.resultString === 'W' ? 'var(--green)' : m.resultString === 'L' ? 'var(--red)' : 'var(--fg3)';
+          return '<span title="' + esc(m.score || '') + '" style="display:inline-block;width:20px;height:20px;line-height:20px;text-align:center;border-radius:4px;margin-right:4px;font-size:10px;font-weight:700;background:' + color + '22;color:' + color + '">' + esc(m.resultString || '?') + '</span>';
+        }).join('');
+        html += '<div style="margin-top:10px"><div style="font-size:11px;color:var(--fg3);margin-bottom:4px">' + esc(nombreEquipo) + ' — últimos 5</div>' + badges + '</div>';
+      }
+    }
+    html += '<div style="margin-top:14px;font-size:10px;color:var(--fg3)">Fuente: FotMob · match #' + esc(d.fotmobEventId) + '</div>';
+    body.innerHTML = html || '<span style="color:var(--fg3)">FotMob no tiene contexto adicional para este partido.</span>';
+  } catch (e) {
+    body.innerHTML = '<span style="color:var(--red)">No se pudo cargar: ' + esc(e.message) + '</span>';
+  }
+}
+function closePrematchModal() {
+  document.getElementById('prematchModalOverlay').classList.remove('open');
 }
 
 // ═══════════ GRUPO DE CONTROL (candidatos descartados) ═══════════
@@ -1227,7 +2036,7 @@ async function loadControlGroup() {
     document.getElementById('cgHero').innerHTML = `
       <div class="fw-stat"><div class="fw-val" style="color:var(--cyan)">${total}</div><div class="fw-label">Descartados (muestra)</div></div>
       <div class="fw-stat"><div class="fw-val" style="color:var(--yellow)">${pendientes}</div><div class="fw-label">Partido en Curso</div></div>
-      <div class="fw-stat"><div class="fw-val" style="color:${wrColor}">${wrDescartado == null ? '—' : wrDescartado + '%'}</div><div class="fw-label">WR de lo Descartado</div></div>
+      <div class="fw-stat fw-primary"><div class="fw-val" style="color:${wrColor}">${wrDescartado == null ? '—' : wrDescartado + '%'}</div><div class="fw-label">WR de lo Descartado</div></div>
     `;
 
     document.getElementById('cgByRule').innerHTML = Object.entries(porRegla || {}).map(([regla, s]) => {
@@ -1276,11 +2085,15 @@ function renderControlGroup() {
 }
 
 // ═══════════ PICK INSPECTOR MODAL ═══════════
-async function openPick(id) {
+// `source` distingue de que tabla viene el pick. Los ids de picks y model_picks
+// COLISIONAN, asi que sin este parametro una tarjeta de sombra abriria la ficha
+// de un pick real distinto con el mismo id.
+async function openPick(id, source) {
   const overlay = document.getElementById('modalOverlay');
   overlay.classList.add('open');
 
-  document.getElementById('modalTitle').textContent = `Pick #${id} — Cargando...`;
+  const esSombra = source === 'model';
+  document.getElementById('modalTitle').textContent = `${esSombra ? '🤖 Sombra' : 'Pick'} #${id} — Cargando...`;
   document.getElementById('modalSub').textContent = '';
   document.getElementById('modalRec').textContent = 'Cargando análisis...';
   document.getElementById('modalStats').innerHTML = '';
@@ -1288,11 +2101,14 @@ async function openPick(id) {
   document.getElementById('modalSnapCount').textContent = '0';
 
   try {
-    const res = await fetch(API + `/api/pick-timeline?id=${id}`);
-    const { pick: p, analytics: a, timeline: t } = await res.json();
+    const res = await fetch(API + `/api/pick-timeline?id=${id}${esSombra ? '&source=model' : ''}`);
+    const { pick: p, analytics: a, timeline: t, cambiosLinea } = await res.json();
 
-    document.getElementById('modalTitle').textContent = `Pick #${p.id} — ${p.event}`;
-    document.getElementById('modalSub').textContent = `${p.sport || 'Fútbol'} · ${p.market} · ${p.selection} · ${fmtDate(p.ts)}`;
+    document.getElementById('modalTitle').textContent =
+      `${esSombra ? '🤖 Sombra' : 'Pick'} #${p.id} — ${p.event}`;
+    document.getElementById('modalSub').textContent =
+      `${p.sport || 'Fútbol'} · ${p.market} · ${p.selection} · ${fmtDate(p.ts)}`
+      + (esSombra ? ' · NO APOSTADO' : '');
 
     const rec = document.getElementById('modalRec');
     rec.textContent = a.recommendation;
@@ -1310,8 +2126,15 @@ async function openPick(id) {
       ['MFE Peak ROI', `+${fmt(a.mfePeakRoi)}%`],
       ['Snapshots', a.snapshotCount],
       ['Confianza', p.confPct || fmtPct(p.conf * 100)],
-      ['Stake', `${fmt(p.stake)}u (${p.stake_mode || '—'})`],
-      ['Resultado', p.result || 'PENDIENTE'],
+      // La sombra no tiene stake. En su lugar se muestra el contraste entre los
+      // dos motores, que es lo que de verdad se quiere leer de estos picks.
+      esSombra
+        ? ['Heurístico', p.confHeurPct || '—']
+        : ['Stake', `${fmt(p.stake)}u (${p.stake_mode || '—'})`],
+      esSombra
+        ? ['Decisor', p.tambien_heuristico ? '🤝 Ambos coinciden' : '🤖 Solo el modelo']
+        : ['Resultado', p.result || 'PENDIENTE'],
+      ...(esSombra ? [['Resultado', p.result || 'PENDIENTE']] : []),
     ].map(([k, v]) => `<div class="modal-stat"><span class="modal-stat-k">${k}</span><span class="modal-stat-v">${v}</span></div>`).join('');
 
     // Chart
@@ -1322,6 +2145,15 @@ async function openPick(id) {
         const d = new Date(s.ts);
         return d.toLocaleTimeString('es-MX', { timeZone: 'America/Mexico_City', hour: '2-digit', minute: '2-digit', hour12: false });
       });
+
+      // Marca los puntos donde el mercado dejo de cotizar la linea original y
+      // el timeline siguio con otra (ver timelineEncadenado en
+      // dashboardApi.ts) — sin esto la grafica se veia continua pero mezclaba
+      // dos lineas distintas sin avisar. Pedido explicito del usuario.
+      const cambios = cambiosLinea || [];
+      const indicesCambio = cambios.map(c => odds.findIndex(s => s.ts >= c.enTs)).filter(i => i >= 0);
+      const markerData = odds.map((s, i) => indicesCambio.includes(i) ? s.odd_decimal : null);
+
       modalChartInstance = new Chart(document.getElementById('modalChart'), {
         type: 'line',
         data: {
@@ -1340,16 +2172,43 @@ async function openPick(id) {
             data: odds.map(() => a.initialOdd),
             borderColor: 'rgba(255,170,0,0.4)', borderWidth: 1, borderDash: [4, 4],
             pointRadius: 0, fill: false,
+          }, {
+            label: 'Cambio de línea',
+            data: markerData, showLine: false, pointRadius: 6, pointHoverRadius: 7,
+            pointBackgroundColor: '#e5c07b', pointBorderColor: '#fff', pointBorderWidth: 1,
           }]
         },
         options: {
-          responsive: true, plugins: { legend: { display: false } },
+          responsive: true,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                afterLabel: (ctx) => {
+                  if (ctx.datasetIndex !== 2) return '';
+                  const c = cambios[indicesCambio.indexOf(ctx.dataIndex)];
+                  return c ? `Cambio de línea: ${c.de} → ${c.a}` : '';
+                }
+              }
+            }
+          },
           scales: {
             x: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#6b7280', font: { size: 9 }, maxTicksLimit: 12 } },
             y: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#6b7280', font: { size: 10, family: "'JetBrains Mono'" } } }
           }
         }
       });
+    }
+
+    // Lista textual de cambios de linea, debajo de la grafica — mismo dato
+    // que los marcadores, en formato legible sin tener que hacer hover.
+    const cajaCambios = document.getElementById('modalLineChanges');
+    if (cajaCambios) {
+      cajaCambios.innerHTML = (cambiosLinea && cambiosLinea.length)
+        ? '⚠️ Cambio de línea: ' + cambiosLinea.map(c =>
+            `${esc(c.de)} → ${esc(c.a)} (${new Date(c.enTs).toLocaleTimeString('es-MX', { timeZone: 'America/Mexico_City', hour: '2-digit', minute: '2-digit', hour12: false })})`
+          ).join(' · ')
+        : '';
     }
 
     // Timeline table
@@ -1372,6 +2231,43 @@ function closeModal() {
   document.getElementById('modalOverlay').classList.remove('open');
 }
 
+// ═══════════ MODAL: HISTORIAL DE PRONÓSTICOS (FotMob, en vivo) ═══════════
+async function verHistorialPronostico(eventId, eventName) {
+  document.getElementById('forecastModalTitle').textContent = eventName || 'Historial de pronósticos';
+  document.getElementById('forecastHistBody').innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--fg3);padding:14px">Cargando…</td></tr>';
+  document.getElementById('forecastModalOverlay').classList.add('open');
+  try {
+    const res = await fetch(API + '/api/fotmob-pilot/historial?eventId=' + encodeURIComponent(eventId));
+    const { historial } = await res.json();
+    document.getElementById('forecastHistBody').innerHTML = (historial || []).map(function (h) {
+      const etiqueta = h.lado === 'over' ? 'MÁS' : 'MENOS';
+      const color = h.lado === 'over' ? 'var(--green)' : 'var(--cyan)';
+      const hora = h.ts ? new Date(h.ts).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '—';
+      const pModelo = h.p_modelo != null ? (h.p_modelo * 100).toFixed(0) + '%' : '—';
+      const pMercado = h.p_mercado != null ? (h.p_mercado * 100).toFixed(0) + '%' : '—';
+      const edge = h.edge != null ? (h.edge >= 0 ? '+' : '') + (h.edge * 100).toFixed(1) + 'pp' : '—';
+      return '<tr>' +
+        '<td style="white-space:nowrap">' + hora + '</td>' +
+        '<td>' + (h.minuto != null ? h.minuto + "'" : '—') + '</td>' +
+        '<td style="color:' + color + ';font-weight:700;white-space:nowrap">' + etiqueta + ' de ' + h.linea + '</td>' +
+        '<td>' + (h.odd != null ? h.odd.toFixed(2) : '—') + '</td>' +
+        '<td>' + pModelo + '</td>' +
+        '<td>' + pMercado + '</td>' +
+        '<td style="color:' + (h.edge >= 0.05 ? 'var(--green)' : 'var(--fg3)') + '">' + edge + '</td>' +
+        '<td>' + (h.conteo_real ?? '—') + '</td>' +
+        '<td>' + (h.esperados ?? '—') + '</td>' +
+        '</tr>';
+    }).join('') || '<tr><td colspan="9" style="text-align:center;color:var(--fg3);padding:14px">Sin historial de pronósticos guardado todavía para este partido.</td></tr>';
+  } catch (e) {
+    document.getElementById('forecastHistBody').innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--red);padding:14px">Error al cargar el historial.</td></tr>';
+    console.error('Forecast history load error:', e);
+  }
+}
+
+function closeForecastModal() {
+  document.getElementById('forecastModalOverlay').classList.remove('open');
+}
+
 // ═══════════ INIT & AUTO-REFRESH ═══════════
 async function init() {
   loadCommand();
@@ -1379,6 +2275,11 @@ async function init() {
   loadHistory();
   loadFirewall();
   loadControlGroup();
+  loadModelPicks();
+  loadStats();
+  loadPrematchValue();
+  loadPrematchXg();
+  loadPrematchHoy();
 }
 
 init();
@@ -1390,6 +2291,11 @@ setInterval(() => {
   loadHistory();
   loadFirewall();
   loadControlGroup();
+  loadModelPicks();
+  loadStats();
+  loadPrematchValue();
+  loadPrematchXg();
+  loadPrematchHoy();
 }, 15000);
 
 // Keep dashboard alive when tab is hidden/restored

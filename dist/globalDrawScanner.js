@@ -356,6 +356,7 @@ async function checkAndBroadcastGlobalDraws(token, chatId) {
                         fProbJusta: scored.base, fAvance: scored.progress, fAvanceModel: scored.fAvance,
                         fSituacion: scored.scoreFactor, fLinea: scored.lineFactor,
                         confHeuristic: scored.confHeuristic, confLearned: scored.confLearned,
+                        modelVersion: scored.modelVersion, modelMode: scored.modelMode,
                         edge: scored.edge, source: 'global_draw',
                         openingOdd: scored.openingOdd, fApertura: scored.fApertura, scoreVersion: scored.scoreVersion,
                         stake: scored.stake, stakeMode: scored.stakeMode,
