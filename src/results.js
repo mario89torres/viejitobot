@@ -1,4 +1,4 @@
-const { getUnsettledPicks, getLastScore, getLastSeen, getClosingOdd, settlePick, setSharpClosing,
+const { getUnsettledPicks, getLastScore, getLastRegularScore, getLastSeen, getClosingOdd, settlePick, setSharpClosing,
         getUnsettledRejected, settleRejected,
         getUnsettledModelPicks, settleModelPick } = require('./db');
 const { gradePick, parsePick, decidedResult } = require('./markets');
@@ -165,6 +165,42 @@ function settleDecidedEarly(rows, liveEventIds) {
     (pick, result, score) => settleRejected(pick.id, result, score), rows, liveEventIds);
 }
 
+// Futbol: los mercados (ganador, doble oportunidad, totales...) son de TIEMPO REGULAR, asi que el marcador
+// de la prorroga no cuenta. Otros deportes (hockey, basquet...) conservan su ultimo marcador: alli el tiempo
+// extra si define el ganador y no hay como distinguirlo aqui.
+const esFutbolPick = (sport) => String(sport || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim() === 'futbol';
+
+/**
+ * ¿El último marcador muestreado es el FINAL del partido, o una muestra vieja?
+ *
+ * Un evento sale del feed de Altenar por muchos motivos que no son "terminó" (descanso, hueco del
+ * proveedor, suspensión). Sin esta comprobación, `last_sample` graduaba contra ese marcador parcial:
+ * el pick #6582 (Japón vs. Venezuela, Menos de 1.5) se emitió al 45' con 0-0, el último snapshot
+ * fue el del descanso y se liquidó WIN 0-0; el partido acabó 2-1 (pérdida).
+ *
+ * Medido el 2026-09-28 sobre fútbol de los últimos 14-30 días: los liquidados con un último
+ * snapshot anterior al 80' ganaban 94.2% (model_picks, n=154) y 100% (emitidos, n=17), contra
+ * 72.6% y 83.9% de los que terminaron cerca del final. `tryOfficialResult` no tiene fuente, así que
+ * no se puede corregir con un resultado oficial: lo que no se sabe se marca `unknown` (queda fuera
+ * de las métricas) en vez de inventar una etiqueta.
+ *
+ * Es final: el 90' o después de la 2ª parte (MIN_FINAL_MIN, 85 por defecto: en 2,154 eventos el 84%
+ * termina en 90+ y solo el 9% queda antes del 85), o "Esperando prórroga" (su marcador es el de los
+ * 90 minutos). Otros deportes no cambian: su `live_time` no se ha medido.
+ */
+const MIN_FINAL_MIN = Number(process.env.MIN_FINAL_MIN || 85);
+function marcadorEsFinal(sport, liveTime, minFinal = MIN_FINAL_MIN) {
+  if (!esFutbolPick(sport)) return true;
+  const lt = String(liveTime || '');
+  if (/esperando pr[oó]rroga/i.test(lt)) return true;
+  const m = /^(\d+)/.exec(lt);
+  return !!m && Number(m[1]) >= minFinal && /2ª parte/i.test(lt);
+}
+
+function ultimoMarcador(row) {
+  return esFutbolPick(row.sport) ? (getLastRegularScore(row.event_id) || null) : getLastScore(row.event_id);
+}
+
 async function processSettlements(rows) {
   // Acepta las filas en vivo (antes solo el Set de eventos) para poder mirar
   // también si la SELECCIÓN concreta sigue en el feed, no solo el partido.
@@ -201,8 +237,14 @@ async function processSettlements(rows) {
         break;
       }
       if (m.attempts === RETRY_LADDER_MIN.length) {
-        const last = getLastScore(id);
-        settleWith(pick, last ? last.score : null, 'last_sample');
+        const last = ultimoMarcador(pick);
+        if (last && !marcadorEsFinal(pick.sport, last.live_time)) {
+          // Marcador de una muestra vieja: no se etiqueta win/loss con él (ver marcadorEsFinal).
+          console.warn(`[settle:temprano] ${pick.event} | ${pick.selection}: último marcador ${last.score} a las "${last.live_time}", no es el final -> unknown`);
+          settleWith(pick, null, 'last_sample_temprano');
+        } else {
+          settleWith(pick, last ? last.score : null, 'last_sample');
+        }
         missing.delete(id);
       }
     }
@@ -264,11 +306,17 @@ function liquidarGrupo(liveEventIds, pendientes, liquidar) {
     const minutosFuera = (Date.now() - Date.parse(lastSeen)) / 60000;
     if (minutosFuera < CONTROL_SETTLE_MIN) continue;
 
-    const last = getLastScore(r.event_id);
+    const last = ultimoMarcador(r);
     if (!last || !last.score) continue;
+    if (!marcadorEsFinal(r.sport, last.live_time)) {
+      // Se escribe `unknown` (no se deja pendiente): una fila pendiente exime a su evento de la poda.
+      console.warn(`[settle:temprano] ${r.event} | ${r.selection}: último marcador ${last.score} a las "${last.live_time}", no es el final -> unknown`);
+      liquidar(r.id, 'unknown', null);
+      continue;
+    }
     const row = { market: r.market, selection: r.selection, event: r.event, sport: r.sport };
     liquidar(r.id, resultFor(row, last.score), last.score);
   }
 }
 
-module.exports = { processSettlements };
+module.exports = { processSettlements, resultFor, esFutbolPick, marcadorEsFinal };

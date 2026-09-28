@@ -88,6 +88,9 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_prematch_ts ON prematch_snapshots(ts);
   CREATE INDEX IF NOT EXISTS idx_prematch_event ON prematch_snapshots(event_id, ts);
+  -- El visor "Hoy" filtra por start_date; sin este indice cada peticion recorria la tabla y en disco frio tardaba 34 s
+  -- (2026-09-25), bloqueando el dashboard (better-sqlite3 es sincrono). Cubre el subselect de /api/prematch-hoy.
+  CREATE INDEX IF NOT EXISTS idx_prematch_start ON prematch_snapshots(start_date, event_id, market, selection, ts);
 
   -- Escaneo de valor PRE-PARTIDO contra una casa sharp (src/sharp.js, misma
   -- fuente que ya se usaba solo para picks en vivo). NO espera a que se mueva
@@ -110,6 +113,19 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_prematch_scan_ts ON prematch_value_scan(ts);
   CREATE INDEX IF NOT EXISTS idx_prematch_scan_event ON prematch_value_scan(event_id, ts);
+
+  -- Patas que el reporte de las 08:00 mostro (src/reportePrematch.js), guardadas para
+  -- construir el RECORD pre-partido que hoy no existe: sin esto no se puede decir
+  -- que una pata es "segura" con datos. kind: 'parlay' | 'top' | 'valor'.
+  CREATE TABLE IF NOT EXISTS prematch_report_picks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL, dia TEXT NOT NULL, kind TEXT NOT NULL,
+    event_id INTEGER, event TEXT, champ TEXT, start_date TEXT,
+    market TEXT, selection TEXT, odd_decimal REAL, p_justa REAL,
+    result TEXT, final_score TEXT, score_source TEXT, settled_ts TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_report_picks_dia ON prematch_report_picks(dia);
+  CREATE INDEX IF NOT EXISTS idx_report_picks_pend ON prematch_report_picks(result, start_date);
 
   -- xG de temporada de ambos equipos (src/prematchXg.js), pedido explicito del
   -- usuario el 2026-09-23 tras confirmar que FotMob expone xG a favor/en
@@ -382,6 +398,82 @@ db.exec(`
   );
   CREATE UNIQUE INDEX IF NOT EXISTS idx_exec_probe_uniq ON pick_exec_probe(source, pick_id, delay_s);
 
+  -- Cola del piloto UI. Es independiente de pick_exec_probe: este ultimo
+  -- observa el feed publico a +10/+30/+60 s; la cola solo agenda una
+  -- comprobacion visual segura (list_only) y nunca confirma una apuesta.
+  CREATE TABLE IF NOT EXISTS dry_run_jobs (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    source           TEXT NOT NULL,              -- 'heur' | 'model'
+    pick_id          INTEGER NOT NULL,
+    event_id         INTEGER NOT NULL,
+    sport_id         INTEGER,
+    sport            TEXT,
+    market           TEXT NOT NULL,
+    selection        TEXT NOT NULL,
+    odd_emit         REAL NOT NULL,
+    pick_ts          TEXT NOT NULL,
+    mode             TEXT NOT NULL DEFAULT 'list_only',
+    status           TEXT NOT NULL DEFAULT 'pending',
+    attempts         INTEGER NOT NULL DEFAULT 0,
+    max_attempts     INTEGER NOT NULL DEFAULT 2,
+    available_at     TEXT NOT NULL,
+    claimed_by       TEXT,
+    lease_until      TEXT,
+    started_at       TEXT,
+    finished_at      TEXT,
+    last_error       TEXT,
+    last_run_id      INTEGER,
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL,
+    UNIQUE(source, pick_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_dry_run_jobs_claim
+    ON dry_run_jobs(status, available_at, lease_until);
+
+  -- Estado del circuit breaker del worker. Si el perfil queda sucio o la
+  -- defensa de red bloquea una escritura, se deja de consumir la cola hasta
+  -- que el operador lo inspeccione y lo restablezca explicitamente.
+  CREATE TABLE IF NOT EXISTS dry_run_worker_state (
+    id             INTEGER PRIMARY KEY CHECK (id = 1),
+    circuit_open   INTEGER NOT NULL DEFAULT 0,
+    reason         TEXT,
+    opened_at      TEXT,
+    updated_at     TEXT NOT NULL
+  );
+
+  -- Bitacora por INTENTO, no solo por pick. source evita colisiones entre
+  -- picks y model_picks; job_id enlaza cada evidencia con su unidad de cola.
+  CREATE TABLE IF NOT EXISTS bot_dry_run_log (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts                    TEXT NOT NULL,
+    started_at            TEXT,
+    finished_at           TEXT,
+    source                TEXT,
+    job_id                INTEGER,
+    attempt               INTEGER,
+    mode                  TEXT,
+    pick_id               INTEGER,
+    event_id              INTEGER,
+    sport_id              INTEGER,
+    market                TEXT,
+    selection             TEXT,
+    odd_emit              REAL,
+    odd_betslip           REAL,
+    odd_drift_pct         REAL,
+    rechazo_regla         INTEGER DEFAULT 0,
+    latencia_dom_ms       INTEGER,
+    latencia_click_ms     INTEGER,
+    latencia_total_ms     INTEGER,
+    latencia_desde_emit_ms INTEGER,
+    status                TEXT,
+    error_msg             TEXT,
+    screenshot_path       TEXT,
+    bloqueos              TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_dry_run_pick ON bot_dry_run_log (source, pick_id);
+  CREATE INDEX IF NOT EXISTS idx_dry_run_ts   ON bot_dry_run_log (ts);
+  CREATE INDEX IF NOT EXISTS idx_dry_run_job  ON bot_dry_run_log (job_id, attempt);
+
   CREATE TABLE IF NOT EXISTS value_alerts (
     pick_id       INTEGER PRIMARY KEY,
     ts            TEXT NOT NULL,
@@ -403,6 +495,49 @@ function addColumn(table, col, def) {
   if (!cols.includes(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
 }
 addColumn('snapshots', 'suspended', 'INTEGER NOT NULL DEFAULT 0');
+addColumn('bot_dry_run_log', 'started_at', 'TEXT');
+addColumn('bot_dry_run_log', 'finished_at', 'TEXT');
+addColumn('bot_dry_run_log', 'source', 'TEXT');
+addColumn('bot_dry_run_log', 'job_id', 'INTEGER');
+addColumn('bot_dry_run_log', 'attempt', 'INTEGER');
+addColumn('bot_dry_run_log', 'mode', 'TEXT');
+addColumn('bot_dry_run_log', 'latencia_desde_emit_ms', 'INTEGER');
+addColumn('bot_dry_run_log', 'bloqueos', 'TEXT');
+db.exec('CREATE INDEX IF NOT EXISTS idx_dry_run_source_pick ON bot_dry_run_log(source, pick_id)');
+
+// xG pre-partido normalizado por liga (src/prematchXg.js). Se CONSERVAN las
+// columnas xg_esperado_* originales (promedio simple ataque+defensa) y se
+// añaden las normalizadas, para poder medir despues cual de las dos predice
+// mejor los goles reales en vez de sustituir una por la otra a ciegas.
+addColumn('prematch_xg_scan', 'league_id', 'INTEGER');
+addColumn('prematch_xg_scan', 'season_id', 'TEXT');
+addColumn('prematch_xg_scan', 'league_xg_avg', 'REAL');
+// xG esperado (simple) del partido al momento de mostrar la pata: para cruzarlo con el resultado
+// cuando haya record pre-partido propio (pedido 2026-09-25). NULL si el piloto de xG no cubria el partido.
+addColumn('prematch_report_picks', 'xg_local', 'REAL');
+addColumn('prematch_report_picks', 'xg_visita', 'REAL');
+addColumn('prematch_report_picks', 'xg_total', 'REAL');
+addColumn('prematch_xg_scan', 'xg_norm_local', 'REAL');
+addColumn('prematch_xg_scan', 'xg_norm_visita', 'REAL');
+addColumn('prematch_xg_scan', 'xg_norm_total', 'REAL');
+
+// Promedio de xG por liga y temporada, desde la tabla completa de FotMob
+// (data.fotmob.com/stats/{liga}/season/{temporada}/expected_goals_team.json).
+// xg_por_equipo_partido = xG total / partidos-equipo; el total esperado de un
+// partido promedio es el doble. Cache con TTL: 1 request por liga, no por evento.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS league_xg_avg (
+    league_id INTEGER NOT NULL,
+    season_id TEXT NOT NULL,
+    league_name TEXT,
+    n_equipos INTEGER,
+    xg_total REAL,
+    partidos_equipo INTEGER,
+    xg_por_equipo_partido REAL,
+    updated_ts TEXT NOT NULL,
+    PRIMARY KEY (league_id, season_id)
+  );
+`);
 
 // Continuacion de la migracion SofaScore -> FotMob (ver renameTableIfNeeded
 // mas arriba, donde ya se corrigieron las columnas de fotmob_corner_snapshots
@@ -635,12 +770,39 @@ const insertPrematchXgStmt = db.prepare(`
     (ts, event_id, event, start_date, fotmob_match_id,
      home_team_id, home_played, home_xg_for, home_xg_against,
      away_team_id, away_played, away_xg_for, away_xg_against,
-     xg_esperado_local, xg_esperado_visita, xg_esperado_total)
+     xg_esperado_local, xg_esperado_visita, xg_esperado_total,
+     league_id, season_id, league_xg_avg, xg_norm_local, xg_norm_visita, xg_norm_total)
   VALUES (@ts, @eventId, @event, @startDate, @fotmobMatchId,
      @homeTeamId, @homePlayed, @homeXgFor, @homeXgAgainst,
      @awayTeamId, @awayPlayed, @awayXgFor, @awayXgAgainst,
-     @xgEsperadoLocal, @xgEsperadoVisita, @xgEsperadoTotal)
+     @xgEsperadoLocal, @xgEsperadoVisita, @xgEsperadoTotal,
+     @leagueId, @seasonId, @leagueXgAvg, @xgNormLocal, @xgNormVisita, @xgNormTotal)
 `);
+
+const upsertLeagueXgStmt = db.prepare(`
+  INSERT OR REPLACE INTO league_xg_avg
+    (league_id, season_id, league_name, n_equipos, xg_total, partidos_equipo, xg_por_equipo_partido, updated_ts)
+  VALUES (@leagueId, @seasonId, @leagueName, @nEquipos, @xgTotal, @partidosEquipo, @xgPorEquipoPartido, @updatedTs)
+`);
+const getLeagueXgStmt = db.prepare('SELECT * FROM league_xg_avg WHERE league_id = ? AND season_id = ?');
+function saveLeagueXg(row) { upsertLeagueXgStmt.run(row); }
+function getLeagueXg(leagueId, seasonId) { return getLeagueXgStmt.get(leagueId, String(seasonId)) || null; }
+const insReportPick = db.prepare(`INSERT INTO prematch_report_picks
+  (ts, dia, kind, event_id, event, champ, start_date, market, selection, odd_decimal, p_justa, xg_local, xg_visita, xg_total)
+  VALUES (@ts, @dia, @kind, @event_id, @event, @champ, @start_date, @market, @selection, @odd_decimal, @p_justa, @xg_local, @xg_visita, @xg_total)`);
+function saveReportPicks(filas) {
+  db.transaction((fs_) => { for (const f of fs_) insReportPick.run({ xg_local: null, xg_visita: null, xg_total: null, ...f }); })(filas);
+}
+// Patas de reportes desde `desdeDia` (YYYY-MM-DD, CDMX): parlay primero, luego valor, luego top; cada grupo por hora de inicio.
+const reporteEstado = (desdeDia) => db.prepare(
+  "SELECT * FROM prematch_report_picks WHERE dia >= ? ORDER BY dia DESC, CASE kind WHEN 'parlay' THEN 0 WHEN 'valor' THEN 1 ELSE 2 END, start_date").all(desdeDia);
+const reporteYaEnviado = (dia) => !!db.prepare('SELECT 1 FROM prematch_report_picks WHERE dia = ? LIMIT 1').get(dia);
+const reportePendientes = (cutoffIso) => db.prepare(
+  "SELECT * FROM prematch_report_picks WHERE result IS NULL AND start_date < ? ORDER BY start_date").all(cutoffIso);
+const liquidarReportePick = (id, result, finalScore, source) => db.prepare(
+  "UPDATE prematch_report_picks SET result=?, final_score=?, score_source=?, settled_ts=? WHERE id=?")
+  .run(result, finalScore, source, new Date().toISOString(), id);
+
 function savePrematchXg(row) {
   insertPrematchXgStmt.run(row);
 }
@@ -898,6 +1060,17 @@ const unsettledStmt = db.prepare(`SELECT * FROM picks WHERE result IS NULL`);
 const lastScoreStmt = db.prepare(`
   SELECT score, ts FROM snapshots WHERE event_id = ? AND score != '' ORDER BY ts DESC LIMIT 1
 `);
+// Ultimo marcador del TIEMPO REGULAR: descarta las muestras de la prorroga ("1ª/2ª Parte Adicional",
+// "Descanso prorroga") y de los penales. Medido el 2026-09-25 (China (F) vs Vietnam (F), pick #9188): el partido
+// termino 0-0 en el minuto 90, la prorroga lo dejo 1-0 y liquidamos con ese 1-0 => "Empate o Vietnam" salio LOSS
+// cuando era WIN. "Esperando prorroga" SI cuenta: su marcador es el de los 90 minutos.
+// Devuelve también `live_time` de esa muestra: es lo que permite saber si el marcador es del FINAL
+// del partido o de una muestra vieja (results.js: marcadorEsFinal).
+const lastRegularScoreStmt = db.prepare(`
+  SELECT score, ts, live_time FROM snapshots WHERE event_id = ? AND score != ''
+    AND (live_time IS NULL OR (live_time NOT LIKE '%Adicional%' AND live_time NOT LIKE '%Descanso pr%' AND live_time NOT LIKE '%enal%'))
+  ORDER BY ts DESC LIMIT 1
+`);
 const lastSeenStmt = db.prepare(`SELECT MAX(ts) AS ts FROM snapshots WHERE event_id = ?`);
 const settleStmt = db.prepare(`
   UPDATE picks SET result = ?, final_score = ?, settled_ts = ?, result_source = ?,
@@ -996,6 +1169,9 @@ const sameSelectionStmt = db.prepare(`
 // rescates redujera los picks de produccion.
 const pickedTodayStmt = db.prepare(`SELECT COUNT(*) n FROM picks WHERE ts > ? AND source = 'auto'`);
 const pickedBySourceStmt = db.prepare(`SELECT COUNT(*) n FROM picks WHERE ts > ? AND source = ?`);
+// Picks auto emitidos por debajo del piso normal: solo pueden existir por el
+// piloto MIN_CONF_UNDER_LOW (ver confidence.js:minConfFor).
+const pickedBelowConfStmt = db.prepare(`SELECT COUNT(*) n FROM picks WHERE ts > ? AND source = 'auto' AND conf < ?`);
 
 // --- Etapa 4: sharp odds ---
 const sharpEntryStmt = db.prepare(`
@@ -1014,10 +1190,141 @@ const insertExecProbeStmt = db.prepare(`
   VALUES (@source, @pickId, @delayS, @emitTs, @probeTs, @realDelayMs, @oddEmit, @oddSeen, @status, @scoreSeen)
 `);
 
+const insertDryRunJobStmt = db.prepare(`
+  INSERT OR IGNORE INTO dry_run_jobs
+    (source, pick_id, event_id, sport_id, sport, market, selection, odd_emit, pick_ts,
+     mode, status, attempts, max_attempts, available_at, created_at, updated_at)
+  VALUES
+    (@source, @pickId, @eventId, @sportId, @sport, @market, @selection, @oddDecimal, @pickTs,
+     'list_only', 'pending', 0, @maxAttempts, @availableAt, @createdAt, @updatedAt)
+`);
+const enqueueDryRunJobsTx = db.transaction((source, items, maxAttempts) => {
+  const now = new Date().toISOString();
+  let n = 0;
+  for (const item of items) {
+    if (!item?.pickId || item.eventId == null || item.sportId == null || !item.market || !item.selection || !(item.oddDecimal > 1)) continue;
+    const info = insertDryRunJobStmt.run({
+      source, pickId: item.pickId, eventId: item.eventId, sportId: item.sportId, sport: item.sport || null,
+      market: item.market, selection: item.selection, oddDecimal: item.oddDecimal,
+      pickTs: item.ts || now, maxAttempts, availableAt: now, createdAt: now, updatedAt: now,
+    });
+    n += info.changes;
+  }
+  return n;
+});
+
+function enqueueDryRunJobs(source, items, { maxAttempts = 2 } = {}) {
+  if (!['heur', 'model'].includes(source)) throw new Error(`source dry-run inválido: ${source}`);
+  const max = Math.max(1, Math.min(5, Number(maxAttempts) || 2));
+  return enqueueDryRunJobsTx(source, items, max);
+}
+
+const reclaimExpiredDryRunJobsStmt = db.prepare(`
+  UPDATE dry_run_jobs
+  SET status = 'pending', claimed_by = NULL, lease_until = NULL, updated_at = ?
+  WHERE status = 'running' AND lease_until IS NOT NULL AND lease_until <= ?
+`);
+const findNextDryRunJobStmt = db.prepare(`
+  SELECT * FROM dry_run_jobs
+  WHERE status IN ('pending', 'retry') AND available_at <= ? AND attempts < max_attempts
+  ORDER BY available_at ASC, id ASC
+  LIMIT 1
+`);
+const claimDryRunJobStmt = db.prepare(`
+  UPDATE dry_run_jobs
+  SET status = 'running', attempts = attempts + 1, claimed_by = @workerId,
+      lease_until = @leaseUntil, started_at = @startedAt, updated_at = @startedAt
+  WHERE id = @id AND status IN ('pending', 'retry')
+`);
+const getDryRunJobStmt = db.prepare('SELECT * FROM dry_run_jobs WHERE id = ?');
+const claimNextDryRunJobTx = db.transaction((workerId, leaseMs) => {
+  const now = new Date();
+  const nowIso = now.toISOString();
+  reclaimExpiredDryRunJobsStmt.run(nowIso, nowIso);
+  const next = findNextDryRunJobStmt.get(nowIso);
+  if (!next) return null;
+  const leaseUntil = new Date(now.getTime() + leaseMs).toISOString();
+  const info = claimDryRunJobStmt.run({ id: next.id, workerId, leaseUntil, startedAt: nowIso });
+  return info.changes ? getDryRunJobStmt.get(next.id) : null;
+});
+
+function claimNextDryRunJob(workerId, { leaseMs = 120000 } = {}) {
+  const lease = Math.max(30000, Math.min(15 * 60000, Number(leaseMs) || 120000));
+  return claimNextDryRunJobTx(workerId, lease);
+}
+
+const finishDryRunJobStmt = db.prepare(`
+  UPDATE dry_run_jobs
+  SET status = @status, available_at = @availableAt, finished_at = @finishedAt,
+      last_error = @lastError, last_run_id = @lastRunId, claimed_by = NULL,
+      lease_until = NULL, updated_at = @finishedAt
+  WHERE id = @id AND status = 'running' AND claimed_by = @workerId
+`);
+function finishDryRunJob({ id, workerId, status, lastError = null, lastRunId = null, retryAfterMs = 0 }) {
+  if (!['completed', 'retry', 'failed'].includes(status)) throw new Error(`estado final dry-run inválido: ${status}`);
+  const now = new Date();
+  return finishDryRunJobStmt.run({
+    id, workerId, status, lastError, lastRunId,
+    finishedAt: now.toISOString(),
+    availableAt: new Date(now.getTime() + Math.max(0, retryAfterMs)).toISOString(),
+  }).changes;
+}
+
+const getDryRunWorkerStateStmt = db.prepare('SELECT * FROM dry_run_worker_state WHERE id = 1');
+const setDryRunCircuitStmt = db.prepare(`
+  INSERT INTO dry_run_worker_state (id, circuit_open, reason, opened_at, updated_at)
+  VALUES (1, @circuitOpen, @reason, @openedAt, @updatedAt)
+  ON CONFLICT(id) DO UPDATE SET circuit_open=excluded.circuit_open, reason=excluded.reason,
+    opened_at=excluded.opened_at, updated_at=excluded.updated_at
+`);
+function getDryRunCircuit() {
+  return getDryRunWorkerStateStmt.get() || { circuit_open: 0, reason: null, opened_at: null, updated_at: null };
+}
+function setDryRunCircuit(open, reason = null) {
+  const now = new Date().toISOString();
+  setDryRunCircuitStmt.run({ circuitOpen: open ? 1 : 0, reason: open ? String(reason || 'sin detalle') : null,
+    openedAt: open ? now : null, updatedAt: now });
+}
+
+function getExecutionMonitor(hours = 24) {
+  const h = Math.max(1, Math.min(24 * 30, Number(hours) || 24));
+  const since = new Date(Date.now() - h * 3600000).toISOString();
+  const probes = db.prepare(`
+    SELECT source, COUNT(*) n,
+           SUM(CASE WHEN status = 'ok' THEN 1 ELSE 0 END) ok,
+           SUM(CASE WHEN status = 'gone' THEN 1 ELSE 0 END) gone,
+           SUM(CASE WHEN status = 'susp' THEN 1 ELSE 0 END) susp,
+           SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) error,
+           AVG(real_delay_ms) avg_delay_ms, MAX(real_delay_ms) max_delay_ms,
+           AVG(real_delay_ms - delay_s * 1000) avg_lateness_ms,
+           MAX(real_delay_ms - delay_s * 1000) max_lateness_ms,
+           AVG(CASE WHEN odd_seen IS NOT NULL AND odd_emit > 0 THEN (odd_seen - odd_emit) / odd_emit END) avg_drift,
+           MAX(probe_ts) last_probe_ts
+    FROM pick_exec_probe WHERE probe_ts >= ? GROUP BY source
+  `).all(since);
+  const dryRun = db.prepare(`
+    SELECT status, COUNT(*) n FROM bot_dry_run_log WHERE ts >= ? GROUP BY status
+  `).all(since);
+  const jobs = db.prepare(`
+    SELECT status, COUNT(*) n, MIN(available_at) oldest_available_at
+    FROM dry_run_jobs GROUP BY status
+  `).all();
+  return { since, hours: h, probes, dryRun, jobs, circuit: getDryRunCircuit() };
+}
+
+const countDryRunStartedSinceStmt = db.prepare(
+  "SELECT COUNT(*) n FROM dry_run_jobs WHERE started_at IS NOT NULL AND started_at >= ?");
+function countDryRunStartedSince(since) {
+  return countDryRunStartedSinceStmt.get(since).n;
+}
+
 module.exports = {
   db, saveSnapshot, logPicks,
   saveExecProbe: (r) => insertExecProbeStmt.run(r),
-  savePrematchSnapshot, savePrematchValueScan, savePrematchXg,
+  enqueueDryRunJobs, claimNextDryRunJob, finishDryRunJob,
+  getDryRunCircuit, setDryRunCircuit, getExecutionMonitor, countDryRunStartedSince,
+  saveReportPicks, reporteEstado, reporteYaEnviado, reportePendientes, liquidarReportePick,
+  savePrematchSnapshot, savePrematchValueScan, savePrematchXg, saveLeagueXg, getLeagueXg,
   saveStatSnapshot, saveStatResults,
   saveFotmobSnapshot, getFotmobCornerFinal, getFotmobCornerLatest, getFotmobComparadas,
   saveForecastSnapshot, getForecastHistory,
@@ -1062,6 +1369,7 @@ module.exports = {
     settleRejectedStmt.run(result, finalScore, new Date().toISOString(), id),
   getUnsettledPicks: () => unsettledStmt.all(),
   getLastScore: (eventId) => lastScoreStmt.get(eventId),
+  getLastRegularScore: (eventId) => lastRegularScoreStmt.get(eventId),
   getLastSeen: (eventId) => lastSeenStmt.get(eventId).ts,
   settlePick: (id, result, finalScore, source, closingOdd, closingTs) =>
     settleStmt.run(result, finalScore, new Date().toISOString(), source, closingOdd, closingTs, id),
@@ -1158,6 +1466,7 @@ module.exports = {
   isDuplicatePick: (eventId, market, selection) =>
     !!activeEventPickStmt.get(eventId) || !!sameSelectionStmt.get(eventId, market, selection),
   countPicksSince: (isoTs, source) => (source ? pickedBySourceStmt.get(isoTs, source) : pickedTodayStmt.get(isoTs)).n,
+  countPicksBelowConfSince: (isoTs, minConf) => pickedBelowConfStmt.get(isoTs, minConf).n,
   setSharpEntry: (params) => sharpEntryStmt.run(params),
   setSharpStatus: (id, status) => sharpStatusStmt.run(status, id),
   setSharpClosing: (id, odd, marketJson) => sharpClosingStmt.run(odd, marketJson, id),
