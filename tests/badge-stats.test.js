@@ -1,8 +1,22 @@
+// BD temporal: sin esto el test abre el snapshots.db REAL (este escribia un pick falso en produccion).
+require('./helpers/db-temporal');
 // Estadísticas vivas de los badges. Lo que más importa probar no es que el
 // número salga bien, sino que NO salga cuando no debe: un badge con una cifra
 // construida sobre veinte picks es exactamente el error que retiramos con el 🔥.
 const test = require('node:test');
 const assert = require('node:assert');
+
+// Historial propio en la BD temporal: el test exige > 100 picks liquidados y antes dependia de que existieran en
+// el snapshots.db de produccion. 150 picks, 2 de cada 3 ganados, repartidos hacia atras de hora en hora.
+{
+  const { db } = require('../src/db');
+  const ins = db.prepare(`INSERT INTO picks (ts,event_id,event,sport,market,selection,odd_decimal,conf,result,stake,stake_mode,source)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`);
+  const ahora = Date.now();
+  for (let i = 0; i < 150; i++) {
+    ins.run(new Date(ahora - i * 3600e3).toISOString(), 9000 + i, 'A vs. B', 'Fútbol', 'Total 2.5', 'Menos de 2.5', 1.5, 0.7, i % 3 ? 'win' : 'loss', 1, 'tiered', 'auto');
+  }
+}
 
 const conEnv = (vars, fn) => {
   const prev = {};

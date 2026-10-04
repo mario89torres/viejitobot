@@ -1,3 +1,5 @@
+// BD temporal: sin esto el test abre el snapshots.db REAL (este escribia un pick falso en produccion).
+require('./helpers/db-temporal');
 const { test } = require('node:test');
 const assert = require('node:assert');
 const { rescuePicks, POST_SCORE_GATES } = require('../src/confidence');
@@ -52,6 +54,9 @@ test('un candidato que YA pasa min_conf no es rescatable', () => {
 test('los rescates quedan fuera del rendimiento principal', () => {
   const { db } = require('../src/db');
   const { stakeStats, rescueStats } = require('../src/metrics');
+  // Baseline propio en la BD temporal: con la BD vacia stakeStats() no trae profit y el test no mide nada.
+  db.prepare(`INSERT INTO picks (ts,event_id,event,sport,market,selection,odd_decimal,conf,result,stake,stake_mode,source)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(new Date().toISOString(), -776, 'Base vs. Base', 'Fútbol', 'Total 2.5', 'Menos de 2.5', 1.5, 0.7, 'win', 1, 'tiered', 'auto');
   const antes = stakeStats();
   const ts = new Date().toISOString();
   const info = db.prepare(`INSERT INTO picks (ts,event_id,event,sport,market,selection,
