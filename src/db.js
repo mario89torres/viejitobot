@@ -470,9 +470,12 @@ db.exec(`
     screenshot_path       TEXT,
     bloqueos              TEXT
   );
-  CREATE INDEX IF NOT EXISTS idx_dry_run_pick ON bot_dry_run_log (source, pick_id);
   CREATE INDEX IF NOT EXISTS idx_dry_run_ts   ON bot_dry_run_log (ts);
-  CREATE INDEX IF NOT EXISTS idx_dry_run_job  ON bot_dry_run_log (job_id, attempt);
+  -- idx_dry_run_pick (source, pick_id) e idx_dry_run_job (job_id, attempt) se crean MAS ABAJO,
+  -- despues de los addColumn(): si bot_dry_run_log ya existia con el esquema viejo (creado por
+  -- src/dryRunBetslip.js antes de que este archivo cargara), CREATE TABLE IF NOT EXISTS no le
+  -- agrega columnas, y un CREATE INDEX sobre source/job_id aqui truena con "no such column"
+  -- ANTES de que addColumn tenga oportunidad de agregarlas. Bot en crash-loop 2026-09-28 por esto.
 
   CREATE TABLE IF NOT EXISTS value_alerts (
     pick_id       INTEGER PRIMARY KEY,
@@ -503,7 +506,44 @@ addColumn('bot_dry_run_log', 'attempt', 'INTEGER');
 addColumn('bot_dry_run_log', 'mode', 'TEXT');
 addColumn('bot_dry_run_log', 'latencia_desde_emit_ms', 'INTEGER');
 addColumn('bot_dry_run_log', 'bloqueos', 'TEXT');
-db.exec('CREATE INDEX IF NOT EXISTS idx_dry_run_source_pick ON bot_dry_run_log(source, pick_id)');
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_dry_run_source_pick ON bot_dry_run_log(source, pick_id);
+  CREATE INDEX IF NOT EXISTS idx_dry_run_job ON bot_dry_run_log(job_id, attempt);
+`);
+
+// Picks de CORNERS en registro (src/cornerPicks.js): experimento, sin stake, aparte de picks/model_picks
+// para que no toquen ninguna métrica de rendimiento. Un pick por partido (índice único): INSERT OR IGNORE.
+// Se liquida contra stat_results (conteo final de FotMob, ya etiquetado por el piloto).
+db.exec(`
+  CREATE TABLE IF NOT EXISTS corner_picks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    event_id INTEGER NOT NULL, fotmob_event_id INTEGER, event TEXT, champ TEXT,
+    minuto REAL, conteo_real INTEGER,
+    linea REAL NOT NULL, lado TEXT NOT NULL, odd REAL,
+    p_modelo REAL, p_mercado REAL, edge REAL, esperados REAL, nb_version TEXT,
+    result TEXT, final_count INTEGER, settled_ts TEXT
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_corner_picks_evento ON corner_picks(event_id);
+  CREATE INDEX IF NOT EXISTS idx_corner_picks_pend ON corner_picks(result, ts);
+`);
+const insCornerPick = db.prepare(`
+  INSERT OR IGNORE INTO corner_picks
+    (ts, event_id, fotmob_event_id, event, champ, minuto, conteo_real, linea, lado, odd, p_modelo, p_mercado, edge, esperados, nb_version)
+  VALUES (@ts, @eventId, @fotmobEventId, @event, @champ, @minuto, @conteoReal, @linea, @lado, @odd, @pModelo, @pMercado, @edge, @esperados, @nbVersion)`);
+// Devuelve el id nuevo, o null si ese partido ya tenía pick (no volver a avisar).
+function logCornerPick(p) {
+  const r = insCornerPick.run({ ts: new Date().toISOString(), fotmobEventId: null, champ: null, esperados: null, ...p });
+  return r.changes ? Number(r.lastInsertRowid) : null;
+}
+const countCornerSinceStmt = db.prepare('SELECT COUNT(*) n FROM corner_picks WHERE ts >= ?');
+const cornerPendStmt = db.prepare('SELECT * FROM corner_picks WHERE result IS NULL ORDER BY id');
+// LAZY a propósito: fotmob_conteo_final lo crea un addColumn más abajo en este archivo; preparar la
+// consulta aquí reventaba en una BD nueva con "no such column" (mismo orden que tumbó el bot el 2026-09-28).
+let cornerEtiquetaStmt = null;
+const cornerEtiqueta = (eventId, linea) => (cornerEtiquetaStmt ||= db.prepare(`SELECT fotmob_conteo_final c FROM stat_results
+  WHERE event_id = ? AND familia = 'corner' AND linea = ? AND fotmob_conteo_final IS NOT NULL LIMIT 1`)).get(eventId, linea);
+const cornerSettleStmt = db.prepare('UPDATE corner_picks SET result = ?, final_count = ?, settled_ts = ? WHERE id = ?');
 
 // xG pre-partido normalizado por liga (src/prematchXg.js). Se CONSERVAN las
 // columnas xg_esperado_* originales (promedio simple ataque+defensa) y se
@@ -794,9 +834,34 @@ function saveReportPicks(filas) {
   db.transaction((fs_) => { for (const f of fs_) insReportPick.run({ xg_local: null, xg_visita: null, xg_total: null, ...f }); })(filas);
 }
 // Patas de reportes desde `desdeDia` (YYYY-MM-DD, CDMX): parlay primero, luego valor, luego top; cada grupo por hora de inicio.
+// kind='parlay_prox' (botón /parlayprox, solo lo guarda el dueño) se EXCLUYE de las dos consultas del
+// reporte de las 08:00: reporteYaEnviado bloquearía el reporte del día si alguien lo presiona antes de
+// las 08:00, y reporteEstado mezclaría sus patas en los KPIs de aciertos y desplazaría filas del tope
+// de la imagen. Se audita aparte (scripts/medir-calibracion-parlay-prepartido.js).
 const reporteEstado = (desdeDia) => db.prepare(
-  "SELECT * FROM prematch_report_picks WHERE dia >= ? ORDER BY dia DESC, CASE kind WHEN 'parlay' THEN 0 WHEN 'valor' THEN 1 ELSE 2 END, start_date").all(desdeDia);
-const reporteYaEnviado = (dia) => !!db.prepare('SELECT 1 FROM prematch_report_picks WHERE dia = ? LIMIT 1').get(dia);
+  "SELECT * FROM prematch_report_picks WHERE dia >= ? AND kind != 'parlay_prox' ORDER BY dia DESC, CASE kind WHEN 'parlay' THEN 0 WHEN 'valor' THEN 1 ELSE 2 END, start_date").all(desdeDia);
+const reporteYaEnviado = (dia) => !!db.prepare("SELECT 1 FROM prematch_report_picks WHERE dia = ? AND kind != 'parlay_prox' LIMIT 1").get(dia);
+
+// Firma de un parlay: sus patas (evento|mercado|selección) ordenadas. Dos parlays con las mismas patas
+// son el mismo parlay aunque se hayan armado en otro orden o a otra hora.
+const firmaParlay = (filas) => filas.map(f => `${f.event_id}|${f.market}|${f.selection}`).sort().join(';');
+/**
+ * Registra un parlay del botón /parlayprox para auditarlo. Todas las filas comparten `ts`. Devuelve true
+ * si se guardó, false si ESE MISMO parlay ya estaba registrado ese día (presionar el botón cinco veces
+ * no crea cinco parlays).
+ */
+function guardarParlayProx(filas, dia) {
+  if (!filas || !filas.length) return false;
+  const porTs = new Map();
+  for (const r of db.prepare("SELECT ts, event_id, market, selection FROM prematch_report_picks WHERE dia = ? AND kind = 'parlay_prox'").all(dia)) {
+    if (!porTs.has(r.ts)) porTs.set(r.ts, []);
+    porTs.get(r.ts).push(r);
+  }
+  const nueva = firmaParlay(filas);
+  for (const rs of porTs.values()) if (firmaParlay(rs) === nueva) return false;
+  saveReportPicks(filas);
+  return true;
+}
 const reportePendientes = (cutoffIso) => db.prepare(
   "SELECT * FROM prematch_report_picks WHERE result IS NULL AND start_date < ? ORDER BY start_date").all(cutoffIso);
 const liquidarReportePick = (id, result, finalScore, source) => db.prepare(
@@ -1323,11 +1388,17 @@ module.exports = {
   saveExecProbe: (r) => insertExecProbeStmt.run(r),
   enqueueDryRunJobs, claimNextDryRunJob, finishDryRunJob,
   getDryRunCircuit, setDryRunCircuit, getExecutionMonitor, countDryRunStartedSince,
-  saveReportPicks, reporteEstado, reporteYaEnviado, reportePendientes, liquidarReportePick,
+  saveReportPicks, guardarParlayProx, reporteEstado, reporteYaEnviado, reportePendientes, liquidarReportePick,
   savePrematchSnapshot, savePrematchValueScan, savePrematchXg, saveLeagueXg, getLeagueXg,
   saveStatSnapshot, saveStatResults,
   saveFotmobSnapshot, getFotmobCornerFinal, getFotmobCornerLatest, getFotmobComparadas,
   saveForecastSnapshot, getForecastHistory,
+  logCornerPick,
+  countCornerPicksSince: (iso) => countCornerSinceStmt.get(iso).n,
+  getUnsettledCornerPicks: () => cornerPendStmt.all(),
+  // Conteo final de FotMob de ese partido+línea (lo escribe el piloto al etiquetar); undefined si aún no hay.
+  getCornerFinalCount: (eventId, linea) => cornerEtiqueta(eventId, linea)?.c,
+  settleCornerPick: (id, result, finalCount) => cornerSettleStmt.run(result, finalCount, new Date().toISOString(), id),
   getStatEventosPendientes: () => statPendientesStmt.all().map(r => r.event_id),
   getStatMuestras: (eventId) => statMuestrasStmt.all(eventId),
 

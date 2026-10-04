@@ -618,6 +618,18 @@ function isBlockedMarket(r) {
     return true;
   }
 
+  // Veto a "Doble oportunidad" ENTERO en fútbol (medido 2026-09-29, histórico
+  // completo, n=138): ROI -4.9% (-6.8u), negativo en las DOS mitades del
+  // historial (-7.3% / -2.6%: mejora pero sigue en rojo) y negativo en TODOS
+  // los buckets de edge, incluido el de mayor edge (14%+: -7.7%, el peor de
+  // todos). Que ni el bucket de más edge se salve descarta que sea un problema
+  // de umbral — es la selección del mercado en sí. Contraste: "Ambos equipos
+  // marcan" (arriba) se midió en la misma sesión con la misma ventana de 6
+  // días y parecía perder (-11.3%, n=39); el histórico completo lo desmiente
+  // (+6.0% ROI, n=1026, estable en ambas mitades) — Doble oportunidad NO tiene
+  // esa reversión, por eso se veta y BTTS no.
+  if (m.includes('doble oportunidad')) return true;
+
   // Veto a selecciones directas de "Empate" o "Draw" (EXCEPTO si es una Señal de Empate Estructural Flatline)
   if ((sel === 'empate' || sel === 'draw') && !r.isStructuralDraw && r.alert !== 'STRUCTURAL_DRAW') {
     return true;
