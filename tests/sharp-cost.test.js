@@ -8,6 +8,14 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
+// BD TEMPORAL, antes que cualquier require de src/: sharp.js persiste el
+// presupuesto diario de creditos en la BD (sharp_budget). Sin esto, cada corrida
+// de este archivo sumaba creditos FALSOS al contador de produccion (el test
+// simula las llamadas, pero escribia en snapshots.db): el 2026-09-24 el panel
+// mostraba 58/15 y la guarda del bot bloqueaba sus capturas sharp reales el
+// resto del dia, sin que ninguna llamada real lo justificara.
+require('./helpers/db-temporal');
+
 process.env.ODDS_API_KEY = 'test-key';
 process.env.SHARP_CACHE_SECONDS = '600';
 process.env.SHARP_MAX_CREDITS_PER_DAY = '999';

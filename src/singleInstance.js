@@ -47,15 +47,14 @@ function pidAlive(pid) {
  * @param {(msg: string) => void} log
  * @returns {boolean} true si se tomó el lock
  */
-function acquire(log = console.error) {
+function acquireLock(lockFile, label, log = console.error) {
   try {
-    if (fs.existsSync(LOCK)) {
-      const raw = fs.readFileSync(LOCK, 'utf8').trim();
+    if (fs.existsSync(lockFile)) {
+      const raw = fs.readFileSync(lockFile, 'utf8').trim();
       const prev = Number(raw.split(/\s+/)[0]);
       if (Number.isInteger(prev) && prev > 0 && prev !== process.pid && pidAlive(prev)) {
-        log(`[lock] Ya hay un bot corriendo (PID ${prev}). Esta instancia NO arranca.`);
-        log('[lock] Dos instancias se expulsan mutuamente en getUpdates y duplican picks');
-        log(`[lock] sobre la misma BD. Si el PID ${prev} es un proceso muerto, borra ${path.basename(LOCK)}.`);
+        log(`[lock] Ya hay un ${label} corriendo (PID ${prev}). Esta instancia NO arranca.`);
+        log(`[lock] Si el PID ${prev} es un proceso muerto, borra ${path.basename(lockFile)}.`);
         return false;
       }
       // PID muerto, ilegible o el nuestro: el lock quedó huérfano, se reclama.
@@ -66,7 +65,7 @@ function acquire(log = console.error) {
   }
 
   try {
-    fs.writeFileSync(LOCK, `${process.pid} ${new Date().toISOString()}\n`);
+    fs.writeFileSync(lockFile, `${process.pid} ${new Date().toISOString()}\n`, { flag: 'w' });
   } catch (e) {
     log(`[lock] no se pudo escribir el lock (${e.message}); se continúa sin bloquear`);
     return true;
@@ -74,10 +73,10 @@ function acquire(log = console.error) {
 
   const release = () => {
     try {
-      const raw = fs.readFileSync(LOCK, 'utf8').trim();
+      const raw = fs.readFileSync(lockFile, 'utf8').trim();
       // Solo borra si el lock sigue siendo nuestro: si otra instancia lo
       // reclamó, borrarlo la dejaría desprotegida.
-      if (Number(raw.split(/\s+/)[0]) === process.pid) fs.unlinkSync(LOCK);
+      if (Number(raw.split(/\s+/)[0]) === process.pid) fs.unlinkSync(lockFile);
     } catch { /* el archivo ya no está o no es legible: nada que hacer */ }
   };
   process.on('exit', release);
@@ -87,4 +86,17 @@ function acquire(log = console.error) {
   return true;
 }
 
-module.exports = { acquire, pidAlive, LOCK };
+function acquire(log = console.error) {
+  return acquireLock(LOCK, 'bot', log);
+}
+
+// Los workers auxiliares usan su propio candado: compartir .bot.lock haría que
+// uno impidiera el arranque del otro aunque no compitan por Telegram.
+function acquireNamed(name, log = console.error) {
+  if (!/^[a-z0-9-]+$/i.test(String(name || ''))) {
+    throw new Error('nombre de lock inválido');
+  }
+  return acquireLock(path.join(__dirname, '..', `.${name}.lock`), name, log);
+}
+
+module.exports = { acquire, acquireNamed, pidAlive, LOCK };

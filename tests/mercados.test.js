@@ -244,3 +244,34 @@ test('readSpike: la subida de cuota es AVISO, no valor', () => {
   assert.strictEqual(readSpike(1.60, 2.30).level, 'grave');
   assert.strictEqual(readSpike(0, 2).level, null); // entrada inválida no revienta
 });
+
+test('piloto MIN_CONF_UNDER_LOW: alcance, defecto sin efecto y puerta min_conf', () => {
+  const { isLowLineFootballUnder, minConfFor, POST_SCORE_GATES } = require('../src/confidence');
+  const u25 = { sport: 'Fútbol', selection: 'Menos de 2.5', marketType: 'total' };
+  const u45 = { sport: 'Fútbol', selection: 'Menos de 4.5', marketType: 'total' };
+  const beis = { sport: 'Béisbol', selection: 'Menos de 8.5', marketType: 'total' };
+  const over = { sport: 'Fútbol', selection: 'Más de 2.5', marketType: 'total' };
+  assert.strictEqual(isLowLineFootballUnder(u25), true);
+  assert.strictEqual(isLowLineFootballUnder(u45), false, 'linea 4.5 fuera');
+  assert.strictEqual(isLowLineFootballUnder(beis), false);
+  assert.strictEqual(isLowLineFootballUnder(over), false);
+
+  const gate = POST_SCORE_GATES.find(([n]) => n === 'min_conf')[1];
+  const prev = process.env.MIN_CONF_UNDER_LOW;
+  try {
+    // por defecto (vacio o ausente) todos usan MIN_CONF: comportamiento actual
+    delete process.env.MIN_CONF_UNDER_LOW;
+    assert.strictEqual(minConfFor(u25, 0.7), 0.7);
+    assert.strictEqual(gate({ ...u25, conf: 0.5 }, { minConf: 0.7 }), false);
+    process.env.MIN_CONF_UNDER_LOW = '';
+    assert.strictEqual(gate({ ...u25, conf: 0.5 }, { minConf: 0.7 }), false);
+    // activado: solo el segmento baja el piso; el resto sigue en MIN_CONF
+    process.env.MIN_CONF_UNDER_LOW = '0';
+    assert.strictEqual(gate({ ...u25, conf: 0.5 }, { minConf: 0.7 }), true);
+    assert.strictEqual(gate({ ...u45, conf: 0.5 }, { minConf: 0.7 }), false);
+    assert.strictEqual(gate({ ...beis, conf: 0.5 }, { minConf: 0.7 }), false);
+    assert.strictEqual(gate({ ...over, conf: 0.5 }, { minConf: 0.7 }), false);
+  } finally {
+    if (prev === undefined) delete process.env.MIN_CONF_UNDER_LOW; else process.env.MIN_CONF_UNDER_LOW = prev;
+  }
+});

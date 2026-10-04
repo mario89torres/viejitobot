@@ -77,6 +77,7 @@ const { decidedResult } = require(marketsPath);
 // pronosticos) — ver src/fotmobLive.js.
 const { computeDosFuentes } = require(fotmobLivePath);
 const { datosFotmobDeEvento } = require(prematchFotmobPath);
+const { probMasDe, cuotaJusta } = require(path.join(__dirname, '..', '..', 'src', 'poissonGoles'));
 const normSport = (s) => (s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
 // ── Encadenado de línea para el timeline del pick ──────────────────────────
 // Mercados de linea (Mas/Menos de N) se retiran y reaparecen con otro N a
@@ -1180,7 +1181,7 @@ function createDashboardServer(port = 3001) {
             SELECT event_id, selection, MAX(ts) mts FROM prematch_value_scan
             WHERE ts >= ? GROUP BY event_id, selection
           ) u ON s.event_id = u.event_id AND s.selection = u.selection AND s.ts = u.mts
-          WHERE s.start_date > datetime('now')
+          WHERE s.start_date > strftime('%Y-%m-%dT%H:%M:%SZ','now')
           ORDER BY ABS(s.edge_pct) DESC LIMIT 150
         `).all(desde);
                 res.writeHead(200);
@@ -1260,15 +1261,40 @@ function createDashboardServer(port = 3001) {
           SELECT event_id, event, start_date, fotmob_match_id,
                  home_played, home_xg_for, home_xg_against,
                  away_played, away_xg_for, away_xg_against,
-                 xg_esperado_local, xg_esperado_visita, xg_esperado_total
+                 xg_esperado_local, xg_esperado_visita, xg_esperado_total,
+                 league_id, league_xg_avg, xg_norm_local, xg_norm_visita, xg_norm_total
           FROM prematch_xg_scan
-          WHERE ts >= ? AND xg_esperado_total IS NOT NULL AND start_date > datetime('now')
+          WHERE ts >= ? AND xg_esperado_total IS NOT NULL AND start_date > strftime('%Y-%m-%dT%H:%M:%SZ','now')
           ORDER BY start_date ASC LIMIT 150
         `).all(desde);
+                // Traduccion aritmetica del xG total a P(Mas de 2.5) con Poisson simple
+                // (src/poissonGoles.js) y comparacion con la cuota vigente de Playdoit.
+                // SIN CALIBRAR: que el xG de temporada prediga los goles reales es lo
+                // que mide este piloto, asi que el "edge" es informativo, no una señal.
+                const LINEA = 2.5;
+                const cuotaMasDe = db.prepare(`
+          SELECT odd_decimal FROM prematch_snapshots
+          WHERE event_id = ? AND market = 'Total 2.5' AND selection = 'Más de 2.5' AND odd_decimal IS NOT NULL
+          ORDER BY ts DESC LIMIT 1
+        `);
+                for (const f of filas) {
+                    // SIEMPRE el promedio simple (xg_esperado_total): el backtest del 2026-09-24
+                    // (2,925 partidos top-5, scripts/backtest-xg-goles.js) mostro que la version
+                    // normalizada por liga predice PEOR (-0.0098 LL/partido, t=-3.7). El xG de
+                    // liga se sigue guardando y mostrando, pero no alimenta esta probabilidad.
+                    f.metodo = 'simple';
+                    const p = probMasDe(f.xg_esperado_total, LINEA);
+                    const justa = cuotaJusta(p);
+                    const real = cuotaMasDe.get(f.event_id);
+                    f.p_mas_de = p;
+                    f.cuota_justa = justa;
+                    f.cuota_playdoit = real ? real.odd_decimal : null;
+                    f.edge_pct = justa && real ? (real.odd_decimal / justa - 1) * 100 : null;
+                }
                 res.writeHead(200);
                 res.end(JSON.stringify({
                     activo: /^(1|true|on|si|sí)$/i.test(process.env.PREMATCH_XG_PILOT || ''),
-                    horas, resumen, filas,
+                    horas, linea: LINEA, resumen, filas,
                 }));
                 return;
             }

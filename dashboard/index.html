@@ -1042,13 +1042,20 @@ tbody tr.r-pending td:first-child { box-shadow: inset 3px 0 0 var(--c-warn); }
     <div style="margin:-4px 0 10px;font-size:11px;color:var(--fg3);line-height:1.6">
       xG a favor/en contra de temporada por equipo (FotMob, <code>src/prematchXg.js</code>), combinado en un
       xG esperado del enfrentamiento. No depende de otra casa ni de que se mueva la línea — es rendimiento
-      medido del equipo, disponible desde que se conoce el fixture. Solo lectura, no decide ni emite nada.
+      medido del equipo, disponible desde que se conoce el fixture. La probabilidad de "Más de 2.5" es
+      Poisson sobre el <b>xG simple</b> (<code>src/poissonGoles.js</code>). Backtest en 2,925 partidos de las 5
+      grandes ligas: el xG predice los goles mejor que un promedio de liga o que los goles acumulados,
+      pero <b>no añade nada sobre el precio del mercado</b> (p = 0.60); la versión "por liga" predice peor
+      que la simple. La diferencia contra la cuota de Playdoit es informativa: falta medir si el xG
+      aporta frente al precio de Playdoit. Solo lectura, no decide ni emite nada.
     </div>
     <div id="xgResumen" style="font-size:11px;color:var(--fg3);margin-bottom:8px"></div>
     <div class="tbl-wrap">
       <table>
         <thead><tr>
-          <th>Partido</th><th>xG local</th><th>xG visita</th><th>xG total esperado</th><th>Kickoff</th>
+          <th>Partido</th><th>xG local</th><th>xG visita</th><th title="Promedio simple (ataque + defensa) / 2. Es el que alimenta P(Más de 2.5)">xG total (simple)</th>
+          <th title="Ataque x defensa / promedio de la liga. Solo informativo: en el backtest de 2,925 partidos top-5 predijo PEOR que el simple">xG total (liga)</th>
+          <th title="Poisson sobre el xG simple. En el backtest predice los goles pero no añade nada sobre el precio del mercado">P(Más de 2.5)</th><th>Cuota justa</th><th>Cuota Playdoit</th><th>Diferencia</th><th>Kickoff</th>
         </tr></thead>
         <tbody id="xgBody"></tbody>
       </table>
@@ -1920,10 +1927,18 @@ async function loadPrematchXg() {
         '<td class="col-event" style="font-family:var(--font)">' + esc(f.event) + '</td>' +
         '<td class="num" style="color:' + (favLocal ? 'var(--green)' : 'var(--fg3)') + '">' + fmt(f.xg_esperado_local, 2) + '</td>' +
         '<td class="num" style="color:' + (!favLocal ? 'var(--green)' : 'var(--fg3)') + '">' + fmt(f.xg_esperado_visita, 2) + '</td>' +
-        '<td class="num" style="font-weight:700">' + fmt(f.xg_esperado_total, 2) + '</td>' +
+        '<td class="num" style="' + (f.metodo === 'liga' ? 'color:var(--fg3)' : 'font-weight:700') + '">' + fmt(f.xg_esperado_total, 2) + '</td>' +
+        '<td class="num" style="' + (f.metodo === 'liga' ? 'font-weight:700' : 'color:var(--fg3)') + '"' +
+          (f.league_xg_avg != null ? ' title="promedio de la liga: ' + fmt(f.league_xg_avg, 2) + ' xG por equipo y partido"' : '') + '>' +
+          (f.xg_norm_total != null ? fmt(f.xg_norm_total, 2) : '—') + '</td>' +
+        '<td class="num">' + (f.p_mas_de != null ? fmt(f.p_mas_de * 100, 1) + '%' : '—') + '</td>' +
+        '<td class="num" style="color:var(--fg3)">' + (f.cuota_justa != null ? '@ ' + fmt(f.cuota_justa, 2) : '—') + '</td>' +
+        '<td class="num">' + (f.cuota_playdoit != null ? '@ ' + fmt(f.cuota_playdoit, 2) : '—') + '</td>' +
+        '<td class="num" style="color:' + (f.edge_pct == null ? 'var(--fg3)' : f.edge_pct > 0 ? 'var(--green)' : 'var(--red)') + '">' +
+          (f.edge_pct == null ? '—' : (f.edge_pct > 0 ? '+' : '') + fmt(f.edge_pct, 1) + '%') + '</td>' +
         '<td style="color:var(--fg3)">' + fmtDate(f.start_date) + '</td>' +
         '</tr>';
-    }).join('') || '<tr><td colspan="5" style="color:var(--fg3);text-align:center;padding:18px">Sin datos todavía — el piloto corre cada 2h, 10 eventos/ciclo.</td></tr>';
+    }).join('') || '<tr><td colspan="10" style="color:var(--fg3);text-align:center;padding:18px">Sin datos todavía — el piloto corre cada 2h, 10 eventos/ciclo.</td></tr>';
   } catch (e) { console.error('Prematch xG load error:', e); }
 }
 

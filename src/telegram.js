@@ -292,6 +292,19 @@ async function sendPhotoFile(token, chatId, fileOrBuffer, caption, replyMarkup =
   if (!data.ok) throw new Error(`Telegram sendPhoto (archivo): ${data.description}`);
 }
 
+// Documento (CSV, etc.) desde un Buffer, multipart como sendPhotoFile.
+async function sendDocumentBuffer(token, chatId, buffer, filename, caption, mime = 'text/csv') {
+  const form = new FormData();
+  form.append('chat_id', String(chatId));
+  if (caption) { form.append('caption', caption); form.append('parse_mode', 'HTML'); }
+  form.append('document', new Blob([buffer], { type: mime }), filename);
+  const res = await fetch(`https://api.telegram.org/bot${token}/sendDocument`, {
+    method: 'POST', body: form, signal: AbortSignal.timeout(30000),
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(`Telegram sendDocument: ${data.description}`);
+}
+
 async function sendPickInspectorCard(token, chatId, pickId) {
   const { db } = require('./db');
   const pick = db.prepare(`SELECT * FROM picks WHERE id = ?`).get(pickId);
@@ -680,6 +693,7 @@ module.exports = {
   sendTelegram,
   sendPhotoTelegram,
   sendPhotoFile,
+  sendDocumentBuffer,
   formatMessage,
   sendProfitLockAlert,
   sendStructuralDrawAlert,

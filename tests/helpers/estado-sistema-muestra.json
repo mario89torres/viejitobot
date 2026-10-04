@@ -1,0 +1,22 @@
+{"header":{"titulo":"VIEJITOBOT","subtitulo":"Estado del sistema","fecha":"Jueves 24 de septiembre de 2026","hora":"01:05","zona":"CDMX","extra":"arranque del bot"},
+"kpis":[{"label":"Picks 24 h","value":"45","tone":"ok"},{"label":"Pendientes","value":"12"},{"label":"P/L 24 h","value":"+1.2u","tone":"ok"},{"label":"RAM libre","value":"1.9 GB","tone":"warn"}],
+"sections":[
+{"title":"Servicios","columns":[{"name":"Servicio","w":0.26},{"name":"Estado","w":0.2,"align":"center"},{"name":"Detalle","w":0.54}],"rows":[
+["Bot",{"t":"ACTIVO","tone":"ok","pill":true},"muestreo cada 1 min - modelo shadow"],
+["Dashboard",{"t":"ACTIVO","tone":"ok","pill":true},"localhost:3001 - PID 8768"],
+["Muestreador",{"t":"ACTIVO","tone":"ok","pill":true},"ultimo ciclo hace 1 min"],
+["The Odds API",{"t":"ACTIVO","tone":"ok","pill":true},"creditos hoy 3/15"],
+["Base de datos",{"t":"ACTIVO","tone":"ok","pill":true},"snapshots.db 13.2 GB"]]},
+{"title":"Pilotos","columns":[{"name":"Piloto","w":0.24},{"name":"Estado","w":0.17,"align":"center"},{"name":"Cadencia","w":0.16},{"name":"Ultima","w":0.15},{"name":"Progreso","w":0.28}],"rows":[
+["FotMob corners",{"t":"ACTIVO","tone":"ok","pill":true},"cada 3 min","hace 2 min","41 partidos/24 h"],
+["Steam pre-partido",{"t":"ACTIVO","tone":"ok","pill":true},"cada 60 min","hace 12 min","194 / 300 curvas"],
+["Valor sharp",{"t":"ACTIVO","tone":"ok","pill":true},"cada 4 h","hace 2 h","0 / 20 con resultado"],
+["xG pre-partido",{"t":"ACTIVO","tone":"ok","pill":true},"cada 2 h","hace 1 h","30 con xG - 0 / 30"],
+["Sonda ejecucion",{"t":"ACTIVO","tone":"ok","pill":true},"+10/30/60 s","hace 8 min","118 sondeos/24 h"],
+["Estadisticas",{"t":"APAGADO","tone":"off","pill":true},"-","-","STATS_PILOT=0"]]},
+{"title":"Umbrales vigentes","columns":[{"name":"Parametro","w":0.25},{"name":"Valor","w":0.25},{"name":"Parametro","w":0.25},{"name":"Valor","w":0.25}],"rows":[
+["MIN_CONF","0.70","MODEL_MODE","shadow"],["Edge heuristico","4% - 14%","STAKE_MODE","tiered"],["Edge learned","hasta 20%","Firewall","ON"]]},
+{"title":"Rendimiento (planos 1u)","columns":[{"name":"Modelo","w":0.22},{"name":"24 h","w":0.26},{"name":"7 dias","w":0.26},{"name":"ROI 7 d","w":0.26,"align":"right"}],"rows":[
+["Heuristico","45 - +1.2u","310 - WR 70%",{"t":"+2.9%","tone":"ok"}],["Learned","210 - +9.5u","1400 - WR 73%",{"t":"+6.4%","tone":"ok"}]]}
+],
+"footer":"Pilotos de solo lectura: no puntuan, no emiten, no apuestan"}

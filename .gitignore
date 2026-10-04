@@ -55,3 +55,11 @@ model_pre_*.json
 .chrome-profile/
 .bot.lock
 .dashboard.lock
+
+# Artefactos locales que NO son código (2026-10-04): backups/ pesa decenas de GB (respaldos de la BD);
+# screenshots/ son capturas del dry run con la sesion de Playdoit abierta; scratch/ es exploracion
+# descartable (ver CLAUDE.md); .telegram-offset es estado de ejecucion del bot.
+backups/
+screenshots/
+scratch/
+.telegram-offset

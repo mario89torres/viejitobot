@@ -167,6 +167,24 @@ async function fetchEventFinal(fotmobEventId) {
 }
 
 /**
+ * Marcador oficial de UN partido de FotMob (goles de local y visita segun
+ * header.teams) y si ya termino. Para validar liquidaciones (src/validate.js):
+ * un partido en curso o cancelado devuelve finished=false y NO debe usarse
+ * como marcador final. Solo lectura.
+ */
+async function fetchMarcadorFinal(fotmobMatchId) {
+  const detail = await fetchJson(`/data/matchDetails?matchId=${fotmobMatchId}`, { timeoutMs: 10000 });
+  const st = detail?.header?.status;
+  const tm = detail?.header?.teams || [];
+  const home = tm[0]?.score, away = tm[1]?.score;
+  return {
+    finished: !!st?.finished && !st?.cancelled && Number.isInteger(home) && Number.isInteger(away),
+    home: Number.isInteger(home) ? home : null,
+    away: Number.isInteger(away) ? away : null,
+  };
+}
+
+/**
  * Contexto PRE-PARTIDO de un partido de FotMob: estadio, arbitro (cuando lo
  * publican) y forma reciente de cada equipo. A diferencia de
  * fetchEventFinal, NO exige que el partido haya terminado — funciona igual
@@ -202,6 +220,9 @@ async function fetchTeamXG(fotmobTeamId) {
   const buscar = (re) => teamStats.find(s => re.test(s.header || ''))?.participant?.value ?? null;
   const xgFor = buscar(/^Expected goals$/i);
   const xgAgainst = buscar(/^xG conceded$/i);
+  // Tabla COMPLETA de la liga para el promedio (ver fetchTablaXgLiga): la URL
+  // viene en el propio stat, asi no se adivina el nombre del archivo.
+  const tablaXgUrl = teamStats.find(s => /^Expected goals$/i.test(s.header || ''))?.fetchAllUrl ?? null;
 
   // "played" NO sale de overview.table: su forma varia por liga (tabla simple,
   // por conferencia como MLS, o inexistente en selecciones/friendlies) y
@@ -219,7 +240,37 @@ async function fetchTeamXG(fotmobTeamId) {
     name: d?.details?.name || null,
     played: played || null,
     xgFor, xgAgainst,
+    leagueId: primaryLeagueId,
+    seasonId: d?.stats?.primarySeasonId != null ? String(d.stats.primarySeasonId) : null,
+    tablaXgUrl,
   };
+}
+
+/**
+ * Resume la tabla de xG de una liga (JSON de data.fotmob.com) a un promedio:
+ * xG total / partidos-equipo. Pura (recibe el JSON ya descargado) para poder
+ * probarla sin red. Ignora equipos sin partidos jugados; null si no hay datos.
+ */
+function resumirTablaXgLiga(json) {
+  const lista = json?.TopLists?.[0]?.StatList || [];
+  let xgTotal = 0, partidosEquipo = 0, nEquipos = 0;
+  for (const t of lista) {
+    const xg = Number(t.StatValue), pj = Number(t.MatchesPlayed);
+    if (!Number.isFinite(xg) || !Number.isFinite(pj) || pj <= 0) continue;
+    xgTotal += xg; partidosEquipo += pj; nEquipos++;
+  }
+  if (!partidosEquipo) return null;
+  return {
+    leagueName: json?.LeagueName || null, nEquipos, xgTotal: Number(xgTotal.toFixed(2)), partidosEquipo,
+    xgPorEquipoPartido: Number((xgTotal / partidosEquipo).toFixed(4)),
+  };
+}
+
+/** Descarga y resume la tabla de xG de una liga. data.fotmob.com, no /api. */
+async function fetchTablaXgLiga(url) {
+  const r = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(15000) });
+  if (r.status !== 200) throw new Error(`FotMob tabla xG devolvio HTTP ${r.status}`);
+  return resumirTablaXgLiga(await r.json());
 }
 
 /**
@@ -268,7 +319,7 @@ async function cerrar() {}
 
 module.exports = {
   fetchLiveCorners, scheduledToday, fetchEventFinal, fetchMatchFacts, cerrar,
-  fetchTeamXG, fetchMatchTeamIds,
+  fetchTeamXG, fetchMatchTeamIds, fetchMarcadorFinal, fetchTablaXgLiga, resumirTablaXgLiga,
   // Expuestos para scripts de analisis/backtest que necesitan el detalle crudo.
   fetchJson, extraerTeamStats, estadoDesde,
 };

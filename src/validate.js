@@ -14,6 +14,7 @@
 const { db } = require('./db');
 const { gradePick } = require('./markets');
 const { _internal } = require('./sharp');
+const { teamsMatch } = require('./teamMatch');
 
 const BASE = 'https://api.the-odds-api.com/v4';
 const MAX_DAYS = 3;   // límite del endpoint /scores
@@ -50,8 +51,67 @@ async function fetchScores(sportKey, apiKey) {
 // cuando el resultado quedó fijado). Ojo con el coste: la API cobra por liga
 // consultada, no por pick, y siempre devuelve los mismos 3 días. Una ventana
 // corta ahorra solo porque toca menos ligas — por pick sale más cara.
-async function validateSettlements({ hours = MAX_DAYS * 24, apiKey = process.env.ODDS_API_KEY } = {}) {
-  if (!apiKey) return { error: 'sin ODDS_API_KEY' };
+const START_TOL_MS = 15 * 60 * 1000;   // el partido ya tenia que haber empezado (± reloj)
+const MAX_EN_CURSO_MS = 8 * 3600e3;    // ...y no hace mas de 8 h del pick
+const esFutbol = (sport) => (sport || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim() === 'futbol';
+
+// Elige el partido de FotMob al que corresponde un pick: mismos equipos (en
+// cualquier orden) y que haya EMPEZADO antes del pick, hace menos de 8 h. Sin
+// esa ventana, dos partidos entre los mismos equipos en dias distintos (ida y
+// vuelta, copas) compararian contra el equivocado. Puro: no toca red ni BD.
+// cands: [{ id, home, away, commenceTime }]. Devuelve { ev, swapped } o null.
+function elegirPartidoFotmob(pick, cands) {
+  const t = splitTeams(pick.event);
+  const tp = Date.parse(pick.ts);
+  if (!t || Number.isNaN(tp)) return null;
+  let mejor = null;
+  for (const ev of cands || []) {
+    const ko = Date.parse(ev.commenceTime);
+    if (!ev.home || !ev.away || Number.isNaN(ko)) continue;
+    if (ko > tp + START_TOL_MS || tp - ko > MAX_EN_CURSO_MS) continue;
+    const directo = teamsMatch(t[0], ev.home) && teamsMatch(t[1], ev.away);
+    const cruzado = !directo && teamsMatch(t[0], ev.away) && teamsMatch(t[1], ev.home);
+    if (!directo && !cruzado) continue;
+    const dist = Math.abs(tp - ko);
+    if (!mejor || dist < mejor.dist) mejor = { ev, swapped: cruzado, dist };
+  }
+  return mejor ? { ev: mejor.ev, swapped: mejor.swapped } : null;
+}
+
+// Marcador "local-visita" en el ORDEN del evento de playdoit.
+const marcadorOficial = (home, away, swapped) => (swapped ? `${away}-${home}` : `${home}-${away}`);
+
+// Segunda fuente, gratuita: FotMob, solo futbol y solo los picks que The Odds
+// API no pudo verificar (ligas fuera de SHARP_SPORT_KEYS: juveniles, reservas,
+// ligas menores). Un partido sin terminar o sin match NO cuenta como verificado.
+// Devuelve { verificados: [{ pick, oficial }], pendientes, sinMatch }.
+async function verificarConFotmob(picks, { scheduledToday, fetchMarcadorFinal, maxEventos = 80 } = require('./fotmobScraper')) {
+  const out = { verificados: [], pendientes: 0, sinMatch: 0 };
+  const dia = (ms) => new Date(ms).toISOString().slice(0, 10);
+  const cal = new Map();
+  const calendario = async (d) => {
+    if (!cal.has(d)) { try { cal.set(d, await scheduledToday(d)); } catch { cal.set(d, []); } }
+    return cal.get(d);
+  };
+  const finales = new Map();
+  for (const p of picks.filter(x => esFutbol(x.sport)).slice(0, maxEventos)) {
+    const tp = Date.parse(p.ts);
+    if (Number.isNaN(tp)) { out.sinMatch++; continue; }
+    const cands = [];
+    for (const d of new Set([dia(tp - 86400e3), dia(tp), dia(tp + 86400e3)])) cands.push(...await calendario(d));
+    const m = elegirPartidoFotmob(p, cands);
+    if (!m) { out.sinMatch++; continue; }
+    if (!finales.has(m.ev.id)) {
+      try { finales.set(m.ev.id, await fetchMarcadorFinal(m.ev.id)); } catch { finales.set(m.ev.id, null); }
+    }
+    const f = finales.get(m.ev.id);
+    if (!f || !f.finished) { out.pendientes++; continue; }
+    out.verificados.push({ pick: p, oficial: marcadorOficial(f.home, f.away, m.swapped) });
+  }
+  return out;
+}
+
+async function validateSettlements({ hours = MAX_DAYS * 24, apiKey = process.env.ODDS_API_KEY, fotmob = true } = {}) {
   const h = Math.min(Math.max(Number(hours) || 1, 1), MAX_DAYS * 24);
 
   const since = new Date(Date.now() - h * 3600e3).toISOString();
@@ -74,8 +134,24 @@ async function validateSettlements({ hours = MAX_DAYS * 24, apiKey = process.env
   }
 
   let credits = 0;
-  const out = { n: picks.length, checked: 0, ok: 0, mismatch: [], resultChanges: [], leagues: porLiga.size, hours: h };
-  for (const [key, ps] of porLiga) {
+  const out = {
+    n: picks.length, checked: 0, ok: 0, mismatch: [], resultChanges: [], leagues: porLiga.size, hours: h,
+    porFuente: { oddsapi: 0, fotmob: 0 },
+  };
+  // Un pick se cuenta como verificado UNA vez, venga de la fuente que venga.
+  const verificados = new Set();
+  const registrar = (p, oficial, fuente) => {
+    verificados.add(p.id);
+    out.checked++; out.porFuente[fuente]++;
+    if (oficial === p.final_score) { out.ok++; return; }
+    // el marcador difiere: ¿cambia el resultado del pick?
+    const nuevo = gradePick({ market: p.market, selection: p.selection, event: p.event }, oficial);
+    const entry = { ...p, oficial, nuevo, fuente };
+    out.mismatch.push(entry);
+    if (nuevo && nuevo !== p.result) out.resultChanges.push(entry);
+  };
+
+  for (const [key, ps] of apiKey ? porLiga : []) {
     let res;
     try { res = await fetchScores(key, apiKey); } catch (e) { continue; }
     credits += res.credits;
@@ -96,19 +172,23 @@ async function validateSettlements({ hours = MAX_DAYS * 24, apiKey = process.env
       if (!ev) continue;
       if (cands.length > 1) out.ambiguous = (out.ambiguous || 0) + 1;
       const swapped = !_internal.teamsMatch(t[0], ev.home);
-      const oficial = swapped ? `${ev.as}-${ev.hs}` : `${ev.hs}-${ev.as}`;
-      out.checked++;
-      if (oficial === p.final_score) { out.ok++; continue; }
-
-      // el marcador difiere: ¿cambia el resultado del pick?
-      const nuevo = gradePick({ market: p.market, selection: p.selection, event: p.event }, oficial);
-      const entry = { ...p, oficial, nuevo };
-      out.mismatch.push(entry);
-      if (nuevo && nuevo !== p.result) out.resultChanges.push(entry);
+      registrar(p, swapped ? `${ev.as}-${ev.hs}` : `${ev.hs}-${ev.as}`, 'oddsapi');
     }
   }
   out.credits = credits;
+
+  // Segunda pasada (gratuita) sobre lo que The Odds API no cubrio.
+  if (fotmob) {
+    try {
+      const f = await verificarConFotmob(picks.filter(p => !verificados.has(p.id)));
+      for (const { pick, oficial } of f.verificados) registrar(pick, oficial, 'fotmob');
+      out.fotmobSinMatch = f.sinMatch;
+      out.fotmobPendientes = f.pendientes;
+    } catch (e) {
+      out.fotmobError = e.message; // la segunda fuente nunca tumba el informe
+    }
+  }
   return out;
 }
 
-module.exports = { validateSettlements };
+module.exports = { validateSettlements, _internal: { elegirPartidoFotmob, marcadorOficial, verificarConFotmob, esFutbol } };

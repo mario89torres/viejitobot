@@ -17,10 +17,10 @@ const { xgDeEvento } = require('./src/prematchXg');
 const { normalize } = require('./src/normalize');
 const { programar: programarSondeos } = require('./src/execProbe');
 const { db, saveSnapshot, saveStatSnapshot, saveStatResults, saveFotmobSnapshot, getFotmobCornerLatest,
-        saveForecastSnapshot, saveExecProbe, savePrematchSnapshot, savePrematchValueScan, savePrematchXg,
+        saveForecastSnapshot, saveExecProbe, enqueueDryRunJobs, getExecutionMonitor, savePrematchSnapshot, savePrematchValueScan, savePrematchXg,
         getStatEventosPendientes, getStatMuestras, logPicks, logRejected, logModelPicks, getUnsettledPicks, getStats,
         setSharpEntry, setSharpStatus, pruneSnapshots,
-        isDuplicatePick, isDuplicateModelPick, countPicksSince, getPendingPicksDetailed,
+        isDuplicatePick, isDuplicateModelPick, countPicksSince, countPicksBelowConfSince, getPendingPicksDetailed,
         hasPickForEvent, findPick, getRescueEligible,
         getPendingModelPicksDetailed,
         addSubscriber, getSubscriber, getActiveSubscribers, getExpiredSubscribers, setSubscriberStatus } = require('./src/db');
@@ -41,6 +41,7 @@ const execFileP = promisify(execFile);
 const net = require('net');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const CHAT_ID = String(process.env.TELEGRAM_CHAT_ID);
@@ -56,6 +57,7 @@ const baseConfig = {
 };
 
 const HELP = `Comandos disponibles:
+/botonera — botones táctiles dentro del chat
 /top — top 10 momios más bajos (todos los deportes)
 /top 5 — top N
 /top futbol — solo ese deporte
@@ -73,7 +75,7 @@ const HELP = `Comandos disponibles:
 /stats — tasa de acierto histórica de /seguras por nivel de confianza
 /health — calibración de los últimos 200 picks (detección de drift)
 /unidades — unidades apostadas vs ganadas (resumen general y últimos 7 días)
-/unidades hoy — detalle pick por pick liquidados hoy (o /unidades ayer / AAAA-MM-DD)
+/unidades hoy — dos imágenes 9:16 (heurístico y learned) con los picks liquidados hoy (o /unidades ayer / AAAA-MM-DD)
 /pick 3300 — ficha de un pick con gráfica de evolución de cuota (el #id sale en cada pick automático)
 /dia — gráfica de P/L acumulado del día hasta el momento (o /dia ayer / AAAA-MM-DD)
 /validar — contrasta los resultados liquidados contra el marcador oficial (3 días)
@@ -579,12 +581,16 @@ async function handleValidar(args, chatId) {
   const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   let msg = `<b>🔍 Validación de resultados</b>\n\n`;
   msg += `Picks liquidados (${etiqueta}): ${r.n}\n`;
-  msg += `Verificables (liga cubierta): <b>${r.checked}</b> en ${r.leagues} liga(s)\n`;
+  const pf = r.porFuente || { oddsapi: r.checked, fotmob: 0 };
+  msg += `Verificables: <b>${r.checked}</b> (The Odds API: ${pf.oddsapi} en ${r.leagues} liga(s) · FotMob: ${pf.fotmob})\n`;
   if (!r.checked) {
-    msg += `\n<i>Ninguno pudo verificarse: sus ligas no tienen fuente oficial disponible. ` +
-`La liquidación por último marcador visto sigue sin contraste.</i>`;
+    msg += `\n<i>Ninguno pudo verificarse: sus ligas no tienen fuente oficial disponible ` +
+`(FotMob solo cubre fútbol de ligas que sigue). La liquidación por último marcador visto sigue sin contraste.</i>`;
     return reply(chatId, msg);
   }
+  const sinCubrir = r.n - r.checked;
+  if (sinCubrir > 0) msg += `Sin verificar: ${sinCubrir} <i>(deporte o liga sin fuente)</i>\n`;
+  if (r.fotmobError) msg += `<i>⚠️ FotMob no respondió: ${esc(r.fotmobError.slice(0, 60))}</i>\n`;
   const pctOk = (100 * r.ok / r.checked).toFixed(0);
   msg += `Marcador coincide: <b>${r.ok}/${r.checked}</b> (${pctOk}%)\n`;
   msg += `Marcador distinto: ${r.mismatch.length}\n`;
@@ -700,20 +706,7 @@ async function handleUnidades(args = [], chatId) {
     // dashboard de verdad con Playwright y se recorta esa seccion, asi que
     // lo que se ve en Telegram es EXACTAMENTE lo que se veria abriendo el
     // panel — no una reconstruccion aparte que podria desviarse.
-    if (sub === 'hoy') {
-      return sendTelegram(TOKEN, chatId, '📋 <b>Unidades Hoy</b> — ¿qué reporte quieres ver?', {
-        inline_keyboard: [
-          [
-            { text: '📊 Heurístico (producción)', callback_data: 'unidades_hoy:heuristico' },
-            { text: '🔮 Learned (shadow)', callback_data: 'unidades_hoy:learned' },
-          ],
-          [
-            { text: '📋 Tabla (dashboard)', callback_data: 'unidades_hoy:tabla_img' },
-            { text: '🤖 Modelo ML (dashboard)', callback_data: 'unidades_hoy:modelo_img' },
-          ],
-        ],
-      });
-    }
+    if (sub === 'hoy') return enviarUnidadesHoyImagenes(chatId);
 
     if (sub === 'ayer' || /^\d{4}-\d{2}-\d{2}$/.test(sub)) {
       const res = stakePicksByDate(sub);
@@ -996,6 +989,115 @@ async function enviarUnidadesHoyImagenDashboard(chatId, view, titulo) {
     // "Command failed: ..."), indispensable para diagnosticar sin adivinar.
     console.error(`[unidades-hoy-img:${view}]`, e.stderr || e.message);
     await reply(chatId, `⚠️ No se pudo generar la imagen de ${esc(titulo)}. Detalle: ${esc(e.message)}`);
+  }
+}
+
+// "Unidades Hoy" (boton 📋 / "/unidades hoy"): DOS imagenes 9:16, una por modelo
+// (heuristico en produccion y learned en sombra), con el detalle pick a pick de lo
+// liquidado hoy: hora del pick, partido, pick y cuota, edge, marcador y minuto al
+// emitirlo, marcador final, resultado, P/L y el minuto en que murio si lo perdio. Mismo
+// renderizador de tablas que la imagen de arranque (scripts/render-estado-sistema.py);
+// datos armados por src/reportePicks.js. Pedido del usuario el 2026-09-24: reemplaza
+// el menu de cuatro botones que habia antes (esas ramas siguen vivas por sus callbacks).
+//
+// Cabe un numero acotado de filas legibles en 1080x1920: UNIDADES_HOY_MAX_FILAS (25 por
+// defecto) son las filas POR IMAGEN; si hay mas se envian varias paginas. Los picks van
+// agrupados por mercado, con ganados y perdidos por separado (2026-09-25), y el encabezado
+// cuenta emitidos, ganados y perdidos de todo el dia.
+async function enviarUnidadesHoyImagenes(chatId) {
+  const esc = str => String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const { sendPhotoFile } = require('./src/telegram');
+  const { minutoDeMuerte, armarPaginas, MAX_FILAS_DEFECTO } = require('./src/reportePicks');
+  const porPagina = Math.max(5, Number(process.env.UNIDADES_HOY_MAX_FILAS || MAX_FILAS_DEFECTO));
+  const tz = 'America/Mexico_City';
+  const ahora = new Date();
+  const fechaRaw = ahora.toLocaleDateString('es-MX', { timeZone: tz, weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  const fecha = fechaRaw.replace(',', '').replace(/^./, c => c.toUpperCase());
+  const hora = ahora.toLocaleTimeString('es-MX', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false });
+  const { inicio, fin } = rangoHoyCDMX();
+  const esFutbol = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim() === 'futbol';
+  const horaPick = (ts) => new Date(ts).toLocaleTimeString('es-MX', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false });
+  // Serie del marcador desde que se emitio el pick, leida del mercado del propio pick Y del de
+  // resultado final (idx_snapshots_ems). El mercado de un "Menos de X" desaparece del feed justo
+  // al cruzarse la linea, asi que solo con el suyo nunca se veria el gol decisivo; el 1X2 sigue
+  // hasta el pitido y da el minuto exacto.
+  const MERCADO_MARCADOR = 'Resultado Final (Tiempo Regular)';
+  const muestrasStmt = db.prepare('SELECT score, live_time FROM snapshots WHERE event_id = ? AND ts >= ? AND market IN (?, ?) ORDER BY ts');
+  // Marcador al momento del pick: la primera muestra del evento desde que se emitio (el heuristico no lo guarda;
+  // el learned si, en entry_score, y solo cae aqui si esa columna viene vacia).
+  const marcadorStmt = db.prepare('SELECT score FROM snapshots WHERE event_id = ? AND ts >= ? AND market IN (?, ?) AND score IS NOT NULL ORDER BY ts LIMIT 1');
+
+  const modelos = [
+    {
+      nombre: 'Heurístico (producción)', emoji: '📊', extra: 'producción', textoFallback: enviarUnidadesHoyHeuristico,
+      liquidados: `SELECT id, ts, event_id, event, sport, market, selection, odd_decimal, result, edge, f_avance, final_score,
+                          IFNULL(stake,1) AS stake,
+                          CASE WHEN result = 'win' THEN IFNULL(stake,1) * (odd_decimal - 1) WHEN result = 'loss' THEN -IFNULL(stake,1) END AS pl
+                   FROM picks WHERE stake IS NOT NULL AND result IN ('win','loss') AND ts >= ? AND ts < ? ORDER BY ts DESC`,
+      pendientes: `SELECT COUNT(*) n FROM picks WHERE stake IS NOT NULL AND result IS NULL AND ts >= ? AND ts < ?`,
+      emitidos: `SELECT COUNT(*) n FROM picks WHERE stake IS NOT NULL AND ts >= ? AND ts < ?`,
+      nota: 'P/L con el stake de cada pick · Min del pick estimado (~)',
+    },
+    {
+      nombre: 'Learned (shadow)', emoji: '🔮', extra: 'shadow', textoFallback: enviarUnidadesHoyLearned,
+      liquidados: `SELECT id, ts, event_id, event, sport, market, selection, odd_decimal, result, edge_learned AS edge, entry_minute, entry_score, final_score,
+                          1 AS stake,
+                          CASE WHEN result = 'win' THEN (odd_decimal - 1) WHEN result = 'loss' THEN -1 END AS pl
+                   FROM model_picks WHERE result IN ('win','loss') AND ts >= ? AND ts < ? ORDER BY ts DESC`,
+      pendientes: `SELECT COUNT(*) n FROM model_picks WHERE result IS NULL AND ts >= ? AND ts < ?`,
+      emitidos: `SELECT COUNT(*) n FROM model_picks WHERE ts >= ? AND ts < ?`,
+      nota: 'P/L a 1u plana por pick',
+    },
+  ];
+
+  for (const m of modelos) {
+    try {
+      const rows = db.prepare(m.liquidados).all(inicio, fin);
+      const pendientes = db.prepare(m.pendientes).get(inicio, fin).n;
+      const emitidos = db.prepare(m.emitidos).get(inicio, fin).n;
+      // Resumen sobre TODO lo liquidado hoy.
+      const wins = rows.filter(r => r.result === 'win').length;
+      const pl = rows.reduce((s, r) => s + (r.pl || 0), 0);
+      const apostado = rows.reduce((s, r) => s + (r.stake || 1), 0);
+      const resumen = { n: rows.length, wins, pl, apostado, roi: apostado ? 100 * pl / apostado : null, pendientes, emitidos };
+
+      // Ahora se muestran TODOS (paginados), asi que todos se enriquecen (el minuto de muerte
+      // cuesta una consulta por pick perdido).
+      const picks = rows.map(r => {
+        const futbol = esFutbol(r.sport);
+        let minutoPick = null, minutoPickAprox = false;
+        if (r.entry_minute != null) minutoPick = Math.round(r.entry_minute);
+        else if (futbol && r.f_avance != null) { minutoPick = Math.round(r.f_avance * 90); minutoPickAprox = true; }
+        const muerte = r.result === 'loss' ? minutoDeMuerte(r, muestrasStmt.all(r.event_id, r.ts, r.market, MERCADO_MARCADOR)) : null;
+        const marcadorPick = r.entry_score || marcadorStmt.get(r.event_id, r.ts, r.market, MERCADO_MARCADOR)?.score || null;
+        return { ...r, hora: horaPick(r.ts), marcadorPick, minutoPick, minutoPickAprox, muerte };
+      });
+
+      const paginas = armarPaginas({
+        subtitulo: `Picks de hoy · ${m.nombre.split(' ')[0]}`, extra: m.extra, fecha, hora, picks, resumen, porPagina, notaPie: m.nota,
+      });
+      const fmtU = v => `${v >= 0 ? '+' : ''}${v.toFixed(2)}u`;
+      const perdidos = rows.length - wins;
+      const captionBase = `${m.emoji} <b>${esc(m.nombre)} — Unidades Hoy</b>
+` +
+        `${emitidos} emitidos` +
+        (rows.length
+          ? ` · ✅ ${wins} ganados · ❌ ${perdidos} perdidos · <b>${fmtU(pl)}</b>${resumen.roi != null ? ` · ROI ${resumen.roi >= 0 ? '+' : ''}${resumen.roi.toFixed(1)}%` : ''}`
+          : ' · aún no hay picks liquidados hoy') +
+        `${pendientes ? ` · ${pendientes} en juego` : ''}`;
+      for (const [i, datos] of paginas.entries()) {
+        const png = await renderPanelEstadoImagen(datos);
+        const caption = paginas.length > 1 ? `${captionBase}
+<i>Página ${i + 1}/${paginas.length}</i>` : captionBase;
+        await sendPhotoFile(TOKEN, chatId, png, caption);
+        fs.unlink(png, () => {});
+      }
+    } catch (e) {
+      // Sin Python/Pillow o con un fallo de datos, este modelo cae al resumen de texto de siempre;
+      // el otro modelo se intenta igual.
+      console.error(`[unidades-hoy-imagenes:${m.nombre}]`, e.stderr || e.message);
+      try { await m.textoFallback(chatId); } catch (e2) { console.error('[unidades-hoy-imagenes] fallback de texto:', e2.message); }
+    }
   }
 }
 
@@ -1385,20 +1487,42 @@ async function checkExpiredSubscribers() {
   }
 }
 
-const MAIN_KEYBOARD = {
-  keyboard: [
-    [{ text: '🛡️ Seguras' }, { text: '🥇 Pick Dorado' }, { text: '🎰 Parlay +EV' }],
-    [{ text: '🎯 Top Momios' }, { text: '💰 Unidades' }, { text: '📋 Unidades Hoy' }],
-    [{ text: '⭐ Membresía VIP' }, { text: '📊 Rendimiento' }, { text: '📈 Gráfica del Día' }],
-    // /pick <id> no entra aquí: necesita un número como argumento, y un botón
-    // de texto fijo no puede llevarlo. El propio mensaje de "Pick automático"
-    // ya muestra el #id para copiarlo y escribir /pick <id> a mano.
-    [{ text: '⚽ Deportes' }, { text: '🩺 Salud Modelo' }, { text: '🔍 Validar' }],
-    [{ text: '⏳ Pendientes' }, { text: '🔗 FotMob' }, { text: '❓ Ayuda' }]
-  ],
-  resize_keyboard: true,
-  is_persistent: true,
+// Antes: teclado de respuesta PERSISTENTE pegado abajo del chat en cada mensaje. Desde el 2026-09-25 la botonera
+// va SOLO cuando se manda /botonera, como botones EN LINEA dentro del mensaje (BOTONERA). MAIN_KEYBOARD se conserva
+// con este nombre porque ~8 envios lo pasan como reply_markup: ahora es la orden de QUITAR el teclado fijo viejo
+// (los clientes que aun lo tienen lo pierden en el primer mensaje del bot; en los demas no hace nada).
+const MAIN_KEYBOARD = { remove_keyboard: true };
+
+const BOTONERA_FILAS = [
+  ['🛡️ Seguras', '🥇 Pick Dorado', '🎰 Parlay +EV'],
+  ['🎯 Top Momios', '💰 Unidades', '📋 Unidades Hoy'],
+  ['⭐ Membresía VIP', '📊 Rendimiento', '📈 Gráfica del Día'],
+  // /pick <id> no entra aquí: necesita un número como argumento y un botón no puede llevarlo.
+  ['⚽ Deportes', '🩺 Salud Modelo', '🔍 Validar'],
+  ['⏳ Pendientes', '🔗 FotMob', '❓ Ayuda'],
+  ['⏱️ Parlay Próximos', '📆 Unidades Ayer', '🕐 Gráfica de Ayer'],
+];
+// Solo se muestra al dueño. Los comandos igual se revalidan con isOwner(): esto solo evita ensuciar la botonera
+// de los suscriptores con botones que responderian "reservado al administrador". /reboot NO va: un toque
+// accidental reiniciaria el bot.
+const BOTONERA_FILA_ADMIN = ['📅 Pre-partido', '🤖 Reentrenar', '🖥️ Panel', '🧪 Experimentos'];
+// Indices estables: las filas generales primero, luego la de administrador (callback_data = 'bt:<indice>').
+const BOTONERA_ETIQUETAS = [...BOTONERA_FILAS.flat(), ...BOTONERA_FILA_ADMIN];
+// Comando de cada etiqueta nueva (las anteriores ya estan en labelMap, mas abajo).
+const BOTONES_NUEVOS = {
+  '⏱️ Parlay Próximos': '/parlayprox', 'Parlay Próximos': '/parlayprox',
+  '📆 Unidades Ayer': '/unidades ayer', 'Unidades Ayer': '/unidades ayer',
+  '🕐 Gráfica de Ayer': '/dia ayer', 'Gráfica de Ayer': '/dia ayer',
+  '📅 Pre-partido': '/prematch', 'Pre-partido': '/prematch',
+  '🖥️ Panel': '/panel', 'Panel': '/panel',
+  '🧪 Experimentos': '/experimentos', 'Experimentos': '/experimentos',
 };
+// callback_data = 'bt:<indice>' (limite de 64 bytes; asi no depende del texto ni de los emojis).
+function botoneraPara(chatId) {
+  const filas = isOwner(chatId) ? [...BOTONERA_FILAS, BOTONERA_FILA_ADMIN] : BOTONERA_FILAS;
+  let n = 0;
+  return { inline_keyboard: filas.map(fila => fila.map(text => ({ text, callback_data: `bt:${n++}` }))) };
+}
 
 // chatId se pasa explícito en cada llamada — antes dependía de una variable
 // global mutable (currentChatId) que un mensaje concurrente podía pisar
@@ -1421,7 +1545,7 @@ async function handleStart(chatId, fromUser) {
     `• 💰 <b>Gestión de Unidades:</b> Control estricto de banca y métricas históricas.\n` +
     `• ⭐ <b>Canal VIP Privado:</b> Notificaciones automáticas instantáneas en vivo.\n\n` +
     `<b>💡 ¿Cómo comenzar?</b>\n` +
-    `Utiliza la <b>botonera táctil</b> a continuación para explorar el sistema o presiona <b>⭐ Membresía VIP</b> para acceder al Canal Privado.\n\n` +
+    `Manda <b>/botonera</b> para abrir los botones táctiles y explorar el sistema o presiona <b>⭐ Membresía VIP</b> para acceder al Canal Privado.\n\n` +
     `<i>¡Mucho éxito en tus jugadas! 🎯</i>`;
 
   await sendTelegram(TOKEN, chatId, welcomeMsg, MAIN_KEYBOARD);
@@ -1797,6 +1921,7 @@ async function handleMessage(rawText, chatId = CHAT_ID, fromUser = null) {
     'help': '/help',
   };
 
+  for (const [etq, comando] of Object.entries(BOTONES_NUEVOS)) labelMap[norm(etq)] = comando;
   const vieneDeBotonera = !!(labelMap[normRaw] || labelMap[cleanLabel]);
   if (labelMap[normRaw]) {
     text = labelMap[normRaw];
@@ -1810,12 +1935,13 @@ async function handleMessage(rawText, chatId = CHAT_ID, fromUser = null) {
 
   if (vieneDeBotonera) {
     const ahora = Date.now();
+    const cmdClave = [cmd, ...args].join(' '); // '/unidades' y '/unidades ayer' son botones distintos
     const previo = ultimoComandoBoton.get(chatId);
-    if (previo && previo.cmd === cmd && (ahora - previo.ts) < BOTON_COOLDOWN_MS) {
+    if (previo && previo.cmd === cmdClave && (ahora - previo.ts) < BOTON_COOLDOWN_MS) {
       console.log(`[botonera] ${cmd} ignorado (repetido a ${ahora - previo.ts}ms del anterior, chat ${chatId})`);
       return;
     }
-    ultimoComandoBoton.set(chatId, { cmd, ts: ahora });
+    ultimoComandoBoton.set(chatId, { cmd: cmdClave, ts: ahora });
   }
 
   try {
@@ -1835,6 +1961,24 @@ async function handleMessage(rawText, chatId = CHAT_ID, fromUser = null) {
       await sendDailyPerformanceChart(TOKEN, chatId, args[0]);
     }
     else if (cmd === '/validar') await handleValidar(args, chatId);
+    else if (cmd === '/parlayprox') await handleParlayProximos(args, chatId);
+    // Estado de los picks experimentales (corners y rescate): solo lectura, pero solo al dueño porque esos
+    // avisos también van solo a él y los resultados de un experimento no son para los suscriptores.
+    else if (cmd === '/experimentos') {
+      if (!isOwner(chatId)) await reply(chatId, '🔒 Comando reservado al administrador.');
+      else await handleExperimentos(chatId);
+    }
+    // Vista previa del reporte de las 08:00: solo al dueno, sin guardar patas ni tocar el canal VIP.
+    else if (cmd === '/prematch') {
+      if (!isOwner(chatId)) await reply(chatId, '🔒 Comando reservado al administrador.');
+      else {
+        await reply(chatId, '⏳ Armando el reporte pre-partido...');
+        try {
+          const r = await enviarReportePrematch({ chatIds: [chatId], persistir: false });
+          if (!r.enviado) await reply(chatId, `ℹ️ ${r.motivo}`);
+        } catch (e) { await reply(chatId, `⚠️ No se pudo armar el reporte: ${e.message}`); }
+      }
+    }
     // /train y /dashboard lanzan procesos en la máquina: solo el dueño.
     else if (cmd === '/train') {
       if (!isOwner(chatId)) await reply(chatId, '🔒 Comando reservado al administrador.');
@@ -1865,6 +2009,7 @@ async function handleMessage(rawText, chatId = CHAT_ID, fromUser = null) {
     else if (cmd === '/deportes') await handleDeportes(chatId);
     else if (cmd === '/vip') await handleVip(chatId, fromUser);
     else if (cmd === '/start') await handleStart(chatId, fromUser);
+    else if (cmd === '/botonera') await sendTelegram(TOKEN, chatId, '🎛️ <b>Botonera</b> — toca una opción:', botoneraPara(chatId));
     else if (cmd === '/help') await sendTelegram(TOKEN, chatId, HELP, MAIN_KEYBOARD);
     else await sendTelegram(TOKEN, chatId, `Comando no reconocido.\n\n${HELP}`, MAIN_KEYBOARD);
   } catch (e) {
@@ -1900,7 +2045,8 @@ async function registerCommands() {
           { command: 'health', description: 'Salud del modelo (drift)' },
           { command: 'validar', description: 'Validar resultados con oficial' },
           { command: 'train', description: 'Reentrenar modelo' },
-          { command: 'help', description: 'Ayuda y botonera de comandos' },
+          { command: 'botonera', description: 'Botonera de botones en el chat' },
+          { command: 'help', description: 'Ayuda y lista de comandos' },
         ]
       })
     });
@@ -1988,50 +2134,139 @@ function construirPanelEstadoTexto() {
  * puede quedar mudo solo porque la imagen no se pudo dibujar.
  */
 function construirPanelEstadoDatos() {
-  const hora = new Date().toLocaleTimeString('es-MX', { timeZone: 'America/Mexico_City', hour: '2-digit', minute: '2-digit', hour12: false });
-  const cards = [];
+  const tz = 'America/Mexico_City';
+  const ahora = new Date();
+  const hora = ahora.toLocaleTimeString('es-MX', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false });
+  const fechaRaw = ahora.toLocaleDateString('es-MX', { timeZone: tz, weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  const fecha = fechaRaw.replace(',', '').replace(/^./, c => c.toUpperCase());
 
-  cards.push({
-    title: 'Bot', status: 'ACTIVO', status_type: 'active',
-    metrics: [
-      ['Muestreo', `Cada ${SAMPLE_MINUTES} min`],
-      ['Modelo', getMode()],
-      ['Auto-picks', AUTO_PICKS ? 'ON' : 'OFF'],
-    ],
-  });
+  // Umbrales de MONITOREO de los pilotos (los mismos del chequeo horario): cuantos
+  // eventos hacen falta antes de que el primer analisis tenga peso estadistico.
+  const UMBRAL_STEAM = 300, UMBRAL_SHARP = 20, UMBRAL_XG = 30;
 
-  const panelVivo = dashboardAlive();
-  cards.push(panelVivo
-    ? { title: 'Dashboard', status: 'ACTIVO', status_type: 'active',
-        metrics: [['URL', `localhost:${DASHBOARD_PORT}`], ['Process ID', `PID ${dashboardPid()}`]] }
-    : { title: 'Dashboard', status: 'APAGADO', status_type: 'inactive',
-        metrics: [['Auto-arranque', DASHBOARD_AUTOSTART ? 'ON' : 'OFF']] });
+  // Cada consulta va protegida: una tabla o una consulta que falle deja "—" en
+  // esa celda, no tumba el panel de arranque entero.
+  const q = (sql, ...params) => { try { return db.prepare(sql).get(...params) || {}; } catch (e) { console.error('[panel-estado]', e.message); return {}; } };
+  const hace = (ts) => {
+    if (!ts) return 'sin datos';
+    const m = Math.round((Date.now() - Date.parse(ts)) / 60000);
+    if (!Number.isFinite(m)) return 'sin datos';
+    return m < 90 ? `${Math.max(m, 0)} min` : m < 2880 ? `${Math.round(m / 60)} h` : `${Math.round(m / 1440)} d`;
+  };
+  const minsDesde = (ts) => (ts ? (Date.now() - Date.parse(ts)) / 60000 : null);
+  const iso = (ms) => new Date(ms).toISOString();
+  const desde24h = iso(Date.now() - 24 * 3600e3), desde7d = iso(Date.now() - 7 * 24 * 3600e3), desde72h = iso(Date.now() - 72 * 3600e3);
+  const pill = (t, tone) => ({ t, tone, pill: true });
+  const flat = (r) => (r.result === 'win' ? r.odd_decimal - 1 : r.result === 'loss' ? -1 : 0);
+  const signo = (x, d = 1) => `${x >= 0 ? '+' : ''}${x.toFixed(d)}`;
 
-  if (FOTMOB_PILOT) {
-    let ultimaCaptura = null, capturas24h = 0;
-    try {
-      ultimaCaptura = db.prepare('SELECT MAX(ts) ts FROM fotmob_corner_snapshots').get()?.ts || null;
-      capturas24h = db.prepare(
-        "SELECT COUNT(DISTINCT fotmob_event_id) n FROM fotmob_corner_snapshots WHERE ts >= datetime('now','-1 day')"
-      ).get()?.n || 0;
-    } catch (e) {
-      console.error('[panel-estado] fotmob query:', e.message);
-    }
-    const minsDesde = ultimaCaptura ? Math.round((Date.now() - new Date(ultimaCaptura).getTime()) / 60000) : null;
-    const rancio = minsDesde != null && minsDesde > FOTMOB_MINUTES * 3;
-    cards.push({
-      title: 'FotMob', status: rancio ? 'DEMORADO' : 'ACTIVO', status_type: rancio ? 'warning' : 'active',
-      metrics: [
-        ['Intervalo', `Cada ${FOTMOB_MINUTES} min`],
-        ['Última captura', minsDesde != null ? `hace ${minsDesde} min` : 'sin datos'],
-        ['Partidos/24h', String(capturas24h)],
-      ],
-    });
-  } else {
-    cards.push({ title: 'FotMob', status: 'APAGADO', status_type: 'inactive', metrics: [['Variable', 'FOTMOB_PILOT=0']] });
+  // ---------- indicadores ----------
+  const picks24 = q('SELECT COUNT(*) n FROM picks WHERE ts >= ?', desde24h).n ?? 0;
+  const pendientes = q('SELECT COUNT(*) n FROM picks WHERE result IS NULL AND ts >= ?', desde72h).n ?? 0;
+  let pl24 = 0;
+  try { pl24 = db.prepare("SELECT odd_decimal, result FROM picks WHERE settled_ts >= ? AND result IN ('win','loss')").all(desde24h).reduce((s, r) => s + flat(r), 0); } catch (e) { console.error('[panel-estado]', e.message); }
+  const ramLibreGb = os.freemem() / 1e9;
+  const kpis = [
+    { label: 'Picks 24 h', value: String(picks24) },
+    { label: 'Pendientes', value: String(pendientes) },
+    { label: 'P/L 24 h', value: `${signo(pl24)}u`, tone: pl24 > 0 ? 'ok' : pl24 < 0 ? 'bad' : null },
+    { label: 'RAM libre', value: `${ramLibreGb.toFixed(1)} GB`, tone: ramLibreGb < 1 ? 'bad' : ramLibreGb < 2 ? 'warn' : 'ok' },
+  ];
+
+  // ---------- servicios ----------
+  const servicios = [];
+  servicios.push(['Bot', pill('ACTIVO', 'ok'), `cada ${SAMPLE_MINUTES} min · ${getMode()} · auto ${AUTO_PICKS ? 'ON' : 'OFF'}`]);
+  servicios.push(dashboardAlive()
+    ? ['Dashboard', pill('ACTIVO', 'ok'), `localhost:${DASHBOARD_PORT} · PID ${dashboardPid()}`]
+    : ['Dashboard', pill('APAGADO', 'off'), `auto-arranque ${DASHBOARD_AUTOSTART ? 'ON' : 'OFF'}`]);
+  const ultSnap = q('SELECT MAX(ts) ts FROM snapshots').ts;
+  const minSnap = minsDesde(ultSnap);
+  servicios.push(['Muestreador', pill(minSnap != null && minSnap <= SAMPLE_MINUTES * 4 ? 'ACTIVO' : 'DEMORADO', minSnap != null && minSnap <= SAMPLE_MINUTES * 4 ? 'ok' : 'warn'), `último ciclo hace ${hace(ultSnap)}`]);
+  const maxCred = Number(process.env.SHARP_MAX_CREDITS_PER_DAY || 15);
+  const usados = q('SELECT credits FROM sharp_budget WHERE day = ?', iso(Date.now()).slice(0, 10)).credits ?? 0;
+  servicios.push(['The Odds API',
+    !process.env.ODDS_API_KEY ? pill('SIN CLAVE', 'off') : usados > maxCred ? pill('EXCEDIDO', 'bad') : usados === maxCred ? pill('AGOTADO', 'warn') : pill('ACTIVO', 'ok'),
+    `créditos hoy ${usados}/${maxCred}`]);
+  let dbGb = null;
+  try { dbGb = fs.statSync(process.env.DB_PATH || path.join(__dirname, 'snapshots.db')).size / 1e9; } catch { /* sin tamaño */ }
+  servicios.push(['Base de datos', pill(dbGb == null ? 'SIN DATOS' : dbGb > 20 ? 'GRANDE' : 'ACTIVO', dbGb == null ? 'off' : dbGb > 20 ? 'warn' : 'ok'),
+    dbGb == null ? '—' : `snapshots.db ${dbGb.toFixed(1)} GB`]);
+
+  // ---------- pilotos ----------
+  const pilotos = [];
+  const fila = (nombre, activo, cadencia, ts, progreso, demoradoSi) => {
+    if (!activo) return [nombre, pill('APAGADO', 'off'), '—', '—', progreso || '—'];
+    const m = minsDesde(ts);
+    const rancio = demoradoSi != null && m != null && m > demoradoSi;
+    return [nombre, pill(rancio ? 'DEMORADO' : 'ACTIVO', rancio ? 'warn' : 'ok'), cadencia, ts ? hace(ts) : '—', progreso];
+  };
+  {
+    const r = FOTMOB_PILOT ? q("SELECT MAX(ts) ts, COUNT(DISTINCT CASE WHEN ts >= ? THEN fotmob_event_id END) n FROM fotmob_corner_snapshots", desde24h) : {};
+    pilotos.push(fila('FotMob corners', FOTMOB_PILOT, `${FOTMOB_MINUTES} min`, r.ts, `${r.n ?? 0} partidos/24 h`, FOTMOB_MINUTES * 3));
+  }
+  {
+    const r = PREMATCH_PILOT ? q('SELECT MAX(ts) ts FROM prematch_snapshots') : {};
+    const c = PREMATCH_PILOT ? q("SELECT COUNT(*) n FROM (SELECT event_id FROM prematch_snapshots WHERE start_date < strftime('%Y-%m-%dT%H:%M:%SZ','now') GROUP BY event_id HAVING COUNT(DISTINCT ts) >= 2)").n ?? 0 : 0;
+    pilotos.push(fila('Steam pre-partido', PREMATCH_PILOT, `${PREMATCH_MINUTES} min`, r.ts, `${c} / ${UMBRAL_STEAM} curvas`, PREMATCH_MINUTES * 3));
+  }
+  {
+    const r = PREMATCH_SHARP_SCAN ? q('SELECT MAX(ts) ts, COUNT(DISTINCT event_id) n FROM prematch_value_scan') : {};
+    const c = PREMATCH_SHARP_SCAN ? q("SELECT COUNT(DISTINCT event_id) n FROM prematch_value_scan WHERE start_date < strftime('%Y-%m-%dT%H:%M:%SZ','now')").n ?? 0 : 0;
+    pilotos.push(fila('Valor sharp', PREMATCH_SHARP_SCAN, `${Math.round(PREMATCH_SHARP_SCAN_MINUTES / 60)} h`, r.ts, `${c} / ${UMBRAL_SHARP} · ${r.n ?? 0} escaneados`, PREMATCH_SHARP_SCAN_MINUTES * 3));
+  }
+  {
+    const r = PREMATCH_XG_PILOT ? q('SELECT MAX(ts) ts, SUM(xg_esperado_total IS NOT NULL) n FROM prematch_xg_scan') : {};
+    const c = PREMATCH_XG_PILOT ? q("SELECT COUNT(*) n FROM prematch_xg_scan WHERE xg_esperado_total IS NOT NULL AND start_date < strftime('%Y-%m-%dT%H:%M:%SZ','now')").n ?? 0 : 0;
+    pilotos.push(fila('xG pre-partido', PREMATCH_XG_PILOT, `${Math.round(PREMATCH_XG_MINUTES / 60)} h`, r.ts, `${r.n ?? 0} con xG · ${c} / ${UMBRAL_XG}`, PREMATCH_XG_MINUTES * 3));
+  }
+  {
+    const r = EXEC_PROBE ? q('SELECT MAX(probe_ts) ts, SUM(probe_ts >= ?) n FROM pick_exec_probe', desde24h) : {};
+    pilotos.push(fila('Sonda ejecución', EXEC_PROBE, '10-60 s', r.ts, `${r.n ?? 0} sondeos/24 h`, null));
+  }
+  {
+    const r = STATS_PILOT ? q('SELECT MAX(ts) ts FROM stat_snapshots') : {};
+    pilotos.push(fila('Estadísticas', STATS_PILOT, `${STATS_MINUTES} min`, r.ts, STATS_PILOT ? 'corners y tarjetas' : 'STATS_PILOT=0', STATS_MINUTES * 4));
   }
 
-  return { hora, cards };
+  // ---------- umbrales vigentes ----------
+  const pct = (x) => `${Math.round(Number(x) * 1000) / 10}%`;
+  const umbrales = [
+    ['MIN_CONF', String(process.env.MIN_CONF ?? '—'), 'Modelo', getMode()],
+    ['Edge heurístico', `${pct(process.env.MIN_EDGE ?? 0)} – ${pct(process.env.MAX_EDGE ?? 0.2)}`, 'Stake', String(process.env.STAKE_MODE || 'half_kelly')],
+    ['Edge learned', `hasta ${pct(process.env.MAX_EDGE_LEARNED ?? process.env.MAX_EDGE ?? 0.2)}`, 'Firewall', /^(0|false|off|no)$/i.test(process.env.FIREWALL_ENABLED || '') ? 'OFF' : 'ON'],
+    ['Cuota', `${process.env.MIN_ODDS ?? '—'} – ${process.env.PICK_MAX_ODDS ?? '—'}`, 'Piso de avance', String(process.env.FIREWALL_MIN_AVANCE ?? '—')],
+  ];
+
+  // ---------- rendimiento (stake plano 1u; el de 24 h es ruido, se lee el de 7 d) ----------
+  const rendimiento = [];
+  for (const [nombre, tabla] of [['Heurístico', 'picks'], ['Learned', 'model_picks']]) {
+    let r24 = [], r7 = [];
+    try {
+      r24 = db.prepare(`SELECT odd_decimal, result FROM ${tabla} WHERE settled_ts >= ? AND result IN ('win','loss')`).all(desde24h);
+      r7 = db.prepare(`SELECT odd_decimal, result FROM ${tabla} WHERE settled_ts >= ? AND result IN ('win','loss')`).all(desde7d);
+    } catch (e) { console.error('[panel-estado]', e.message); }
+    const pl24m = r24.reduce((s, r) => s + flat(r), 0), pl7 = r7.reduce((s, r) => s + flat(r), 0);
+    const wr7 = r7.length ? (100 * r7.filter(r => r.result === 'win').length / r7.length) : null;
+    const roi7 = r7.length ? 100 * pl7 / r7.length : null;
+    rendimiento.push([
+      nombre,
+      `${r24.length} · ${signo(pl24m)}u`,
+      r7.length ? `${r7.length} · WR ${wr7.toFixed(0)}%` : 'sin datos',
+      roi7 == null ? '—' : { t: `${signo(roi7)}%`, tone: roi7 > 0 ? 'ok' : roi7 < 0 ? 'bad' : null },
+    ]);
+  }
+
+  return {
+    header: { titulo: 'VIEJITOBOT', subtitulo: 'Estado del sistema', fecha, hora, zona: 'CDMX', extra: 'arranque del bot' },
+    kpis,
+    sections: [
+      { title: 'Servicios', columns: [{ name: 'Servicio', w: 0.25 }, { name: 'Estado', w: 0.19, align: 'center' }, { name: 'Detalle', w: 0.56 }], rows: servicios },
+      { title: 'Pilotos', columns: [{ name: 'Piloto', w: 0.25 }, { name: 'Estado', w: 0.15, align: 'center' }, { name: 'Cada', w: 0.11 }, { name: 'Última', w: 0.13 }, { name: 'Progreso', w: 0.36 }], rows: pilotos },
+      { title: 'Umbrales vigentes', columns: [{ name: 'Parámetro', w: 0.27 }, { name: 'Valor', w: 0.23 }, { name: 'Parámetro', w: 0.27 }, { name: 'Valor', w: 0.23 }], rows: umbrales },
+      { title: 'Rendimiento · stake plano 1u', columns: [{ name: 'Modelo', w: 0.22 }, { name: 'Últimas 24 h', w: 0.27 }, { name: 'Últimos 7 días', w: 0.29 }, { name: 'ROI 7 d', w: 0.22, align: 'right' }], rows: rendimiento },
+    ],
+    footer: 'Pilotos de solo lectura · el ROI de 24 h es ruido, lee el de 7 días',
+  };
 }
 
 /**
@@ -2112,7 +2347,11 @@ async function poll() {
           }).catch(e => console.error('[callback_query] answer:', e.message));
 
           const chatId = cq.message?.chat?.id;
-          if (chatId && cq.data === 'unidades_hoy:heuristico') {
+          const btIdx = /^bt:(\d+)$/.exec(cq.data || '');
+          if (chatId && btIdx && BOTONERA_ETIQUETAS[Number(btIdx[1])]) {
+            // Misma ruta que el texto del boton (labelMap): conserva el enfriamiento de 10 s contra doble toque.
+            await atender(cq.data, handleMessage(BOTONERA_ETIQUETAS[Number(btIdx[1])], chatId, cq.from));
+          } else if (chatId && cq.data === 'unidades_hoy:heuristico') {
             await atender(cq.data, enviarUnidadesHoyHeuristico(chatId));
           } else if (chatId && cq.data === 'unidades_hoy:learned') {
             await atender(cq.data, enviarUnidadesHoyLearned(chatId));
@@ -2186,6 +2425,8 @@ function computeFocusSports(sportResults, rows) {
 // inflando el N y rompiendo la independencia del dataset de entrenamiento.
 const AUTO_PICKS = String(process.env.AUTO_PICKS || 'false').toLowerCase() === 'true';
 const AUTO_PICK_MAX_PER_HOUR = Number(process.env.AUTO_PICK_MAX_PER_HOUR || 6);
+// Tope diario de picks emitidos por debajo de MIN_CONF (piloto MIN_CONF_UNDER_LOW).
+const UNDER_LOW_DAILY_CAP = Number(process.env.UNDER_LOW_DAILY_CAP || 15);
 const AUTO_PICK_NOTIFY = String(process.env.AUTO_PICK_NOTIFY || 'true').toLowerCase() === 'true';
 
 // BADGES. La regla que los gobierna: un badge DESCRIBE el pick, no promete
@@ -2364,6 +2605,8 @@ async function emitirRescates(rows, scored = null) {
       const flag = getCountryFlag(p.champ, p.event, p.sport);
       msg += `${flag} <b>#${ids[i]}</b> · <b>${esc(p.event.trim())}</b> <i>(${esc(p.sport)})</i>${NL}`;
       if (p.score) msg += `Marcador: ${esc(p.score)}${p.liveTime ? ` — ${esc(p.liveTime)}` : ''}${NL}`;
+      const xgLinea = xgDelAviso(p.eventId);
+      if (xgLinea) msg += `${xgLinea}${NL}`;
       msg += `${esc(p.market)}: <b>${esc(p.selection)}</b> @ <b>${p.oddDecimal.toFixed(2)}</b>${NL}`;
       msg += `modelo <b>${pct(p.confLearned)}</b> · heurístico ${pct(p.confHeuristic)} · <b>${MODEL_RESCUE_STAKE}u</b>${NL}${NL}`;
     }
@@ -2376,19 +2619,81 @@ async function emitirRescates(rows, scored = null) {
 
 const MODEL_PICKS = process.env.MODEL_PICKS === '1';
 
+// Línea de xG prepartido para los avisos (src/xgAviso.js): SOLO informa, no puntúa ni filtra. La
+// consulta es por el índice único (event_id) y va en try/catch: un fallo aquí NUNCA debe frenar el
+// aviso de un pick (camino crítico de emisión). Devuelve '' si no hay dato usable.
+let xgAvisoStmt = null;
+function xgDelAviso(eventId) {
+  try {
+    xgAvisoStmt ||= db.prepare(`SELECT xg_esperado_local, xg_esperado_visita, xg_esperado_total, home_played, away_played
+      FROM prematch_xg_scan WHERE event_id = ? ORDER BY ts DESC LIMIT 1`);
+    return require('./src/xgAviso').lineaXg(xgAvisoStmt.get(eventId));
+  } catch { return ''; }
+}
+
 // Nivel 0 de apuesta directa (src/execProbe.js): solo mide, no apuesta. Apagable
 // con EXEC_PROBE=0. `ids` va paralelo a `picks` (null donde hubo duplicado).
 const EXEC_PROBE = !/^(0|false|off|no)$/i.test(process.env.EXEC_PROBE || '1');
+// La cola UI es opt-in: sus trabajos son estrictamente list_only, pero abrir
+// Chrome sigue requiriendo una sesión interactiva que no se debe lanzar por
+// sorpresa al actualizar el bot.
+const DRYRUN_QUEUE_ENABLED = /^(1|true|on|si|sí)$/i.test(process.env.DRYRUN_QUEUE_ENABLED || '');
+const DRYRUN_JOB_MAX_ATTEMPTS = Math.max(1, Math.min(5, Number(process.env.DRYRUN_JOB_MAX_ATTEMPTS || 2)));
 function sondearEjecutabilidad(source, picks, ids) {
-  if (!EXEC_PROBE) return;
   try {
     const items = picks.map((p, i) => ({
       pickId: ids[i], eventId: p.eventId, sportId: p.sportId, sport: p.sport,
-      market: p.market, selection: p.selection, oddDecimal: p.oddDecimal,
+      market: p.market, selection: p.selection, oddDecimal: p.oddDecimal, ts: p.ts,
     })).filter(it => it.pickId);
-    if (items.length) programarSondeos(source, items, saveExecProbe);
+    if (!items.length) return;
+    if (EXEC_PROBE) programarSondeos(source, items, saveExecProbe);
+    if (DRYRUN_QUEUE_ENABLED) {
+      const queued = enqueueDryRunJobs(source, items, { maxAttempts: DRYRUN_JOB_MAX_ATTEMPTS });
+      if (queued) console.log(`[dry-run] ${queued} trabajo(s) list_only encolado(s) (${source})`);
+    }
   } catch (e) {
-    console.error('[execProbe]', e.message);
+    console.error('[ejecutabilidad]', e.message);
+  }
+}
+
+// Salud del sondeo nivel 0: disponibilidad del mercado, drift promedio y
+// retraso EXTRA sobre los +10/+30/+60 s programados. Se avisa solo cuando
+// cambia el estado para no convertir una degradacion larga en spam.
+const EXEC_PROBE_ALERTS = /^(1|true|on|si|sí)$/i.test(process.env.EXEC_PROBE_ALERTS || '');
+const EXEC_PROBE_MONITOR_HOURS = Math.max(1, Math.min(24, Number(process.env.EXEC_PROBE_MONITOR_HOURS || 6)));
+const EXEC_PROBE_MIN_SAMPLES = Math.max(5, Number(process.env.EXEC_PROBE_MIN_SAMPLES || 20));
+const EXEC_PROBE_MIN_OK_PCT = Math.max(0, Math.min(1, Number(process.env.EXEC_PROBE_MIN_OK_PCT || 0.70)));
+const EXEC_PROBE_MAX_AVG_LATENESS_MS = Math.max(1000, Number(process.env.EXEC_PROBE_MAX_AVG_LATENESS_MS || 15000));
+const EXEC_PROBE_MAX_NEGATIVE_DRIFT = Math.min(0, Number(process.env.EXEC_PROBE_MAX_NEGATIVE_DRIFT || -0.03));
+let execProbeSanoAnterior = null;
+
+async function vigilarSondeosEjecucion() {
+  if (!EXEC_PROBE || !EXEC_PROBE_ALERTS) return;
+  try {
+    const monitor = getExecutionMonitor(EXEC_PROBE_MONITOR_HOURS);
+    const total = monitor.probes.reduce((s, r) => s + (r.n || 0), 0);
+    if (total < EXEC_PROBE_MIN_SAMPLES) return;
+    const ok = monitor.probes.reduce((s, r) => s + (r.ok || 0), 0);
+    const promedio = (campo) => monitor.probes.reduce((s, r) => s + (r[campo] || 0) * (r.n || 0), 0) / total;
+    const disponibilidad = ok / total;
+    const atraso = promedio('avg_lateness_ms');
+    const drift = promedio('avg_drift');
+    const sano = disponibilidad >= EXEC_PROBE_MIN_OK_PCT &&
+      atraso <= EXEC_PROBE_MAX_AVG_LATENESS_MS && drift >= EXEC_PROBE_MAX_NEGATIVE_DRIFT;
+    const anterior = execProbeSanoAnterior;
+    if (anterior === sano) return;
+    execProbeSanoAnterior = sano;
+    const detalle = `ventana ${EXEC_PROBE_MONITOR_HOURS}h · n=${total} · disponibles ${(100 * disponibilidad).toFixed(1)}% · ` +
+      `retraso extra ${Math.round(atraso / 1000)}s · drift medio ${(100 * drift).toFixed(2)}%`;
+    if (!sano) {
+      console.error(`[execProbe] degradado: ${detalle}`);
+      await sendTelegram(TOKEN, CHAT_ID, `⚠️ <b>Sondeo de ejecutabilidad degradado</b>\n${detalle}`, false).catch(() => {});
+    } else if (anterior === false) {
+      console.log(`[execProbe] recuperado: ${detalle}`);
+      await sendTelegram(TOKEN, CHAT_ID, `🟢 <b>Sondeo de ejecutabilidad recuperado</b>\n${detalle}`, false).catch(() => {});
+    }
+  } catch (e) {
+    console.error('[execProbe] monitor:', e.message);
   }
 }
 
@@ -2458,6 +2763,8 @@ async function emitirPicksModelo(rows, scored = null) {
           : (p.minute != null ? `${Math.floor(p.minute)}'` : null);
         msg += `Marcador: <b>${esc(p.score)}</b>${cuando ? ` — ${cuando}` : ''}\n`;
       }
+      const xgLinea = xgDelAviso(p.eventId);
+      if (xgLinea) msg += `${xgLinea}\n`;
       msg += `${esc(p.market)}: <b>${esc(p.selection)}</b> @ <b>${p.oddDecimal.toFixed(2)}</b>\n`;
       msg += `modelo <b>${pct(p.confLearned)}</b> · heurístico ${pct(p.confHeuristic)} · Edge <b>${p.edge >= 0 ? '+' : ''}${(100 * p.edge).toFixed(1)}%</b>`;
       msg += p.tambienHeuristico ? ' · <i>ambos coinciden</i>\n\n' : ' · <i>solo el modelo</i>\n\n';
@@ -2479,8 +2786,26 @@ async function autoPicks(rows, scored = null) {
   // asi que el partido esta en juego. Un pick anterior del mismo evento cuenta
   // aunque ya liquidara — la liquidacion temprana cierra mercados a mitad de
   // partido y sin esto el evento quedaba libre para un segundo pick correlado.
-  const candidates = safestPicks(elegibles, 5, scored)
+  let candidates = safestPicks(elegibles, 5, scored)
     .filter(p => !hasPickForEvent(p.eventId));
+
+  // TOPE DIARIO del piloto MIN_CONF_UNDER_LOW (ver confidence.js:minConfFor).
+  // Un candidato con conf < MIN_CONF solo llega hasta aqui por ese piso, asi que
+  // se cuenta el dia (UTC, como se midio) con ese mismo criterio. Orden de
+  // llegada: `conf` no ordena en el segmento, y el tiempo es el criterio mas
+  // neutro y auditable (simulado 2026-09-25: no difiere de elegir al azar).
+  // Sin MIN_CONF_UNDER_LOW nunca hay candidatos bajo el piso, y esto no hace nada.
+  const minConfBase = Number(process.env.MIN_CONF || 0.70);
+  if (candidates.some(p => p.conf < minConfBase)) {
+    const diaUtc = new Date().toISOString().slice(0, 10) + 'T00:00:00.000Z';
+    let cupo = UNDER_LOW_DAILY_CAP - countPicksBelowConfSince(diaUtc, minConfBase);
+    candidates = candidates.filter(p => {
+      if (p.conf >= minConfBase) return true;
+      if (cupo <= 0) return false;
+      cupo--;
+      return true;
+    });
+  }
   if (!candidates.length) return;
 
   // AUTO_PICK_MAX_PER_HOUR estaba declarado y documentado (ver comentario de
@@ -2534,6 +2859,8 @@ async function autoPicks(rows, scored = null) {
     msg += `🎯 <b>${esc(p.market)}: ${esc(p.selection)} @ ${p.oddDecimal.toFixed(2)}</b> <i>(${p.oddAmerican})</i>\n`;
     msg += `${isElite(p) ? '🛡️ ' : ''}${esRectaFinal(p) ? '⏱️ ' : ''}${flag} #${ids[i]} · ${esc(p.event)} <i>(${esc(p.sport)}${p.champ ? ` — ${esc(p.champ)}` : ''})</i>\n`;
     if (p.score) msg += `Marcador: ${esc(p.score)}${p.liveTime ? ` — ${esc(p.liveTime)}` : ''}\n`;
+    const xgLinea = xgDelAviso(p.eventId);
+    if (xgLinea) msg += `${xgLinea}\n`;
     msg += `Confianza ${pct(p.conf)} · Edge +${(100 * p.edge).toFixed(1)}%`;
     msg += p.stake != null ? ` · Unidad ${p.stake.toFixed(1)}u\n` : '\n';
     // Movimiento de la cuota: es un HECHO, no un pronóstico. No necesita muestra
@@ -2845,6 +3172,48 @@ const FOTMOB_PILOT = /^(1|true|on|si|sí)$/i.test(env('FOTMOB_PILOT') || '');
 const FOTMOB_MINUTES = Number(env('FOTMOB_MINUTES') || 3);
 const FOTMOB_STUCK_MS = Number(env('FOTMOB_STUCK_MS') || 3 * 60000);
 
+// Picks de CORNERS en registro (src/cornerPicks.js): EXPERIMENTO. Solo al chat del dueño, sin stake, aparte
+// de picks/model_picks. El modelo de corners no ha mostrado ventaja sobre el mercado (memoria
+// nb-corners-sin-ventaja-vs-mercado), así que esto existe para medirlo, no para apostar con él.
+// Opt-in: CORNER_PICKS=1. Requiere STATS_PILOT=1 (líneas de Playdoit) y FOTMOB_PILOT=1 (conteo real).
+const CORNER_PICKS = /^(1|true|on|si|sí)$/i.test(env('CORNER_PICKS') || '');
+
+async function emitirCornerPicks(dosFuentes) {
+  const { configCorner, candidatosCorners, mensajeCorners } = require('./src/cornerPicks');
+  const dbm = require('./src/db');
+  const cfg = configCorner();
+  const cands = candidatosCorners(dosFuentes, cfg);
+  if (!cands.length) return;
+  let cupo = Math.max(0, cfg.maxPorHora - dbm.countCornerPicksSince(new Date(Date.now() - 3600e3).toISOString()));
+  const nuevos = [], ids = [];
+  for (const p of cands) {
+    if (cupo <= 0) break;
+    const id = dbm.logCornerPick(p);          // null: ese partido ya tenía pick (no volver a avisar)
+    if (id == null) continue;
+    nuevos.push(p); ids.push(id); cupo--;
+  }
+  if (!nuevos.length) return;
+  for (const [i, p] of nuevos.entries()) console.log(`[corners] #C${ids[i]} ${p.event} | ${p.lado} ${p.linea} @ ${p.odd} | modelo ${(100 * p.pModelo).toFixed(0)}% edge ${(100 * p.edge).toFixed(0)}pp`);
+  try { await sendTelegram(TOKEN, CHAT_ID, mensajeCorners(nuevos, ids)); }
+  catch (e) { console.error('[corners] aviso:', e.message); }
+}
+
+// Liquida contra el conteo final que el piloto de stats ya etiquetó en stat_results. Sin etiqueta: sigue pendiente.
+function liquidarCornerPicks() {
+  const { resultadoCorner } = require('./src/cornerPicks');
+  const dbm = require('./src/db');
+  let n = 0;
+  for (const p of dbm.getUnsettledCornerPicks()) {
+    const fin = dbm.getCornerFinalCount(p.event_id, p.linea);
+    if (fin === undefined) continue;
+    const res = resultadoCorner(p.lado, p.linea, fin);
+    if (!res) continue;
+    dbm.settleCornerPick(p.id, res, fin);
+    n++;
+  }
+  if (n) console.log(`[corners] ${n} picks de corners liquidados`);
+}
+
 let fotmobRunning = false;
 let fotmobSince = 0;
 
@@ -2888,9 +3257,11 @@ async function muestrearFotmob() {
           nbVersion: d.poisson.calibrado ? 'nb-cal-1' : 'nb-orig',
         });
       }
+      if (CORNER_PICKS) await emitirCornerPicks(dosFuentes);
     } catch (e) {
       console.error('[fotmob:historial]', e.message);
     }
+    if (CORNER_PICKS) { try { liquidarCornerPicks(); } catch (e) { console.error('[corners] liquidar:', e.message); } }
   } catch (e) {
     console.error('[fotmob]', e.message);
   } finally {
@@ -2956,6 +3327,7 @@ const PREMATCH_SPORT_ID = Number(env('PREMATCH_SPORT_ID') || 66); // Futbol
 
 let prematchRunning = false;
 let prematchSince = 0;
+let prematchReintentos = 0;
 
 async function muestrearPrematch() {
   if (!PREMATCH_PILOT) return;
@@ -2980,8 +3352,12 @@ async function muestrearPrematch() {
     if (filas.length) savePrematchSnapshot(filas);
     const eventos = new Set(filas.map(f => f.eventId)).size;
     console.log(`[prematch ${ts}] ${eventos} partidos pre-partido, ${filas.length} filas`);
+    prematchReintentos = 0;
   } catch (e) {
     console.error('[prematch]', e.message);
+    // Al arrancar el bot el ciclo suele expirar (el hilo esta ocupado con el arranque) y sin reintento las
+    // cuotas quedaban 1 h viejas — y el reporte de las 08:00 y /parlayprox leen de esta tabla.
+    if (prematchReintentos < 3) { prematchReintentos++; setTimeout(muestrearPrematch, 3 * 60000); }
   } finally {
     prematchRunning = false;
   }
@@ -3107,7 +3483,8 @@ async function escanearXgPrematch() {
       SELECT DISTINCT p.event_id, p.event
       FROM prematch_snapshots p
       LEFT JOIN prematch_xg_scan x ON x.event_id = p.event_id
-      WHERE x.event_id IS NULL AND p.start_date > datetime('now')
+      WHERE p.start_date > strftime('%Y-%m-%dT%H:%M:%SZ','now')
+        AND (x.event_id IS NULL OR (x.xg_esperado_total IS NOT NULL AND x.league_id IS NULL))
       LIMIT ?
     `).all(PREMATCH_XG_EVENTOS_POR_CICLO * 3); // margen: no todos van a tener xG en FotMob
 
@@ -3124,6 +3501,8 @@ async function escanearXgPrematch() {
             homeTeamId: xg.home.teamId, homePlayed: xg.home.played, homeXgFor: xg.home.xgFor, homeXgAgainst: xg.home.xgAgainst,
             awayTeamId: xg.away.teamId, awayPlayed: xg.away.played, awayXgFor: xg.away.xgFor, awayXgAgainst: xg.away.xgAgainst,
             xgEsperadoLocal: xg.xgEsperadoLocal, xgEsperadoVisita: xg.xgEsperadoVisita, xgEsperadoTotal: xg.xgEsperadoTotal,
+            leagueId: xg.leagueId, seasonId: xg.seasonId, leagueXgAvg: xg.leagueXgAvg,
+            xgNormLocal: xg.xgNormLocal, xgNormVisita: xg.xgNormVisita, xgNormTotal: xg.xgNormTotal,
           });
           conXg++;
         } else {
@@ -3134,6 +3513,7 @@ async function escanearXgPrematch() {
             fotmobMatchId: null, homeTeamId: null, homePlayed: null, homeXgFor: null, homeXgAgainst: null,
             awayTeamId: null, awayPlayed: null, awayXgFor: null, awayXgAgainst: null,
             xgEsperadoLocal: null, xgEsperadoVisita: null, xgEsperadoTotal: null,
+            leagueId: null, seasonId: null, leagueXgAvg: null, xgNormLocal: null, xgNormVisita: null, xgNormTotal: null,
           });
         }
       } catch (e) {
@@ -3245,7 +3625,190 @@ async function verificarSalud() {
     console.error('[salud]', e.message);
   }
 }
+// -----------------------------------------------------------------------------
+// REPORTE PRE-PARTIDO DE LAS 08:00 (CDMX) — src/reportePrematch.js.
+// Imagen 9:16 (valor vs Pinnacle, parlay de 3-4 patas, mas probables del dia) +
+// CSV con TODAS las jugadas del dia, al canal VIP (suscriptores) y al dueno.
+// Pedido del usuario el 2026-09-25. NO decide ni puntua nada: solo lee
+// prematch_snapshots / prematch_value_scan, no gasta cuota de API, no toca el
+// firewall ni el modelo. Guarda las patas mostradas en prematch_report_picks y
+// las liquida despues: es el unico camino para tener record pre-partido.
+// PREMATCH_REPORT=0 lo apaga; PREMATCH_REPORT_HORA='08:00' (CDMX) lo mueve.
+// -----------------------------------------------------------------------------
+const PREMATCH_REPORT = /^(0|false|off|no)$/i.test(env('PREMATCH_REPORT') || '') ? false : PREMATCH_PILOT;
+const PREMATCH_REPORT_HORA = /^\d{1,2}:\d{2}$/.test(env('PREMATCH_REPORT_HORA') || '') ? env('PREMATCH_REPORT_HORA') : '08:00';
+let reporteEnCurso = false;
+
+async function enviarReportePrematch({ chatIds, persistir }) {
+  const R = require('./src/reportePrematch');
+  const { sendPhotoFile, sendDocumentBuffer } = require('./src/telegram');
+  const ahora = Date.now();
+  const ini = new Date(ahora).toISOString();
+  const fin = new Date(ahora + 24 * 3600e3).toISOString();
+  const filas = db.prepare(`
+    SELECT s.event_id, s.event, s.champ, s.start_date, s.market, s.selection, s.odd_decimal, s.suspended
+    FROM prematch_snapshots s
+    JOIN (SELECT event_id, market, selection, MAX(ts) mts FROM prematch_snapshots
+          WHERE start_date >= ? AND start_date < ? GROUP BY event_id, market, selection) u
+      ON s.event_id = u.event_id AND s.market = u.market AND s.selection = u.selection AND s.ts = u.mts`).all(ini, fin);
+  const partidos = R.agruparPartidos(filas);
+  if (!partidos.size) return { enviado: false, motivo: 'sin partidos con cuota' };
+  const patas = [...partidos.values()].flatMap(R.patasDePartido);
+  const valor = R.valorSharp(db.prepare('SELECT * FROM prematch_value_scan WHERE start_date >= ? AND start_date < ?').all(ini, fin));
+  const parlay = R.armarParlay(patas, { ahoraMs: ahora });
+  const top = R.topProbables(patas, { ahoraMs: ahora });
+
+  const tz = 'America/Mexico_City';
+  const d = new Date(ahora);
+  const fecha = d.toLocaleDateString('es-MX', { timeZone: tz, weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
+    .replace(',', '').replace(/^./, c => c.toUpperCase());
+  const hora = d.toLocaleTimeString('es-MX', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false });
+  const dia = new Date(ahora - 6 * 3600e3).toISOString().slice(0, 10);
+  const png = await renderPanelEstadoImagen(R.armarDatosImagen({ fecha, hora, valor, parlay, top, totalPartidos: partidos.size }));
+  const csv = Buffer.from(R.csvTodas(partidos), 'utf8');
+  const leyenda = R.leyenda({ valor, parlay });
+  const buf = fs.readFileSync(png);
+  fs.unlink(png, () => {});
+  // Imagen extra: estado de las patas de reportes anteriores (ayer y hoy) — WIN/LOSS/PUSH/pendiente.
+  // Antes se liquida lo que ya termino (la tarea de cada 30 min podria llevar hasta media hora de retraso).
+  let bufEstado = null;
+  try {
+    await liquidarReportePrematch();
+    const diaAyer = new Date(Date.parse(dia + 'T12:00:00Z') - 86400000).toISOString().slice(0, 10);
+    const estadoFilas = require('./src/db').reporteEstado(diaAyer);
+    if (estadoFilas.length) {
+      const pngE = await renderPanelEstadoImagen(R.armarEstadoImagen({ fecha, hora, filas: estadoFilas }));
+      bufEstado = fs.readFileSync(pngE);
+      fs.unlink(pngE, () => {});
+    }
+  } catch (e) { console.error('[reporte-prematch] imagen de estado:', e.message); }
+  for (const id of chatIds) {
+    try {
+      await sendPhotoFile(TOKEN, id, buf, leyenda);
+      if (bufEstado) await sendPhotoFile(TOKEN, id, bufEstado, '📋 <b>Estado de los picks pre-partido</b> (ayer y hoy)')
+        .catch(e => console.error('[reporte-prematch] envio del estado:', e.message));
+      await sendDocumentBuffer(TOKEN, id, csv, `jugadas-prematch-${dia}.csv`, `📄 Todas las jugadas con cuota de hoy (${partidos.size} partidos): cuota y probabilidad justa sin margen.`);
+    } catch (e) { console.error(`[reporte-prematch] envio a ${id}:`, e.message); }
+  }
+  if (persistir) {
+    const ts = new Date().toISOString();
+    // xG esperado (simple, del piloto) mas reciente de cada partido mostrado; null si el piloto no lo cubre.
+    const xgStmt = db.prepare('SELECT xg_esperado_local l, xg_esperado_visita v, xg_esperado_total t FROM prematch_xg_scan WHERE event_id = ? ORDER BY ts DESC LIMIT 1');
+    const xgDe = (id) => xgStmt.get(id) || {};
+    const fila = (kind, x) => { const g = xgDe(x.eventId); return { ts, dia, kind, event_id: x.eventId, event: x.event, champ: x.champ, start_date: x.start,
+      market: x.market, selection: x.sel, odd_decimal: x.odd, p_justa: x.p, xg_local: g.l ?? null, xg_visita: g.v ?? null, xg_total: g.t ?? null }; };
+    const v = valor.map(f => ({ ts, dia, kind: 'valor', event_id: f.event_id, event: f.event, champ: f.champ, start_date: f.start_date,
+      market: f.market, selection: f.selection, odd_decimal: f.playdoit_odd, p_justa: null, ...(() => { const g = xgDe(f.event_id); return { xg_local: g.l ?? null, xg_visita: g.v ?? null, xg_total: g.t ?? null }; })() }));
+    require('./src/db').saveReportPicks([...(parlay ? parlay.patas.map(x => fila('parlay', x)) : []), ...top.map(x => fila('top', x)), ...v]);
+  }
+  return { enviado: true, partidos: partidos.size, valor: valor.length, parlay: parlay ? parlay.patas.length : 0 };
+}
+
+// /experimentos: estado de los picks que se avisan como experimento (corners en registro y rescate del modelo).
+async function handleExperimentos(chatId) {
+  const { textoExperimentos } = require('./src/experimentos');
+  const corners = db.prepare('SELECT id, event, linea, lado, odd, minuto, result, final_count FROM corner_picks ORDER BY id DESC').all();
+  const rescate = db.prepare("SELECT id, event, market, selection, odd_decimal, result, final_score FROM picks WHERE source = 'rescue' ORDER BY id DESC").all();
+  return reply(chatId, textoExperimentos({ corners, rescate }));
+}
+
+// /parlayprox [horas]: parlay de 3-4 patas de los partidos que estan por empezar (por defecto en las proximas 3 h,
+// maximo 12). Solo lee prematch_snapshots (sin API, sin escribir) => abierto a cualquier chat, como los demas
+// comandos de lectura. Mismos filtros que el parlay del reporte de las 08:00.
+async function handleParlayProximos(args, chatId) {
+  const R = require('./src/reportePrematch');
+  const horas = Math.min(12, Math.max(1, Number(args[0]) || 3));
+  const ahora = Date.now();
+  const filas = db.prepare(`
+    SELECT s.event_id, s.event, s.champ, s.start_date, s.market, s.selection, s.odd_decimal, s.suspended
+    FROM prematch_snapshots s
+    JOIN (SELECT event_id, market, selection, MAX(ts) mts FROM prematch_snapshots
+          WHERE start_date >= ? AND start_date < ? GROUP BY event_id, market, selection) u
+      ON s.event_id = u.event_id AND s.market = u.market AND s.selection = u.selection AND s.ts = u.mts`)
+    .all(new Date(ahora).toISOString(), new Date(ahora + horas * 3600e3).toISOString());
+  const partidos = R.agruparPartidos(filas);
+  const ult = db.prepare('SELECT MAX(ts) ts FROM prematch_snapshots').get();
+  const frescura = ult && ult.ts ? Math.round((ahora - Date.parse(ult.ts)) / 60000) : null;
+  const patas = [...partidos.values()].flatMap(R.patasDePartido);
+  const parlay = R.armarParlayProximos(patas, { ahoraMs: ahora, horas });
+  let nota = '';
+  // AUDITORÍA: solo el dueño registra (escribe en disco; el botón está abierto a cualquier chat, que
+  // sigue siendo de solo lectura). kind='parlay_prox': no cuenta como reporte del día ni entra en el
+  // estado de las 08:00 (ver db.js). Mismo parlay el mismo día = una sola fila (guardarParlayProx).
+  if (parlay && isOwner(chatId)) {
+    try {
+      const ts = new Date().toISOString();
+      const dia = new Date(ahora - 6 * 3600e3).toISOString().slice(0, 10);
+      const xgStmt = db.prepare('SELECT xg_esperado_local l, xg_esperado_visita v, xg_esperado_total t FROM prematch_xg_scan WHERE event_id = ? ORDER BY ts DESC LIMIT 1');
+      const filas = parlay.patas.map(x => { const g = xgStmt.get(x.eventId) || {}; return { ts, dia, kind: 'parlay_prox', event_id: x.eventId, event: x.event, champ: x.champ,
+        start_date: x.start, market: x.market, selection: x.sel, odd_decimal: x.odd, p_justa: x.p, xg_local: g.l ?? null, xg_visita: g.v ?? null, xg_total: g.t ?? null }; });
+      const nuevo = require('./src/db').guardarParlayProx(filas, dia);
+      nota = `\n<i>📝 ${nuevo ? 'Registrado para auditoría' : 'Ya estaba registrado (mismo parlay)'}.</i>`;
+    } catch (e) { console.error('[parlayprox] registro:', e.message); }
+  }
+  return reply(chatId, R.textoParlayProximos(parlay, { horas, partidos: partidos.size, frescuraMin: frescura }) + nota);
+}
+
+// Una vez al dia, al pasar la hora del reporte (con hasta 10 min de margen por si el bot
+// arranca tarde) y solo si no se envio ya ese dia (se persiste con las patas mostradas).
+async function chequearReportePrematch() {
+  if (!PREMATCH_REPORT || reporteEnCurso) return;
+  const cdmx = new Date(Date.now() - 6 * 3600e3);
+  const dia = cdmx.toISOString().slice(0, 10);
+  const [h, m] = PREMATCH_REPORT_HORA.split(':').map(Number);
+  const minutos = cdmx.getUTCHours() * 60 + cdmx.getUTCMinutes();
+  if (minutos < h * 60 + m || minutos > h * 60 + m + 10) return;
+  if (require('./src/db').reporteYaEnviado(dia)) return;
+  reporteEnCurso = true;
+  try {
+    const destinos = [...new Set([VIP_CHANNEL_ID, process.env.TELEGRAM_GOLDEN_CHANNEL_ID, CHAT_ID].filter(Boolean).map(String))];
+    const r = await enviarReportePrematch({ chatIds: destinos, persistir: true });
+    console.log('[reporte-prematch]', JSON.stringify(r));
+  } catch (e) { console.error('[reporte-prematch]', e.message); }
+  finally { reporteEnCurso = false; }
+}
+
+// Liquida las patas de dias anteriores: marcador FotMob (si el xG piloto ya guardo el partido) o,
+// si no, el marcador final "creible" del feed en vivo (src/marcadorFeed.js). Sin marcador: queda pendiente.
+async function liquidarReportePrematch() {
+  if (!PREMATCH_REPORT) return;
+  const R = require('./src/reportePrematch');
+  const { reportePendientes, liquidarReportePick } = require('./src/db');
+  const { fetchMarcadorFinal } = require('./src/fotmobScraper');
+  const { marcadorFinalCreible, ultimaMuestraConMarcador } = require('./src/marcadorFeed');
+  const pend = reportePendientes(new Date(Date.now() - 3 * 3600e3).toISOString());
+  let liquidadas = 0;
+  for (const p of pend) {
+    try {
+      let gl = null, gv = null, fuente = null;
+      const fm = db.prepare('SELECT fotmob_match_id id FROM prematch_xg_scan WHERE event_id = ? AND fotmob_match_id IS NOT NULL LIMIT 1').get(p.event_id);
+      if (fm) {
+        const f = await fetchMarcadorFinal(fm.id);
+        if (f.finished) { gl = f.home; gv = f.away; fuente = 'fotmob'; }
+      }
+      if (gl == null) {
+        const c = marcadorFinalCreible(ultimaMuestraConMarcador(db, p.event_id), Date.parse(p.start_date));
+        if (c) { gl = c.gl; gv = c.gv; fuente = 'feed'; }
+      }
+      if (gl == null) continue;
+      const res = R.resolverPata(p, gl, gv);
+      if (res) { liquidarReportePick(p.id, res, `${gl}-${gv}`, fuente); liquidadas++; }
+    } catch (e) { console.error('[reporte-prematch:liquidar]', p.event_id, e.message); }
+  }
+  if (liquidadas) console.log(`[reporte-prematch] ${liquidadas} patas liquidadas`);
+}
+
+if (PREMATCH_REPORT) {
+  console.log(`[reporte-prematch] ACTIVO: diario ${PREMATCH_REPORT_HORA} CDMX -> canal VIP + dueno`);
+  setInterval(chequearReportePrematch, 60 * 1000);
+  setInterval(() => liquidarReportePrematch().catch(e => console.error('[reporte-prematch:liquidar]', e.message)), 30 * 60 * 1000);
+}
+
 setInterval(verificarSalud, SALUD_INTERVALO_MS);
+if (EXEC_PROBE_ALERTS) {
+  setInterval(vigilarSondeosEjecucion, 5 * 60 * 1000);
+  setTimeout(vigilarSondeosEjecucion, 60 * 1000);
+}
 
 // Monitoreo de drift: chequeo diario, alerta por Telegram como máximo una vez
 // cada 30 días si el ECE de los últimos 200 picks supera el umbral.

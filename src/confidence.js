@@ -524,6 +524,39 @@ function edgeThresholdFor(r, defaultMin) {
   return defaultMin;
 }
 
+// "menos de X" de fútbol con X <= 3.5: el segmento donde MIN_CONF recorta volumen
+// rentable (ver minConfFor).
+function isLowLineFootballUnder(r) {
+  if (!isFootballUnder(r)) return false;
+  const m = /(\d+(?:\.\d+)?)/.exec(r.selection || '');
+  return !!m && Number(m[1]) <= 3.5;
+}
+
+// Piso de confianza aplicable a un pick concreto.
+//
+// EXPERIMENTO (MIN_CONF_UNDER_LOW): piso distinto SOLO para los "menos de X<=3.5"
+// de fútbol. Vacío (por defecto) = sin efecto: todos usan MIN_CONF.
+//
+// Medido el 2026-09-25 sobre rejected_picks (rechazados SOLO por min_conf, "menos
+// de" con linea <=3.5, desde 2026-08-10, bootstrap por EVENTO):
+//   rechazados  N=11,285 ev  ROI +9.6%  IC95% [+8.0, +11.3]
+//   emitidos    N= 1,034 ev  ROI +3.8%  IC95% [-0.4, +7.6]   (misma ventana)
+//   TRAIN <09-01 +8.3% [6.1, 10.7] · TEST >=09-01 +11.1% [8.9, 13.4]
+// `conf` no ordena dentro del segmento (ROI por tramo: 0.4-0.5 +10.1%, 0.5-0.6
+// +6.0%, 0.6-0.7 +5.0%), asi que el piso no filtra malos picks: recorta volumen.
+//
+// OJO: los rechazados se midieron con precio de PRIMER AVISTAMIENTO, no
+// ejecutable, y con MIN_EDGE/MAX_EDGE previos a 2026-09-23. Sin tope, el
+// segmento pasaria de ~5 a ~190 picks/dia: por eso el piloto exige
+// UNDER_LOW_DAILY_CAP (bot.js) — este piso NUNCA debe activarse sin el.
+// Los picks del piloto se reconocen sin columna extra: un "menos de" de futbol
+// con conf < MIN_CONF solo puede existir por esta via.
+function minConfFor(r, defaultMin) {
+  const raw = process.env.MIN_CONF_UNDER_LOW;
+  if (raw !== undefined && raw !== '' && isLowLineFootballUnder(r)) return Number(raw);
+  return defaultMin;
+}
+
 // Veto por falta de certidumbre: si el sistema no sabe interpretar el mercado,
 // no puede evaluarlo ni calificarlo.
 //
@@ -884,7 +917,7 @@ const POST_SCORE_GATES = [
   ['mercado_bloqueado', (r) => !isBlockedMarket(r)],
   ['guardas5', (r) => !isRejectedBy5Guards(r)],
   ['firewall', (r) => !isFirewallBlocked(r)],
-  ['min_conf', (r, o) => o.minConf <= 0 || r.conf >= o.minConf],
+  ['min_conf', (r, o) => { const th = minConfFor(r, o.minConf); return th <= 0 || r.conf >= th; }],
   ['min_edge', (r, o) => { const th = edgeThresholdFor(r, o.minEdge); return th <= 0 || r.edge >= th; }],
   // TECHO DE EDGE (2026-09-12). Analisis retrospectivo sobre 4156 picks
   // liquidados: el edge NO ordena de forma monotona — la banda 2-6% rinde
@@ -1274,7 +1307,7 @@ function parlayCombos(rows, {
 
 module.exports = {
   scoreRow, safestPicks, rankPicks, auditRejections, goldenPick, parlayCombos, aperturaFactor, lineTrend, avanceForModel, SCORE_VERSION,
-  isExcluded, excludedSports, baseballProgress, isOverPick, isBlockedOver, isBlockedMarket, isUncertain, isFootballUnder, edgeThresholdFor,
+  isExcluded, excludedSports, baseballProgress, isOverPick, isBlockedOver, isBlockedMarket, isUncertain, isFootballUnder, isLowLineFootballUnder, edgeThresholdFor, minConfFor,
   isSuspensionOrInstabilityInWindow, isRejectedBy5Guards, computeStructuralDrawSignal, DRAW_SIGNAL_DEFAULTS,
   recentScoreChange, isDrawSelection, readSpike, SPIKE_DEFAULTS,
   computeStake, kellyFraction, tierStake, STAKE_MODE,
